@@ -57,11 +57,14 @@ Optional reusable context controls:
 
 - `ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE` (default `config/skill_protocol.json`)
 - `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
+- `ORXAQ_AUTONOMY_CODEX_PROMPT_FILE` (default `config/prompts/codex_impl_prompt.md`)
+- `ORXAQ_AUTONOMY_GEMINI_PROMPT_FILE` (default `config/prompts/gemini_test_prompt.md`)
 
 ## Commands
 
 ```bash
 make preflight
+make bootstrap
 make start
 make ensure
 make status
@@ -105,21 +108,29 @@ make supervise
 
 Use the full operator guide at `/Users/sdevisch/dev/orxaq-ops/docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md`.
 
-Minimal startup flow:
+Single-command startup flow:
+
+```bash
+make bootstrap
+```
+
+`make bootstrap` will:
+- generate the dual-repo workspace,
+- run preflight checks (dirty repos allowed by default),
+- start the autonomy supervisor,
+- install keepalive,
+- open VS Code,
+- write an AI startup packet to `artifacts/autonomy/startup_packet.md`.
+
+Manual startup flow (if you want finer control):
 
 ```bash
 make workspace
 make open-vscode
-make preflight
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops preflight --allow-dirty
 make start
 make status
 make logs
-```
-
-If your implementation tree is intentionally dirty during active work, run preflight with:
-
-```bash
-python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops preflight --allow-dirty
 ```
 
 ## Reuse Model

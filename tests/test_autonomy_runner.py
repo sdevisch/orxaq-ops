@@ -177,6 +177,31 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertIn("proto", prompt)
         self.assertIn("MCP context", prompt)
 
+    def test_prompt_includes_startup_instructions(self):
+        task = runner.Task(
+            id="task-2",
+            owner="gemini",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a1"],
+        )
+        prompt = runner.build_agent_prompt(
+            task=task,
+            objective_text="Objective",
+            role="test-owner",
+            repo_path=pathlib.Path("/tmp/repo"),
+            retry_context={},
+            repo_context="Top file types: py:10.",
+            repo_hints=[],
+            skill_protocol=SkillProtocolSpec(name="proto", version="2", description="d"),
+            mcp_context=None,
+            startup_instructions="Always include adversarial tests.",
+        )
+        self.assertIn("Role startup instructions", prompt)
+        self.assertIn("adversarial tests", prompt)
+
     def test_run_validations_retries_test_command(self):
         calls = []
 

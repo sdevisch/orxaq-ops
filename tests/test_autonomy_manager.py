@@ -17,12 +17,15 @@ from orxaq_autonomy import manager
 class ManagerTests(unittest.TestCase):
     def _build_root(self, tmp: pathlib.Path) -> pathlib.Path:
         (tmp / "config").mkdir(parents=True, exist_ok=True)
+        (tmp / "config" / "prompts").mkdir(parents=True, exist_ok=True)
         (tmp / "state").mkdir(parents=True, exist_ok=True)
         (tmp / "artifacts" / "autonomy").mkdir(parents=True, exist_ok=True)
         (tmp / "config" / "tasks.json").write_text("[]\n", encoding="utf-8")
         (tmp / "config" / "objective.md").write_text("objective\n", encoding="utf-8")
         (tmp / "config" / "codex_result.schema.json").write_text("{}\n", encoding="utf-8")
         (tmp / "config" / "skill_protocol.json").write_text("{}\n", encoding="utf-8")
+        (tmp / "config" / "prompts" / "codex_impl_prompt.md").write_text("codex prompt\n", encoding="utf-8")
+        (tmp / "config" / "prompts" / "gemini_test_prompt.md").write_text("gemini prompt\n", encoding="utf-8")
         (tmp / ".env.autonomy").write_text("OPENAI_API_KEY=test\nGEMINI_API_KEY=test\n", encoding="utf-8")
         return tmp
 
@@ -48,6 +51,8 @@ class ManagerTests(unittest.TestCase):
             argv = manager.runner_argv(cfg)
             self.assertIn("--skill-protocol-file", argv)
             self.assertIn("--validate-command", argv)
+            self.assertIn("--codex-startup-prompt-file", argv)
+            self.assertIn("--gemini-startup-prompt-file", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -215,6 +220,50 @@ class ManagerTests(unittest.TestCase):
                 rc = manager.supervise_foreground(cfg)
             self.assertEqual(rc, 0)
             self.assertEqual(len(popen_calls), 2)
+
+    def test_bootstrap_background_starts_and_writes_startup_packet(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager.start_background"
+            ), mock.patch(
+                "orxaq_autonomy.manager.install_keepalive",
+                return_value="keepalive-label",
+            ), mock.patch(
+                "orxaq_autonomy.manager.open_in_ide",
+                return_value="opened",
+            ):
+                payload = manager.bootstrap_background(
+                    cfg,
+                    allow_dirty=True,
+                    install_keepalive_job=True,
+                    ide="vscode",
+                )
+            self.assertTrue(payload["ok"])
+            self.assertTrue(pathlib.Path(payload["workspace"]).exists())
+            self.assertTrue(pathlib.Path(payload["startup_packet"]).exists())
+            startup_packet_text = pathlib.Path(payload["startup_packet"]).read_text(encoding="utf-8")
+            self.assertIn("codex prompt", startup_packet_text)
+            self.assertIn("gemini prompt", startup_packet_text)
+            self.assertTrue(payload["keepalive"]["active"])
+
+    def test_bootstrap_background_fails_when_clean_required_and_dirty(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager.preflight",
+                return_value={"clean": False, "runtime": "ok", "checks": []},
+            ):
+                payload = manager.bootstrap_background(
+                    cfg,
+                    allow_dirty=False,
+                    install_keepalive_job=False,
+                    ide=None,
+                )
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["reason"], "preflight_failed")
 
 
 if __name__ == "__main__":

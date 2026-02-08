@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .ide import generate_workspace, open_in_ide
+
 
 def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
@@ -153,6 +155,8 @@ class ManagerConfig:
     validate_commands: list[str]
     skill_protocol_file: Path
     mcp_context_file: Path | None
+    codex_startup_prompt_file: Path | None
+    gemini_startup_prompt_file: Path | None
 
     @classmethod
     def from_root(cls, root: Path, env_file_override: Path | None = None) -> "ManagerConfig":
@@ -179,6 +183,16 @@ class ManagerConfig:
         skill_protocol = _path("ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE", root / "config" / "skill_protocol.json")
         mcp_context_raw = merged.get("ORXAQ_AUTONOMY_MCP_CONTEXT_FILE", "").strip()
         mcp_context = Path(mcp_context_raw).resolve() if mcp_context_raw else None
+        codex_prompt_raw = merged.get(
+            "ORXAQ_AUTONOMY_CODEX_PROMPT_FILE",
+            str(root / "config" / "prompts" / "codex_impl_prompt.md"),
+        ).strip()
+        gemini_prompt_raw = merged.get(
+            "ORXAQ_AUTONOMY_GEMINI_PROMPT_FILE",
+            str(root / "config" / "prompts" / "gemini_test_prompt.md"),
+        ).strip()
+        codex_prompt_file = Path(codex_prompt_raw).resolve() if codex_prompt_raw else None
+        gemini_prompt_file = Path(gemini_prompt_raw).resolve() if gemini_prompt_raw else None
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
         validate_commands = [chunk.strip() for chunk in validate_raw.split(";") if chunk.strip()]
@@ -216,6 +230,8 @@ class ManagerConfig:
             validate_commands=validate_commands,
             skill_protocol_file=skill_protocol,
             mcp_context_file=mcp_context,
+            codex_startup_prompt_file=codex_prompt_file,
+            gemini_startup_prompt_file=gemini_prompt_file,
         )
 
 
@@ -309,6 +325,10 @@ def runner_argv(config: ManagerConfig) -> list[str]:
     ]
     if config.mcp_context_file is not None:
         args.extend(["--mcp-context-file", str(config.mcp_context_file)])
+    if config.codex_startup_prompt_file is not None:
+        args.extend(["--codex-startup-prompt-file", str(config.codex_startup_prompt_file)])
+    if config.gemini_startup_prompt_file is not None:
+        args.extend(["--gemini-startup-prompt-file", str(config.gemini_startup_prompt_file)])
     for cmd in config.validate_commands:
         args.extend(["--validate-command", cmd])
     return args
@@ -601,3 +621,133 @@ def tail_logs(config: ManagerConfig, lines: int = 40) -> str:
         return ""
     content = config.log_file.read_text(encoding="utf-8").splitlines()
     return "\n".join(content[-lines:])
+
+
+def _read_optional_text(path: Path | None) -> str:
+    if path is None:
+        return ""
+    if not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def write_startup_packet(config: ManagerConfig, workspace_file: Path) -> Path:
+    codex_prompt_text = _read_optional_text(config.codex_startup_prompt_file)
+    gemini_prompt_text = _read_optional_text(config.gemini_startup_prompt_file)
+    output = config.artifacts_dir / "startup_packet.md"
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# Orxaq Collaboration Startup Packet",
+        "",
+        "## Runtime",
+        f"- Objective: `{config.objective_file}`",
+        f"- Task queue: `{config.tasks_file}`",
+        f"- Skill protocol: `{config.skill_protocol_file}`",
+        f"- Workspace: `{workspace_file}`",
+        f"- Supervisor log: `{config.log_file}`",
+        "",
+        "## AI Startup Prompts",
+    ]
+    if config.codex_startup_prompt_file is not None:
+        lines.append(f"- Codex prompt source: `{config.codex_startup_prompt_file}`")
+    if config.gemini_startup_prompt_file is not None:
+        lines.append(f"- Gemini prompt source: `{config.gemini_startup_prompt_file}`")
+
+    if codex_prompt_text:
+        lines.extend(
+            [
+                "",
+                "### Codex",
+                "",
+                "```text",
+                codex_prompt_text,
+                "```",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "### Codex",
+                "",
+                "_No Codex startup prompt file found._",
+            ]
+        )
+
+    if gemini_prompt_text:
+        lines.extend(
+            [
+                "",
+                "### Gemini",
+                "",
+                "```text",
+                gemini_prompt_text,
+                "```",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "### Gemini",
+                "",
+                "_No Gemini startup prompt file found._",
+            ]
+        )
+
+    output.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return output
+
+
+def bootstrap_background(
+    config: ManagerConfig,
+    *,
+    allow_dirty: bool = True,
+    install_keepalive_job: bool = True,
+    ide: str | None = "vscode",
+    workspace_filename: str = "orxaq-dual-agent.code-workspace",
+) -> dict[str, Any]:
+    workspace_file = generate_workspace(
+        config.root_dir,
+        config.impl_repo,
+        config.test_repo,
+        (config.root_dir / workspace_filename).resolve(),
+    )
+    preflight_payload = preflight(config, require_clean=not allow_dirty)
+    if not preflight_payload.get("clean", True):
+        return {
+            "ok": False,
+            "reason": "preflight_failed",
+            "preflight": preflight_payload,
+            "workspace": str(workspace_file),
+        }
+
+    start_background(config)
+    keepalive_info: dict[str, Any] = {"requested": install_keepalive_job, "active": False, "label": "", "error": ""}
+    if install_keepalive_job:
+        try:
+            keepalive_info["label"] = install_keepalive(config)
+            keepalive_info["active"] = True
+        except Exception as err:  # pragma: no cover - defensive surface for OS-specific failures
+            keepalive_info["error"] = str(err)
+
+    ide_result = ""
+    if ide:
+        ws = workspace_file if ide in {"vscode", "cursor"} else None
+        ide_result = open_in_ide(ide=ide, root=config.root_dir, workspace_file=ws)
+
+    startup_packet = write_startup_packet(config, workspace_file=workspace_file)
+    return {
+        "ok": True,
+        "workspace": str(workspace_file),
+        "preflight": preflight_payload,
+        "supervisor": status_snapshot(config),
+        "keepalive": keepalive_info,
+        "ide": {"requested": ide or "none", "result": ide_result},
+        "startup_packet": str(startup_packet),
+        "prompts": {
+            "codex": str(config.codex_startup_prompt_file) if config.codex_startup_prompt_file else "",
+            "gemini": str(config.gemini_startup_prompt_file) if config.gemini_startup_prompt_file else "",
+        },
+    }

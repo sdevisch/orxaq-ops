@@ -50,6 +50,32 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
+    def test_bootstrap_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.bootstrap_background",
+                return_value={"ok": True, "startup_packet": "packet.md"},
+            ) as bootstrap:
+                rc = cli.main(["--root", str(root), "bootstrap"])
+            self.assertEqual(rc, 0)
+            kwargs = bootstrap.call_args.kwargs
+            self.assertTrue(kwargs["allow_dirty"])
+            self.assertTrue(kwargs["install_keepalive_job"])
+            self.assertEqual(kwargs["ide"], "vscode")
+
+    def test_bootstrap_command_returns_nonzero_on_preflight_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.bootstrap_background",
+                return_value={"ok": False, "reason": "preflight_failed"},
+            ):
+                rc = cli.main(["--root", str(root), "bootstrap", "--require-clean", "--skip-keepalive", "--ide", "none"])
+            self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

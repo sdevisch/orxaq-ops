@@ -161,6 +161,14 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _read_optional_text(path: Path | None) -> str:
+    if path is None:
+        return ""
+    if not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
@@ -470,6 +478,7 @@ def build_agent_prompt(
     repo_hints: list[str],
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
+    startup_instructions: str = "",
 ) -> str:
     acceptance = "\n".join(f"- {item}" for item in task.acceptance) or "- No explicit acceptance items"
 
@@ -491,6 +500,10 @@ def build_agent_prompt(
         repo_hints_text = f"Repository state hints:\n{hints}\n"
     protocol_behaviors = "\n".join(f"- {item}" for item in skill_protocol.required_behaviors)
     mcp_context_text = mcp_context.render_context() + "\n" if mcp_context else ""
+    startup_text = startup_instructions.strip()
+    startup_block = ""
+    if startup_text:
+        startup_block = f"Role startup instructions:\n{startup_text}\n\n"
 
     return (
         f"{objective_text.strip()}\n\n"
@@ -500,6 +513,7 @@ def build_agent_prompt(
         f"- Description: {skill_protocol.description}\n"
         f"- Required behaviors:\n{protocol_behaviors}\n"
         f"- File-type policy: {skill_protocol.filetype_policy}\n\n"
+        f"{startup_block}"
         f"{mcp_context_text}"
         "Current autonomous task:\n"
         f"- Task ID: {task.id}\n"
@@ -709,6 +723,7 @@ def run_codex_task(
     repo_hints: list[str],
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
+    startup_instructions: str,
 ) -> tuple[bool, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{task.id}_codex_result.json"
@@ -722,6 +737,7 @@ def run_codex_task(
         repo_hints=repo_hints,
         skill_protocol=skill_protocol,
         mcp_context=mcp_context,
+        startup_instructions=startup_instructions,
     )
 
     cmd = [
@@ -779,6 +795,7 @@ def run_gemini_task(
     repo_hints: list[str],
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
+    startup_instructions: str,
 ) -> tuple[bool, dict[str, Any]]:
     prompt = build_agent_prompt(
         task,
@@ -790,6 +807,7 @@ def run_gemini_task(
         repo_hints=repo_hints,
         skill_protocol=skill_protocol,
         mcp_context=mcp_context,
+        startup_instructions=startup_instructions,
     )
     prompt += (
         "\nTesting-owner constraints:\n"
@@ -943,6 +961,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validation-retries", type=int, default=1)
     parser.add_argument("--skill-protocol-file", default="config/skill_protocol.json")
     parser.add_argument("--mcp-context-file", default="")
+    parser.add_argument("--codex-startup-prompt-file", default="")
+    parser.add_argument("--gemini-startup-prompt-file", default="")
     args = parser.parse_args(argv)
 
     impl_repo = Path(args.impl_repo).resolve()
@@ -956,6 +976,10 @@ def main(argv: list[str] | None = None) -> int:
     lock_file = Path(args.lock_file).resolve()
     skill_protocol_file = Path(args.skill_protocol_file).resolve() if args.skill_protocol_file else None
     mcp_context_file = Path(args.mcp_context_file).resolve() if args.mcp_context_file else None
+    codex_startup_prompt_file = Path(args.codex_startup_prompt_file).resolve() if args.codex_startup_prompt_file else None
+    gemini_startup_prompt_file = (
+        Path(args.gemini_startup_prompt_file).resolve() if args.gemini_startup_prompt_file else None
+    )
 
     if not impl_repo.exists():
         raise FileNotFoundError(f"Implementation repo not found: {impl_repo}")
@@ -978,6 +1002,8 @@ def main(argv: list[str] | None = None) -> int:
     objective_text = _read_text(objective_file)
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
+    codex_startup_instructions = _read_optional_text(codex_startup_prompt_file)
+    gemini_startup_instructions = _read_optional_text(gemini_startup_prompt_file)
     save_state(state_file, state)
 
     _print(f"Starting autonomy runner with {len(tasks)} tasks")
@@ -1101,6 +1127,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_hints=repo_hints,
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
+                startup_instructions=codex_startup_instructions,
             )
         else:
             task_progress = lambda elapsed: write_heartbeat(
@@ -1124,6 +1151,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_hints=repo_hints,
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
+                startup_instructions=gemini_startup_instructions,
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)

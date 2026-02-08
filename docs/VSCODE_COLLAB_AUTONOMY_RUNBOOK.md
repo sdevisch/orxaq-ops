@@ -60,6 +60,14 @@ Windows:
 
 ## Start Autonomy
 
+One command (recommended):
+
+```bash
+make bootstrap
+```
+
+This performs workspace generation, preflight, supervisor start, keepalive install, IDE open, and writes `artifacts/autonomy/startup_packet.md` with Codex/Gemini startup prompts.
+
 1. Preflight (auth, binaries, repo checks).
 
 ```bash

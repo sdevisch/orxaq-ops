@@ -11,6 +11,7 @@ from .context import write_default_skill_protocol
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
+    bootstrap_background,
     ensure_background,
     health_snapshot,
     install_keepalive,
@@ -63,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
     open_ide = sub.add_parser("open-ide")
     open_ide.add_argument("--ide", choices=["vscode", "cursor", "pycharm"], default="vscode")
     open_ide.add_argument("--workspace", default="orxaq-dual-agent.code-workspace")
+
+    bootstrap = sub.add_parser("bootstrap")
+    bootstrap.add_argument("--workspace", default="orxaq-dual-agent.code-workspace")
+    bootstrap.add_argument("--ide", choices=["vscode", "cursor", "pycharm", "none"], default="vscode")
+    bootstrap.add_argument("--require-clean", action="store_true")
+    bootstrap.add_argument("--skip-keepalive", action="store_true")
 
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
@@ -130,6 +137,17 @@ def main(argv: list[str] | None = None) -> int:
             generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, ws)
         print(open_in_ide(ide=args.ide, root=cfg.root_dir, workspace_file=ws))
         return 0
+    if args.command == "bootstrap":
+        ide = None if args.ide == "none" else args.ide
+        payload = bootstrap_background(
+            cfg,
+            allow_dirty=not args.require_clean,
+            install_keepalive_job=not args.skip_keepalive,
+            ide=ide,
+            workspace_filename=args.workspace,
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
 
     return 2
 
