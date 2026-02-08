@@ -66,6 +66,12 @@ Windows:
 make preflight
 ```
 
+If implementation repos intentionally contain active local work, use:
+
+```bash
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops preflight --allow-dirty
+```
+
 2. Start supervisor.
 
 ```bash
@@ -151,4 +157,3 @@ make ensure
 
 4. If still blocked, use mitigation playbook:
 - `docs/autonomy-halt-mitigation.md`
-

@@ -116,6 +116,12 @@ make status
 make logs
 ```
 
+If your implementation tree is intentionally dirty during active work, run preflight with:
+
+```bash
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops preflight --allow-dirty
+```
+
 ## Reuse Model
 
 This package is reusable in any repo:
