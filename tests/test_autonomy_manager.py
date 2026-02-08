@@ -1,5 +1,6 @@
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,7 +27,16 @@ class ManagerTests(unittest.TestCase):
         (tmp / "config" / "skill_protocol.json").write_text("{}\n", encoding="utf-8")
         (tmp / "config" / "prompts" / "codex_impl_prompt.md").write_text("codex prompt\n", encoding="utf-8")
         (tmp / "config" / "prompts" / "gemini_test_prompt.md").write_text("gemini prompt\n", encoding="utf-8")
-        (tmp / ".env.autonomy").write_text("OPENAI_API_KEY=test\nGEMINI_API_KEY=test\n", encoding="utf-8")
+        impl = tmp / "impl_repo"
+        test = tmp / "test_repo"
+        impl.mkdir(parents=True, exist_ok=True)
+        test.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "-C", str(impl), "init"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(test), "init"], check=True, capture_output=True)
+        (tmp / ".env.autonomy").write_text(
+            f"OPENAI_API_KEY=test\nGEMINI_API_KEY=test\nORXAQ_IMPL_REPO={impl}\nORXAQ_TEST_REPO={test}\n",
+            encoding="utf-8",
+        )
         return tmp
 
     def test_manager_config_defaults(self):
@@ -138,6 +148,21 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(payload["clean"])
             self.assertEqual(len(payload["checks"]), 2)
 
+    def test_preflight_allow_dirty_still_requires_repositories(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                "OPENAI_API_KEY=test\nGEMINI_API_KEY=test\nORXAQ_IMPL_REPO=/tmp/does-not-exist\nORXAQ_TEST_REPO=/tmp/also-missing\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.ensure_runtime"):
+                payload = manager.preflight(cfg, require_clean=False)
+            self.assertFalse(payload["clean"])
+            self.assertEqual(len(payload["checks"]), 2)
+            self.assertTrue(payload["checks"][0]["message"].startswith("missing repository"))
+
     def test_install_keepalive_macos_uses_launch_agent(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -226,6 +251,9 @@ class ManagerTests(unittest.TestCase):
             root = self._build_root(pathlib.Path(td))
             cfg = manager.ManagerConfig.from_root(root)
             with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager.preflight",
+                return_value={"clean": True, "runtime": "ok", "checks": []},
+            ), mock.patch(
                 "orxaq_autonomy.manager.start_background"
             ), mock.patch(
                 "orxaq_autonomy.manager.install_keepalive",
@@ -243,6 +271,7 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertTrue(pathlib.Path(payload["workspace"]).exists())
             self.assertTrue(pathlib.Path(payload["startup_packet"]).exists())
+            self.assertFalse(payload["workspace_reused"])
             startup_packet_text = pathlib.Path(payload["startup_packet"]).read_text(encoding="utf-8")
             self.assertIn("codex prompt", startup_packet_text)
             self.assertIn("gemini prompt", startup_packet_text)
@@ -264,6 +293,36 @@ class ManagerTests(unittest.TestCase):
                 )
             self.assertFalse(payload["ok"])
             self.assertEqual(payload["reason"], "preflight_failed")
+
+    def test_bootstrap_background_reuses_existing_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            existing_workspace = root / "orxaq-dual-agent.code-workspace"
+            existing_workspace.write_text("existing\n", encoding="utf-8")
+            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager.preflight",
+                return_value={"clean": True, "runtime": "ok", "checks": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.start_background"
+            ), mock.patch(
+                "orxaq_autonomy.manager.install_keepalive",
+                return_value="keepalive-label",
+            ), mock.patch(
+                "orxaq_autonomy.manager.open_in_ide",
+                return_value="opened",
+            ), mock.patch(
+                "orxaq_autonomy.manager.generate_workspace"
+            ) as generate_workspace:
+                payload = manager.bootstrap_background(
+                    cfg,
+                    allow_dirty=True,
+                    install_keepalive_job=True,
+                    ide="vscode",
+                )
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["workspace_reused"])
+            generate_workspace.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -249,16 +249,29 @@ def ensure_runtime(config: ManagerConfig) -> None:
 
 
 def _repo_is_clean(repo: Path) -> tuple[bool, str]:
-    if not repo.exists():
-        return False, f"missing repository: {repo}"
-    inside = subprocess.run(["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
-    if inside.returncode != 0:
-        return False, f"not a git repo: {repo}"
+    ok, message = _repo_basic_check(repo)
+    if not ok:
+        return False, message
     dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
     if dirty.returncode != 0:
         return False, f"unable to inspect git status: {repo}"
     if dirty.stdout.strip():
         return False, f"repo has local changes: {repo}"
+    return True, "ok"
+
+
+def _repo_basic_check(repo: Path) -> tuple[bool, str]:
+    if not repo.exists():
+        return False, f"missing repository: {repo}"
+    if not repo.is_dir():
+        return False, f"repository path is not a directory: {repo}"
+    inside = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if inside.returncode != 0:
+        return False, f"not a git repo: {repo}"
     return True, "ok"
 
 
@@ -271,12 +284,14 @@ def preflight(config: ManagerConfig, *, require_clean: bool = True) -> dict[str,
         "clean": True,
         "checks": [],
     }
-    if require_clean:
-        for repo in (config.impl_repo, config.test_repo):
+    for repo in (config.impl_repo, config.test_repo):
+        if require_clean:
             ok, message = _repo_is_clean(repo)
-            result["checks"].append({"repo": str(repo), "ok": ok, "message": message})
-            if not ok:
-                result["clean"] = False
+        else:
+            ok, message = _repo_basic_check(repo)
+        result["checks"].append({"repo": str(repo), "ok": ok, "message": message})
+        if not ok:
+            result["clean"] = False
     return result
 
 
@@ -708,20 +723,24 @@ def bootstrap_background(
     ide: str | None = "vscode",
     workspace_filename: str = "orxaq-dual-agent.code-workspace",
 ) -> dict[str, Any]:
-    workspace_file = generate_workspace(
-        config.root_dir,
-        config.impl_repo,
-        config.test_repo,
-        (config.root_dir / workspace_filename).resolve(),
-    )
     preflight_payload = preflight(config, require_clean=not allow_dirty)
     if not preflight_payload.get("clean", True):
         return {
             "ok": False,
             "reason": "preflight_failed",
             "preflight": preflight_payload,
-            "workspace": str(workspace_file),
+            "workspace": str((config.root_dir / workspace_filename).resolve()),
         }
+
+    workspace_file = (config.root_dir / workspace_filename).resolve()
+    workspace_reused = workspace_file.exists()
+    if not workspace_reused:
+        workspace_file = generate_workspace(
+            config.root_dir,
+            config.impl_repo,
+            config.test_repo,
+            workspace_file,
+        )
 
     start_background(config)
     keepalive_info: dict[str, Any] = {"requested": install_keepalive_job, "active": False, "label": "", "error": ""}
@@ -741,6 +760,7 @@ def bootstrap_background(
     return {
         "ok": True,
         "workspace": str(workspace_file),
+        "workspace_reused": workspace_reused,
         "preflight": preflight_payload,
         "supervisor": status_snapshot(config),
         "keepalive": keepalive_info,

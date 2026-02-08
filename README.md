@@ -116,6 +116,8 @@ make bootstrap
 
 `make bootstrap` will:
 - generate the dual-repo workspace,
+- reuse existing `orxaq-dual-agent.code-workspace` if already present,
+- verify implementation/test repos exist and are valid git repositories,
 - run preflight checks (dirty repos allowed by default),
 - start the autonomy supervisor,
 - install keepalive,

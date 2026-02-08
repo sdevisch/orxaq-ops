@@ -67,6 +67,7 @@ make bootstrap
 ```
 
 This performs workspace generation, preflight, supervisor start, keepalive install, IDE open, and writes `artifacts/autonomy/startup_packet.md` with Codex/Gemini startup prompts.
+If `orxaq-dual-agent.code-workspace` already exists, bootstrap reuses it.
 
 1. Preflight (auth, binaries, repo checks).
 
