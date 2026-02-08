@@ -74,80 +74,95 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
 
-    if args.command == "run":
-        return run_foreground(cfg)
-    if args.command == "supervise":
-        return supervise_foreground(cfg)
-    if args.command == "start":
-        start_background(cfg)
-        return 0
-    if args.command == "stop":
-        stop_background(cfg)
-        return 0
-    if args.command == "ensure":
-        ensure_background(cfg)
-        return 0
-    if args.command == "status":
-        print(json.dumps(status_snapshot(cfg), indent=2, sort_keys=True))
-        logs = tail_logs(cfg)
-        if logs:
-            print("--- logs ---")
-            print(logs)
-        return 0
-    if args.command == "health":
-        print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
-        return 0
-    if args.command == "preflight":
-        payload = preflight(cfg, require_clean=not args.allow_dirty)
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        if payload.get("clean", True):
+    try:
+        if args.command == "run":
+            return run_foreground(cfg)
+        if args.command == "supervise":
+            return supervise_foreground(cfg)
+        if args.command == "start":
+            start_background(cfg)
             return 0
-        return 1
-    if args.command == "reset":
-        reset_state(cfg)
-        print(f"cleared state file: {cfg.state_file}")
-        return 0
-    if args.command == "logs":
-        print(tail_logs(cfg, lines=200))
-        return 0
-    if args.command == "install-keepalive":
-        label = install_keepalive(cfg)
-        print(f"installed keepalive: {label}")
-        return 0
-    if args.command == "uninstall-keepalive":
-        label = uninstall_keepalive(cfg)
-        print(f"removed keepalive: {label}")
-        return 0
-    if args.command == "keepalive-status":
-        print(json.dumps(keepalive_status(cfg), indent=2, sort_keys=True))
-        return 0
-    if args.command == "init-skill-protocol":
-        out = (cfg.root_dir / args.output).resolve()
-        write_default_skill_protocol(out)
-        print(f"wrote skill protocol: {out}")
-        return 0
-    if args.command == "workspace":
-        out = (cfg.root_dir / args.output).resolve()
-        created = generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, out)
-        print(f"workspace generated: {created}")
-        return 0
-    if args.command == "open-ide":
-        ws = (cfg.root_dir / args.workspace).resolve()
-        if not ws.exists() and args.ide in {"vscode", "cursor"}:
-            generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, ws)
-        print(open_in_ide(ide=args.ide, root=cfg.root_dir, workspace_file=ws))
-        return 0
-    if args.command == "bootstrap":
-        ide = None if args.ide == "none" else args.ide
-        payload = bootstrap_background(
-            cfg,
-            allow_dirty=not args.require_clean,
-            install_keepalive_job=not args.skip_keepalive,
-            ide=ide,
-            workspace_filename=args.workspace,
+        if args.command == "stop":
+            stop_background(cfg)
+            return 0
+        if args.command == "ensure":
+            ensure_background(cfg)
+            return 0
+        if args.command == "status":
+            print(json.dumps(status_snapshot(cfg), indent=2, sort_keys=True))
+            logs = tail_logs(cfg)
+            if logs:
+                print("--- logs ---")
+                print(logs)
+            return 0
+        if args.command == "health":
+            print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "preflight":
+            payload = preflight(cfg, require_clean=not args.allow_dirty)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            if payload.get("clean", True):
+                return 0
+            return 1
+        if args.command == "reset":
+            reset_state(cfg)
+            print(f"cleared state file: {cfg.state_file}")
+            return 0
+        if args.command == "logs":
+            print(tail_logs(cfg, lines=200))
+            return 0
+        if args.command == "install-keepalive":
+            label = install_keepalive(cfg)
+            print(f"installed keepalive: {label}")
+            return 0
+        if args.command == "uninstall-keepalive":
+            label = uninstall_keepalive(cfg)
+            print(f"removed keepalive: {label}")
+            return 0
+        if args.command == "keepalive-status":
+            print(json.dumps(keepalive_status(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "init-skill-protocol":
+            out = (cfg.root_dir / args.output).resolve()
+            write_default_skill_protocol(out)
+            print(f"wrote skill protocol: {out}")
+            return 0
+        if args.command == "workspace":
+            out = (cfg.root_dir / args.output).resolve()
+            created = generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, out)
+            print(f"workspace generated: {created}")
+            return 0
+        if args.command == "open-ide":
+            ws = (cfg.root_dir / args.workspace).resolve()
+            if not ws.exists() and args.ide in {"vscode", "cursor"}:
+                generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, ws)
+            print(open_in_ide(ide=args.ide, root=cfg.root_dir, workspace_file=ws))
+            return 0
+        if args.command == "bootstrap":
+            ide = None if args.ide == "none" else args.ide
+            payload = bootstrap_background(
+                cfg,
+                allow_dirty=not args.require_clean,
+                install_keepalive_job=not args.skip_keepalive,
+                ide=ide,
+                workspace_filename=args.workspace,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok") else 1
+    except (FileNotFoundError, RuntimeError) as err:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": str(err),
+                    "command": args.command,
+                    "root": str(cfg.root_dir),
+                },
+                indent=2,
+                sort_keys=True,
+            )
         )
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0 if payload.get("ok") else 1
+        return 1
 
     return 2
 

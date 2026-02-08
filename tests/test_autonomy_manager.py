@@ -54,6 +54,22 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(parsed["GEMINI_API_KEY"], "test")
             self.assertEqual(parsed["OPENAI_API_KEY"], "abc")
 
+    def test_runtime_diagnostics_reports_missing_cli(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                "OPENAI_API_KEY=test\nGEMINI_API_KEY=test\nORXAQ_AUTONOMY_CODEX_CMD=missing_codex_cmd\nORXAQ_AUTONOMY_GEMINI_CMD=missing_gemini_cmd\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            diagnostics = manager.runtime_diagnostics(cfg)
+            self.assertFalse(diagnostics["ok"])
+            self.assertGreaterEqual(len(diagnostics["errors"]), 2)
+            joined = " ".join(diagnostics["errors"])
+            self.assertIn("Codex CLI not found", joined)
+            self.assertIn("Gemini CLI not found", joined)
+
     def test_runner_argv_contains_skill_and_validation(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -63,6 +79,8 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--validate-command", argv)
             self.assertIn("--codex-startup-prompt-file", argv)
             self.assertIn("--gemini-startup-prompt-file", argv)
+            self.assertIn("--codex-cmd", argv)
+            self.assertIn("--gemini-cmd", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -140,13 +158,17 @@ class ManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
             cfg = manager.ManagerConfig.from_root(root)
-            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+            with mock.patch(
+                "orxaq_autonomy.manager.runtime_diagnostics",
+                return_value={"ok": True, "checks": [], "errors": [], "recommendations": []},
+            ), mock.patch(
                 "orxaq_autonomy.manager._repo_is_clean",
                 side_effect=[(False, "dirty"), (True, "ok")],
             ):
                 payload = manager.preflight(cfg, require_clean=True)
             self.assertFalse(payload["clean"])
             self.assertEqual(len(payload["checks"]), 2)
+            self.assertEqual(payload["runtime"], "ok")
 
     def test_preflight_allow_dirty_still_requires_repositories(self):
         with tempfile.TemporaryDirectory() as td:
@@ -157,11 +179,33 @@ class ManagerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             cfg = manager.ManagerConfig.from_root(root)
-            with mock.patch("orxaq_autonomy.manager.ensure_runtime"):
+            with mock.patch(
+                "orxaq_autonomy.manager.runtime_diagnostics",
+                return_value={"ok": True, "checks": [], "errors": [], "recommendations": []},
+            ):
                 payload = manager.preflight(cfg, require_clean=False)
             self.assertFalse(payload["clean"])
             self.assertEqual(len(payload["checks"]), 2)
             self.assertTrue(payload["checks"][0]["message"].startswith("missing repository"))
+
+    def test_preflight_reports_runtime_failures_without_exception(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.runtime_diagnostics",
+                return_value={
+                    "ok": False,
+                    "checks": [{"name": "codex_cli", "ok": False, "message": "missing"}],
+                    "errors": ["Codex CLI not found"],
+                    "recommendations": ["Install codex CLI"],
+                },
+            ):
+                payload = manager.preflight(cfg, require_clean=False)
+            self.assertEqual(payload["runtime"], "error")
+            self.assertFalse(payload["clean"])
+            self.assertIn("Codex CLI not found", payload["runtime_errors"])
+            self.assertIn("Install codex CLI", payload["runtime_recommendations"])
 
     def test_install_keepalive_macos_uses_launch_agent(self):
         with tempfile.TemporaryDirectory() as td:
@@ -250,7 +294,7 @@ class ManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
             cfg = manager.ManagerConfig.from_root(root)
-            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+            with mock.patch(
                 "orxaq_autonomy.manager.preflight",
                 return_value={"clean": True, "runtime": "ok", "checks": []},
             ), mock.patch(
@@ -281,9 +325,9 @@ class ManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
             cfg = manager.ManagerConfig.from_root(root)
-            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+            with mock.patch(
                 "orxaq_autonomy.manager.preflight",
-                return_value={"clean": False, "runtime": "ok", "checks": []},
+                return_value={"clean": False, "runtime": "error", "checks": []},
             ):
                 payload = manager.bootstrap_background(
                     cfg,
@@ -293,6 +337,7 @@ class ManagerTests(unittest.TestCase):
                 )
             self.assertFalse(payload["ok"])
             self.assertEqual(payload["reason"], "preflight_failed")
+            self.assertTrue(pathlib.Path(payload["startup_packet"]).exists())
 
     def test_bootstrap_background_reuses_existing_workspace(self):
         with tempfile.TemporaryDirectory() as td:
@@ -300,7 +345,7 @@ class ManagerTests(unittest.TestCase):
             cfg = manager.ManagerConfig.from_root(root)
             existing_workspace = root / "orxaq-dual-agent.code-workspace"
             existing_workspace.write_text("existing\n", encoding="utf-8")
-            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+            with mock.patch(
                 "orxaq_autonomy.manager.preflight",
                 return_value={"clean": True, "runtime": "ok", "checks": []},
             ), mock.patch(
@@ -323,6 +368,27 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertTrue(payload["workspace_reused"])
             generate_workspace.assert_not_called()
+
+    def test_bootstrap_background_start_failure_is_structured(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.preflight",
+                return_value={"clean": True, "runtime": "ok", "checks": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.start_background",
+                side_effect=RuntimeError("codex CLI not found"),
+            ):
+                payload = manager.bootstrap_background(
+                    cfg,
+                    allow_dirty=True,
+                    install_keepalive_job=False,
+                    ide=None,
+                )
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["reason"], "start_failed")
+            self.assertIn("codex CLI not found", payload["error"])
 
 
 if __name__ == "__main__":

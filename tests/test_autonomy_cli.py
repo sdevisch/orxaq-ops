@@ -76,6 +76,14 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "bootstrap", "--require-clean", "--skip-keepalive", "--ide", "none"])
             self.assertEqual(rc, 1)
 
+    def test_cli_returns_structured_error_on_runtime_exception(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.start_background", side_effect=RuntimeError("codex missing")):
+                rc = cli.main(["--root", str(root), "start"])
+            self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

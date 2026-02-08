@@ -91,10 +91,31 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return data
 
 
-def _has_codex_auth(env: dict[str, str]) -> bool:
+def _resolve_binary(binary: str) -> str | None:
+    raw = binary.strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        if path.exists() and path.is_file():
+            return str(path)
+        return None
+    resolved = shutil.which(raw)
+    if resolved:
+        return resolved
+    return None
+
+
+def _has_codex_auth(env: dict[str, str], codex_cmd: str) -> bool:
     if env.get("OPENAI_API_KEY") and env.get("OPENAI_API_KEY") != "replace_me":
         return True
-    status = subprocess.run(["codex", "login", "status"], check=False, capture_output=True)
+    resolved = _resolve_binary(codex_cmd)
+    if not resolved:
+        return False
+    try:
+        status = subprocess.run([resolved, "login", "status"], check=False, capture_output=True, timeout=10)
+    except Exception:
+        return False
     return status.returncode == 0
 
 
@@ -157,6 +178,10 @@ class ManagerConfig:
     mcp_context_file: Path | None
     codex_startup_prompt_file: Path | None
     gemini_startup_prompt_file: Path | None
+    codex_cmd: str
+    gemini_cmd: str
+    codex_model: str | None
+    gemini_model: str | None
 
     @classmethod
     def from_root(cls, root: Path, env_file_override: Path | None = None) -> "ManagerConfig":
@@ -193,6 +218,10 @@ class ManagerConfig:
         ).strip()
         codex_prompt_file = Path(codex_prompt_raw).resolve() if codex_prompt_raw else None
         gemini_prompt_file = Path(gemini_prompt_raw).resolve() if gemini_prompt_raw else None
+        codex_cmd = merged.get("ORXAQ_AUTONOMY_CODEX_CMD", "codex").strip() or "codex"
+        gemini_cmd = merged.get("ORXAQ_AUTONOMY_GEMINI_CMD", "gemini").strip() or "gemini"
+        codex_model = merged.get("ORXAQ_AUTONOMY_CODEX_MODEL", "").strip() or None
+        gemini_model = merged.get("ORXAQ_AUTONOMY_GEMINI_MODEL", "").strip() or None
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
         validate_commands = [chunk.strip() for chunk in validate_raw.split(";") if chunk.strip()]
@@ -232,20 +261,95 @@ class ManagerConfig:
             mcp_context_file=mcp_context,
             codex_startup_prompt_file=codex_prompt_file,
             gemini_startup_prompt_file=gemini_prompt_file,
+            codex_cmd=codex_cmd,
+            gemini_cmd=gemini_cmd,
+            codex_model=codex_model,
+            gemini_model=gemini_model,
         )
+
+
+def runtime_diagnostics(config: ManagerConfig) -> dict[str, Any]:
+    env = _load_env_file(config.env_file)
+    checks: list[dict[str, Any]] = []
+    errors: list[str] = []
+    recommendations: list[str] = []
+
+    codex_path = _resolve_binary(config.codex_cmd)
+    if codex_path:
+        checks.append(
+            {
+                "name": "codex_cli",
+                "ok": True,
+                "message": f"resolved {config.codex_cmd!r} to {codex_path}",
+            }
+        )
+    else:
+        msg = f"Codex CLI not found for command '{config.codex_cmd}'."
+        checks.append({"name": "codex_cli", "ok": False, "message": msg})
+        errors.append(msg)
+        recommendations.append("Install Codex CLI and ensure it is available in PATH.")
+        recommendations.append(f"Or set ORXAQ_AUTONOMY_CODEX_CMD in {config.env_file} to an absolute binary path.")
+
+    gemini_path = _resolve_binary(config.gemini_cmd)
+    if gemini_path:
+        checks.append(
+            {
+                "name": "gemini_cli",
+                "ok": True,
+                "message": f"resolved {config.gemini_cmd!r} to {gemini_path}",
+            }
+        )
+    else:
+        msg = f"Gemini CLI not found for command '{config.gemini_cmd}'."
+        checks.append({"name": "gemini_cli", "ok": False, "message": msg})
+        errors.append(msg)
+        recommendations.append("Install Gemini CLI and ensure it is available in PATH.")
+        recommendations.append(f"Or set ORXAQ_AUTONOMY_GEMINI_CMD in {config.env_file} to an absolute binary path.")
+
+    codex_auth_ok = _has_codex_auth(env, config.codex_cmd)
+    checks.append(
+        {
+            "name": "codex_auth",
+            "ok": codex_auth_ok,
+            "message": "OPENAI_API_KEY present or `codex login status` succeeded.",
+        }
+    )
+    if not codex_auth_ok:
+        errors.append("Codex auth missing.")
+        recommendations.append("Set OPENAI_API_KEY in .env.autonomy or run `codex login`.")
+
+    gemini_auth_ok = _has_gemini_auth(env)
+    checks.append(
+        {
+            "name": "gemini_auth",
+            "ok": gemini_auth_ok,
+            "message": "GEMINI_API_KEY / Google auth config present.",
+        }
+    )
+    if not gemini_auth_ok:
+        errors.append("Gemini auth missing.")
+        recommendations.append("Set GEMINI_API_KEY in .env.autonomy or configure ~/.gemini/settings.json.")
+
+    unique_recommendations: list[str] = []
+    for recommendation in recommendations:
+        if recommendation not in unique_recommendations:
+            unique_recommendations.append(recommendation)
+
+    return {
+        "ok": len(errors) == 0,
+        "checks": checks,
+        "errors": errors,
+        "recommendations": unique_recommendations,
+    }
 
 
 def ensure_runtime(config: ManagerConfig) -> None:
     config.artifacts_dir.mkdir(parents=True, exist_ok=True)
-    if shutil.which("codex") is None:
-        raise RuntimeError("codex CLI not found in PATH")
-    if shutil.which("gemini") is None:
-        raise RuntimeError("gemini CLI not found in PATH")
-    env = _load_env_file(config.env_file)
-    if not _has_codex_auth(env):
-        raise RuntimeError("Codex auth missing. Configure OPENAI_API_KEY or run `codex login`.")
-    if not _has_gemini_auth(env):
-        raise RuntimeError("Gemini auth missing. Configure GEMINI_API_KEY or ~/.gemini/settings.json.")
+    diagnostics = runtime_diagnostics(config)
+    if diagnostics["ok"]:
+        return
+    message = "; ".join(diagnostics["errors"])
+    raise RuntimeError(message)
 
 
 def _repo_is_clean(repo: Path) -> tuple[bool, str]:
@@ -276,12 +380,16 @@ def _repo_basic_check(repo: Path) -> tuple[bool, str]:
 
 
 def preflight(config: ManagerConfig, *, require_clean: bool = True) -> dict[str, Any]:
-    ensure_runtime(config)
+    diagnostics = runtime_diagnostics(config)
+    runtime_ok = bool(diagnostics["ok"])
     result: dict[str, Any] = {
-        "runtime": "ok",
+        "runtime": "ok" if runtime_ok else "error",
+        "runtime_checks": diagnostics["checks"],
+        "runtime_errors": diagnostics["errors"],
+        "runtime_recommendations": diagnostics["recommendations"],
         "impl_repo": str(config.impl_repo),
         "test_repo": str(config.test_repo),
-        "clean": True,
+        "clean": runtime_ok,
         "checks": [],
     }
     for repo in (config.impl_repo, config.test_repo):
@@ -340,6 +448,11 @@ def runner_argv(config: ManagerConfig) -> list[str]:
     ]
     if config.mcp_context_file is not None:
         args.extend(["--mcp-context-file", str(config.mcp_context_file)])
+    args.extend(["--codex-cmd", config.codex_cmd, "--gemini-cmd", config.gemini_cmd])
+    if config.codex_model:
+        args.extend(["--codex-model", config.codex_model])
+    if config.gemini_model:
+        args.extend(["--gemini-model", config.gemini_model])
     if config.codex_startup_prompt_file is not None:
         args.extend(["--codex-startup-prompt-file", str(config.codex_startup_prompt_file)])
     if config.gemini_startup_prompt_file is not None:
@@ -723,15 +836,6 @@ def bootstrap_background(
     ide: str | None = "vscode",
     workspace_filename: str = "orxaq-dual-agent.code-workspace",
 ) -> dict[str, Any]:
-    preflight_payload = preflight(config, require_clean=not allow_dirty)
-    if not preflight_payload.get("clean", True):
-        return {
-            "ok": False,
-            "reason": "preflight_failed",
-            "preflight": preflight_payload,
-            "workspace": str((config.root_dir / workspace_filename).resolve()),
-        }
-
     workspace_file = (config.root_dir / workspace_filename).resolve()
     workspace_reused = workspace_file.exists()
     if not workspace_reused:
@@ -741,8 +845,31 @@ def bootstrap_background(
             config.test_repo,
             workspace_file,
         )
+    startup_packet = write_startup_packet(config, workspace_file=workspace_file)
 
-    start_background(config)
+    preflight_payload = preflight(config, require_clean=not allow_dirty)
+    if not preflight_payload.get("clean", True):
+        return {
+            "ok": False,
+            "reason": "preflight_failed",
+            "preflight": preflight_payload,
+            "workspace": str(workspace_file),
+            "workspace_reused": workspace_reused,
+            "startup_packet": str(startup_packet),
+        }
+
+    try:
+        start_background(config)
+    except Exception as err:
+        return {
+            "ok": False,
+            "reason": "start_failed",
+            "error": str(err),
+            "preflight": preflight_payload,
+            "workspace": str(workspace_file),
+            "workspace_reused": workspace_reused,
+            "startup_packet": str(startup_packet),
+        }
     keepalive_info: dict[str, Any] = {"requested": install_keepalive_job, "active": False, "label": "", "error": ""}
     if install_keepalive_job:
         try:
@@ -752,11 +879,13 @@ def bootstrap_background(
             keepalive_info["error"] = str(err)
 
     ide_result = ""
+    ide_error = ""
     if ide:
         ws = workspace_file if ide in {"vscode", "cursor"} else None
-        ide_result = open_in_ide(ide=ide, root=config.root_dir, workspace_file=ws)
-
-    startup_packet = write_startup_packet(config, workspace_file=workspace_file)
+        try:
+            ide_result = open_in_ide(ide=ide, root=config.root_dir, workspace_file=ws)
+        except Exception as err:  # pragma: no cover - depends on local IDE installation
+            ide_error = str(err)
     return {
         "ok": True,
         "workspace": str(workspace_file),
@@ -764,7 +893,7 @@ def bootstrap_background(
         "preflight": preflight_payload,
         "supervisor": status_snapshot(config),
         "keepalive": keepalive_info,
-        "ide": {"requested": ide or "none", "result": ide_result},
+        "ide": {"requested": ide or "none", "result": ide_result, "error": ide_error},
         "startup_packet": str(startup_packet),
         "prompts": {
             "codex": str(config.codex_startup_prompt_file) if config.codex_startup_prompt_file else "",

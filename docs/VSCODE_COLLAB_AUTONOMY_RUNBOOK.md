@@ -37,6 +37,10 @@ Set repository paths:
 - `ORXAQ_IMPL_REPO=/Users/sdevisch/dev/orxaq`
 - `ORXAQ_TEST_REPO=/Users/sdevisch/dev/orxaq_gemini`
 
+Optional CLI binary overrides:
+- `ORXAQ_AUTONOMY_CODEX_CMD` (absolute path or command name)
+- `ORXAQ_AUTONOMY_GEMINI_CMD` (absolute path or command name)
+
 ## VS Code Transition
 
 1. Generate dual-repo workspace.
@@ -68,6 +72,7 @@ make bootstrap
 
 This performs workspace generation, preflight, supervisor start, keepalive install, IDE open, and writes `artifacts/autonomy/startup_packet.md` with Codex/Gemini startup prompts.
 If `orxaq-dual-agent.code-workspace` already exists, bootstrap reuses it.
+If Codex/Gemini CLI or auth is missing, bootstrap returns structured JSON with remediation steps (no Python traceback).
 
 1. Preflight (auth, binaries, repo checks).
 

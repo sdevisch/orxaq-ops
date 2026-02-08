@@ -59,6 +59,8 @@ Optional reusable context controls:
 - `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
 - `ORXAQ_AUTONOMY_CODEX_PROMPT_FILE` (default `config/prompts/codex_impl_prompt.md`)
 - `ORXAQ_AUTONOMY_GEMINI_PROMPT_FILE` (default `config/prompts/gemini_test_prompt.md`)
+- `ORXAQ_AUTONOMY_CODEX_CMD` (default `codex`; can be absolute path)
+- `ORXAQ_AUTONOMY_GEMINI_CMD` (default `gemini`; can be absolute path)
 
 ## Commands
 
@@ -118,6 +120,7 @@ make bootstrap
 - generate the dual-repo workspace,
 - reuse existing `orxaq-dual-agent.code-workspace` if already present,
 - verify implementation/test repos exist and are valid git repositories,
+- run runtime diagnostics for CLI/auth and print remediation without crashing when missing,
 - run preflight checks (dirty repos allowed by default),
 - start the autonomy supervisor,
 - install keepalive,
