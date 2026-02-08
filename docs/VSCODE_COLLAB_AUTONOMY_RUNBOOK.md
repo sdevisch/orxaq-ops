@@ -114,6 +114,13 @@ make dashboard-logs
 make dashboard-stop
 ```
 
+Dashboard operator controls:
+- Lane controls in the UI can `ensure`, `start`, or `stop` all enabled lanes, or a specific lane id.
+- Conversation feed supports owner/lane/type/text filters and tail-limited inspection without leaving the UI.
+- API equivalents:
+  - `GET /api/lanes/action?action=ensure|start|stop&lane=<optional-lane-id>`
+  - `GET /api/conversations?lines=200&owner=<owner>&lane=<lane-id>&event_type=<type>&contains=<text>&tail=<n>`
+
 4. Enable host keepalive for restart resilience.
 
 ```bash

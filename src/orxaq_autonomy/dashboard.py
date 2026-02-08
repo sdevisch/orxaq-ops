@@ -7,16 +7,19 @@ import threading
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from .manager import (
     ManagerConfig,
     conversations_snapshot,
+    ensure_lanes_background,
     health_snapshot,
     lane_status_snapshot,
     monitor_snapshot,
+    start_lanes_background,
     status_snapshot,
+    stop_lanes_background,
     tail_logs,
 )
 
@@ -115,6 +118,15 @@ def _dashboard_html(refresh_sec: int) -> str:
       cursor: pointer;
     }}
     button:hover {{ border-color: var(--info); box-shadow: 0 0 0 4px var(--ring); }}
+    input {{
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 6px 9px;
+      font-size: .82rem;
+      background: #fff;
+      color: var(--ink);
+      min-width: 0;
+    }}
     .grid {{
       display: grid;
       grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -232,6 +244,24 @@ def _dashboard_html(refresh_sec: int) -> str:
     .bad {{ color: var(--bad); font-weight: 700; }}
     .ok {{ color: var(--ok); font-weight: 700; }}
     .mono {{ font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace; font-size: .81rem; }}
+    .inline-controls {{
+      display: grid;
+      gap: 8px;
+    }}
+    .fields {{
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }}
+    .fields .full {{
+      grid-column: 1 / -1;
+    }}
+    .actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }}
     @media (min-width: 940px) {{
       .card.span-6 {{ grid-column: span 6; }}
       .card.span-4 {{ grid-column: span 4; }}
@@ -299,11 +329,33 @@ def _dashboard_html(refresh_sec: int) -> str:
       <article class="card span-6">
         <h2>Parallel Lanes</h2>
         <div id="laneSummary" class="mono">lanes: loading...</div>
+        <div class="inline-controls">
+          <div class="actions">
+            <input id="laneTarget" type="text" placeholder="lane id (optional)" />
+            <button id="laneEnsure">Ensure</button>
+            <button id="laneStart">Start</button>
+            <button id="laneStop">Stop</button>
+          </div>
+          <div id="laneActionStatus" class="mono">lane action: idle</div>
+        </div>
         <div id="laneList" class="repo"></div>
       </article>
 
       <article class="card span-6">
         <h2>Conversations</h2>
+        <div class="inline-controls">
+          <div class="fields">
+            <input id="convOwner" type="text" placeholder="owner" />
+            <input id="convLane" type="text" placeholder="lane id" />
+            <input id="convType" type="text" placeholder="event type" />
+            <input id="convTail" type="number" min="0" step="1" placeholder="tail events" />
+            <input id="convContains" class="full" type="text" placeholder="contains text" />
+          </div>
+          <div class="actions">
+            <button id="convApply">Apply filters</button>
+            <button id="convClear">Clear filters</button>
+          </div>
+        </div>
         <div id="conversationSummary" class="mono">events: loading...</div>
         <div id="conversationFeed" class="feed"></div>
       </article>
@@ -320,6 +372,13 @@ def _dashboard_html(refresh_sec: int) -> str:
     const REFRESH_MS = {refresh_ms};
     let paused = false;
     let timer = null;
+    const conversationFilters = {{
+      owner: "",
+      lane: "",
+      event_type: "",
+      contains: "",
+      tail: 0,
+    }};
 
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
@@ -328,6 +387,33 @@ def _dashboard_html(refresh_sec: int) -> str:
       return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }}
     function stateBadge(ok) {{ return ok ? '<span class="ok">ok</span>' : '<span class="bad">error</span>'; }}
+    function parseTail(value) {{
+      const parsed = Number(value || 0);
+      if (!Number.isFinite(parsed) || parsed < 0) return 0;
+      return Math.floor(parsed);
+    }}
+    function conversationPath() {{
+      const query = new URLSearchParams();
+      query.set("lines", "200");
+      if (conversationFilters.owner) query.set("owner", conversationFilters.owner);
+      if (conversationFilters.lane) query.set("lane", conversationFilters.lane);
+      if (conversationFilters.event_type) query.set("event_type", conversationFilters.event_type);
+      if (conversationFilters.contains) query.set("contains", conversationFilters.contains);
+      if (conversationFilters.tail > 0) query.set("tail", String(conversationFilters.tail));
+      return `/api/conversations?${{query.toString()}}`;
+    }}
+    function syncConversationInputs() {{
+      byId("convOwner").value = conversationFilters.owner;
+      byId("convLane").value = conversationFilters.lane;
+      byId("convType").value = conversationFilters.event_type;
+      byId("convContains").value = conversationFilters.contains;
+      byId("convTail").value = conversationFilters.tail > 0 ? String(conversationFilters.tail) : "";
+    }}
+    function setLaneActionStatus(message, isError = false) {{
+      const el = byId("laneActionStatus");
+      el.textContent = `lane action: ${{message}}`;
+      el.className = isError ? "mono bad" : "mono";
+    }}
 
     function repoMarkup(repo) {{
       if (!repo) return '<div class="line bad">unavailable</div>';
@@ -499,12 +585,20 @@ def _dashboard_html(refresh_sec: int) -> str:
       const events = payload.events || [];
       const ownerCounts = payload.owner_counts || {{}};
       const sourceReports = payload.sources || [];
+      const filters = payload.filters || {{}};
       const failedSources = sourceReports.filter((source) => !source.ok).length;
       const healthySources = Math.max(sourceReports.length - failedSources, 0);
       const partial = payload.partial ? " · partial=true" : "";
       const errors = (payload.errors || []).length ? ` · errors=${{(payload.errors || []).length}}` : "";
+      const filterParts = [];
+      if (filters.owner) filterParts.push(`owner=${{filters.owner}}`);
+      if (filters.lane) filterParts.push(`lane=${{filters.lane}}`);
+      if (filters.event_type) filterParts.push(`type=${{filters.event_type}}`);
+      if (filters.contains) filterParts.push(`contains=${{filters.contains}}`);
+      if (Number(filters.tail || 0) > 0) filterParts.push(`tail=${{filters.tail}}`);
+      const filterLabel = filterParts.length ? ` · filters: ${{filterParts.join(", ")}}` : "";
       byId("conversationSummary").textContent =
-        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{healthySources}}/${{sourceReports.length}} healthy${{partial}}${{errors}}`;
+        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{healthySources}}/${{sourceReports.length}} healthy${{partial}}${{errors}}${{filterLabel}}`;
       if (!events.length) {{
         byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
         return;
@@ -540,10 +634,38 @@ def _dashboard_html(refresh_sec: int) -> str:
       }}
     }}
 
+    async function invokeLaneAction(action) {{
+      const laneTarget = String(byId("laneTarget").value || "").trim();
+      const query = new URLSearchParams();
+      query.set("action", action);
+      if (laneTarget) query.set("lane", laneTarget);
+      const result = await fetchJson(`/api/lanes/action?${{query.toString()}}`);
+      if (!result.ok || !result.payload) {{
+        setLaneActionStatus(`${{action}} failed: ${{result.error}}`, true);
+        return;
+      }}
+      const payload = result.payload || {{}};
+      const suffix = laneTarget ? ` lane=${{laneTarget}}` : "";
+      const failed = Number(payload.failed_count || 0);
+      if (action === "ensure") {{
+        setLaneActionStatus(
+          `ensure${{suffix}} started=${{payload.started_count || 0}} restarted=${{payload.restarted_count || 0}} failed=${{failed}}`,
+          failed > 0,
+        );
+      }} else if (action === "start") {{
+        setLaneActionStatus(`start${{suffix}} started=${{payload.started_count || 0}} failed=${{failed}}`, failed > 0);
+      }} else if (action === "stop") {{
+        setLaneActionStatus(`stop${{suffix}} stopped=${{payload.stopped_count || 0}}`);
+      }} else {{
+        setLaneActionStatus(`${{action}}${{suffix}} complete`);
+      }}
+      await refresh();
+    }}
+
     async function refresh() {{
       const [monitorResult, convResult, laneResult] = await Promise.all([
         fetchJson('/api/monitor'),
-        fetchJson('/api/conversations?lines=200'),
+        fetchJson(conversationPath()),
         fetchJson('/api/lanes'),
       ]);
 
@@ -596,12 +718,37 @@ def _dashboard_html(refresh_sec: int) -> str:
       timer = setInterval(() => {{ if (!paused) refresh(); }}, REFRESH_MS);
     }}
 
+    function applyConversationFilters() {{
+      conversationFilters.owner = String(byId("convOwner").value || "").trim();
+      conversationFilters.lane = String(byId("convLane").value || "").trim();
+      conversationFilters.event_type = String(byId("convType").value || "").trim();
+      conversationFilters.contains = String(byId("convContains").value || "").trim();
+      conversationFilters.tail = parseTail(byId("convTail").value);
+      refresh();
+    }}
+
+    function clearConversationFilters() {{
+      conversationFilters.owner = "";
+      conversationFilters.lane = "";
+      conversationFilters.event_type = "";
+      conversationFilters.contains = "";
+      conversationFilters.tail = 0;
+      syncConversationInputs();
+      refresh();
+    }}
+
     byId("refresh").addEventListener("click", refresh);
     byId("pause").addEventListener("click", () => {{
       paused = !paused;
       byId("pause").textContent = paused ? "Resume" : "Pause";
     }});
+    byId("convApply").addEventListener("click", applyConversationFilters);
+    byId("convClear").addEventListener("click", clearConversationFilters);
+    byId("laneEnsure").addEventListener("click", () => invokeLaneAction("ensure"));
+    byId("laneStart").addEventListener("click", () => invokeLaneAction("start"));
+    byId("laneStop").addEventListener("click", () => invokeLaneAction("stop"));
 
+    syncConversationInputs();
     refresh();
     schedule();
   </script>
@@ -661,17 +808,34 @@ def start_dashboard(
                 if parsed.path == "/api/monitor":
                     self._send_json(snapshot_provider())
                     return
+                if parsed.path == "/api/lanes/action":
+                    query = parse_qs(parsed.query)
+                    action = query.get("action", [""])[0]
+                    lane_id = query.get("lane", [""])[0]
+                    payload = _safe_lane_action(config, action=action, lane_id=lane_id)
+                    status = HTTPStatus.OK if payload.get("ok", False) else HTTPStatus.SERVICE_UNAVAILABLE
+                    self._send_json(payload, status=status)
+                    return
                 if parsed.path == "/api/lanes":
                     self._send_json(_safe_lane_status_snapshot(config))
                     return
                 if parsed.path == "/api/conversations":
                     query = parse_qs(parsed.query)
-                    raw_lines = query.get("lines", ["200"])[0]
-                    try:
-                        lines = max(1, min(2000, int(raw_lines)))
-                    except ValueError:
-                        lines = 200
-                    self._send_json(_safe_conversations_snapshot(config, lines=lines))
+                    lines = _parse_bounded_int(query, "lines", default=200, minimum=1, maximum=2000)
+                    tail = _parse_bounded_int(query, "tail", default=0, minimum=0, maximum=2000)
+                    include_lanes = _parse_bool(query, "include_lanes", default=True)
+                    self._send_json(
+                        _safe_conversations_snapshot(
+                            config,
+                            lines=lines,
+                            include_lanes=include_lanes,
+                            owner=query.get("owner", [""])[0],
+                            lane_id=query.get("lane", [""])[0],
+                            event_type=query.get("event_type", [""])[0],
+                            contains=query.get("contains", [""])[0],
+                            tail=tail,
+                        )
+                    )
                     return
                 if parsed.path == "/api/status":
                     self._send_json(status_snapshot(config))
@@ -681,11 +845,7 @@ def start_dashboard(
                     return
                 if parsed.path == "/api/logs":
                     query = parse_qs(parsed.query)
-                    raw_lines = query.get("lines", ["80"])[0]
-                    try:
-                        lines = max(1, min(500, int(raw_lines)))
-                    except ValueError:
-                        lines = 80
+                    lines = _parse_bounded_int(query, "lines", default=80, minimum=1, maximum=500)
                     self._send_text(tail_logs(config, lines=lines, latest_run_only=True))
                     return
                 self._send_text("Not found\n", status=HTTPStatus.NOT_FOUND)
@@ -713,6 +873,139 @@ def start_dashboard(
             browser_thread.join(timeout=0.5)
 
     return 0
+
+
+def _parse_bounded_int(
+    query: dict[str, list[str]],
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = query.get(key, [str(default)])[0]
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _parse_bool(query: dict[str, list[str]], key: str, *, default: bool) -> bool:
+    raw = query.get(key, [""])[0].strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _apply_conversation_filters(
+    payload: dict[str, Any],
+    *,
+    owner: str = "",
+    lane_id: str = "",
+    event_type: str = "",
+    contains: str = "",
+    tail: int = 0,
+) -> dict[str, Any]:
+    owner_filter = owner.strip().lower()
+    lane_filter = lane_id.strip().lower()
+    type_filter = event_type.strip().lower()
+    contains_filter = contains.strip().lower()
+
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        events = []
+
+    filtered: list[dict[str, Any]] = []
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        owner_value = str(item.get("owner", "")).strip().lower()
+        lane_value = str(item.get("lane_id", "")).strip().lower()
+        type_value = str(item.get("event_type", "")).strip().lower()
+        haystack = " ".join(
+            [
+                str(item.get("timestamp", "")),
+                str(item.get("owner", "")),
+                str(item.get("lane_id", "")),
+                str(item.get("task_id", "")),
+                str(item.get("event_type", "")),
+                str(item.get("content", "")),
+            ]
+        ).lower()
+        if owner_filter and owner_value != owner_filter:
+            continue
+        if lane_filter and lane_value != lane_filter:
+            continue
+        if type_filter and type_value != type_filter:
+            continue
+        if contains_filter and contains_filter not in haystack:
+            continue
+        filtered.append(item)
+
+    tail_count = max(0, int(tail))
+    if tail_count:
+        filtered = filtered[-tail_count:]
+
+    owner_counts: dict[str, int] = {}
+    for event in filtered:
+        event_owner = str(event.get("owner", "unknown")).strip() or "unknown"
+        owner_counts[event_owner] = owner_counts.get(event_owner, 0) + 1
+
+    result = dict(payload)
+    result["events"] = filtered
+    result["owner_counts"] = owner_counts
+    result["total_events"] = len(filtered)
+    result["unfiltered_total_events"] = len(events)
+    result["filters"] = {
+        "owner": owner.strip(),
+        "lane": lane_id.strip(),
+        "event_type": event_type.strip(),
+        "contains": contains.strip(),
+        "tail": tail_count,
+    }
+    return result
+
+
+def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") -> dict[str, Any]:
+    normalized_action = action.strip().lower()
+    normalized_lane = lane_id.strip() or None
+    try:
+        if normalized_action == "ensure":
+            payload = ensure_lanes_background(config)
+            payload["action"] = "ensure"
+            payload["lane"] = normalized_lane or ""
+            return payload
+        if normalized_action == "start":
+            payload = start_lanes_background(config, lane_id=normalized_lane)
+            payload["action"] = "start"
+            payload["lane"] = normalized_lane or ""
+            return payload
+        if normalized_action == "stop":
+            payload = stop_lanes_background(config, lane_id=normalized_lane)
+            payload["action"] = "stop"
+            payload["lane"] = normalized_lane or ""
+            payload["ok"] = True
+            payload.setdefault("failed_count", 0)
+            return payload
+        return {
+            "ok": False,
+            "action": normalized_action,
+            "lane": normalized_lane or "",
+            "error": "unsupported action",
+            "supported_actions": ["ensure", "start", "stop"],
+        }
+    except Exception as err:
+        return {
+            "ok": False,
+            "action": normalized_action,
+            "lane": normalized_lane or "",
+            "error": str(err),
+        }
 
 
 def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
@@ -795,9 +1088,27 @@ def _safe_lane_status_snapshot(config: ManagerConfig) -> dict:
         }
 
 
-def _safe_conversations_snapshot(config: ManagerConfig, *, lines: int = 200) -> dict:
+def _safe_conversations_snapshot(
+    config: ManagerConfig,
+    *,
+    lines: int = 200,
+    include_lanes: bool = True,
+    owner: str = "",
+    lane_id: str = "",
+    event_type: str = "",
+    contains: str = "",
+    tail: int = 0,
+) -> dict:
     try:
-        return conversations_snapshot(config, lines=lines, include_lanes=True)
+        payload = conversations_snapshot(config, lines=lines, include_lanes=include_lanes)
+        return _apply_conversation_filters(
+            payload,
+            owner=owner,
+            lane_id=lane_id,
+            event_type=event_type,
+            contains=contains,
+            tail=tail,
+        )
     except Exception as err:
         message = str(err)
         return {
@@ -810,6 +1121,14 @@ def _safe_conversations_snapshot(config: ManagerConfig, *, lines: int = 200) -> 
             "partial": True,
             "ok": False,
             "errors": [message],
+            "unfiltered_total_events": 0,
+            "filters": {
+                "owner": owner.strip(),
+                "lane": lane_id.strip(),
+                "event_type": event_type.strip(),
+                "contains": contains.strip(),
+                "tail": max(0, int(tail)),
+            },
         }
 
 
