@@ -131,6 +131,15 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(env["PIP_NO_INPUT"], "1")
 
+    def test_run_command_missing_binary_returns_127(self):
+        result = runner.run_command(
+            ["missing_command_for_orxaq_tests_12345"],
+            cwd=pathlib.Path("/tmp"),
+            timeout_sec=1,
+        )
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("command not found", result.stderr)
+
     def test_validation_fallback_commands_for_make_targets(self):
         self.assertGreater(len(runner.validation_fallback_commands("make test")), 0)
         self.assertGreater(len(runner.validation_fallback_commands("make lint")), 0)

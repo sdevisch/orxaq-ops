@@ -548,15 +548,24 @@ def run_command(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = build_subprocess_env(extra_env)
-    process = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        text=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+    except FileNotFoundError as err:
+        missing = err.filename or (cmd[0] if cmd else "")
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode=127,
+            stdout="",
+            stderr=f"[ENOENT] command not found: {missing}",
+        )
     start = time.monotonic()
     last_progress = start
 
