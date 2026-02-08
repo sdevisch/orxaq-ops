@@ -86,6 +86,7 @@ make conversations
 make lanes-plan
 make lanes-status
 make lanes-start
+make lanes-ensure
 make lanes-stop
 make stop
 make install-keepalive
@@ -172,6 +173,12 @@ Run lane plan (Codex/Gemini/Claude) in parallel:
 make lanes-plan
 make lanes-start
 make lanes-status
+```
+
+Auto-heal stopped lanes (restarts enabled, non-paused lanes):
+
+```bash
+make lanes-ensure
 ```
 
 Manual startup flow (if you want finer control):

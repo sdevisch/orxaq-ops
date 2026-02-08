@@ -688,6 +688,16 @@ def ensure_background(config: ManagerConfig) -> None:
     else:
         _log("autonomy supervisor ensured")
 
+    if config.lanes_file.exists():
+        lane_payload = ensure_lanes_background(config)
+        _log(
+            "lane ensure: "
+            f"ensured={lane_payload['ensured_count']} "
+            f"started={lane_payload['started_count']} "
+            f"restarted={lane_payload['restarted_count']} "
+            f"failed={lane_payload['failed_count']}"
+        )
+
 
 def status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     supervisor_pid = _read_pid(config.supervisor_pid_file)
@@ -1387,8 +1397,65 @@ def _lane_log_file(config: ManagerConfig, lane_id: str) -> Path:
     return (config.lanes_runtime_dir / lane_id / "runner.log").resolve()
 
 
-def _lane_health_state(*, running: bool, heartbeat_age_sec: int, heartbeat_stale: bool) -> str:
+def _lane_events_file(config: ManagerConfig, lane_id: str) -> Path:
+    return (config.lanes_runtime_dir / lane_id / "events.ndjson").resolve()
+
+
+def _lane_pause_file(config: ManagerConfig, lane_id: str) -> Path:
+    return (config.lanes_runtime_dir / lane_id / "paused.flag").resolve()
+
+
+def _append_lane_event(config: ManagerConfig, lane_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    path = _lane_events_file(config, lane_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "timestamp": _now_iso(),
+        "lane_id": lane_id,
+        "event_type": event_type,
+        "payload": payload,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def _read_lane_state_counts(state_file: Path) -> dict[str, int]:
+    counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
+    if not state_file.exists():
+        return counts
+    try:
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        counts["unknown"] += 1
+        return counts
+    if not isinstance(raw, dict):
+        counts["unknown"] += 1
+        return counts
+    for item in raw.values():
+        status = "unknown"
+        if isinstance(item, dict):
+            status = str(item.get("status", "unknown")).strip().lower()
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["unknown"] += 1
+    return counts
+
+
+def _lane_health_state(
+    *,
+    running: bool,
+    heartbeat_age_sec: int,
+    heartbeat_stale: bool,
+    paused: bool,
+    state_counts: dict[str, int],
+) -> str:
+    if paused and not running:
+        return "paused"
     if not running:
+        if int(state_counts.get("in_progress", 0)) > 0:
+            return "stopped_unexpected"
+        if int(state_counts.get("done", 0)) > 0 and int(state_counts.get("pending", 0)) == 0:
+            return "completed"
         return "stopped"
     if heartbeat_stale:
         return "stale"
@@ -1406,11 +1473,16 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         pid_path = _lane_pid_file(config, lane_id)
         log_path = _lane_log_file(config, lane_id)
         meta_path = _lane_meta_file(config, lane_id)
+        events_path = _lane_events_file(config, lane_id)
+        pause_path = _lane_pause_file(config, lane_id)
         heartbeat_file = Path(lane["heartbeat_file"])
         try:
             pid = _read_pid(pid_path)
             running = _pid_running(pid)
             meta = _read_json_file(meta_path)
+            paused = pause_path.exists()
+            state_counts = _read_lane_state_counts(Path(lane["state_file"]))
+            last_event = _tail_ndjson(events_path, 1)
             latest = ""
             if log_path.exists():
                 lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -1421,6 +1493,8 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 running=running,
                 heartbeat_age_sec=heartbeat_age_sec,
                 heartbeat_stale=heartbeat_stale,
+                paused=paused,
+                state_counts=state_counts,
             )
             snapshots.append(
                 {
@@ -1439,9 +1513,14 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "log_file": str(log_path),
                     "pid_file": str(pid_path),
                     "meta_file": str(meta_path),
+                    "events_file": str(events_path),
+                    "pause_file": str(pause_path),
                     "heartbeat_file": str(heartbeat_file),
                     "heartbeat_age_sec": heartbeat_age_sec,
                     "heartbeat_stale": heartbeat_stale,
+                    "paused": paused,
+                    "state_counts": state_counts,
+                    "last_event": last_event[0] if last_event else {},
                     "health": health,
                     "meta": meta,
                 }
@@ -1465,9 +1544,14 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "log_file": str(log_path),
                     "pid_file": str(pid_path),
                     "meta_file": str(meta_path),
+                    "events_file": str(events_path),
+                    "pause_file": str(pause_path),
                     "heartbeat_file": str(heartbeat_file),
                     "heartbeat_age_sec": -1,
                     "heartbeat_stale": False,
+                    "paused": False,
+                    "state_counts": {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 1},
+                    "last_event": {},
                     "health": "error",
                     "error": str(err),
                     "meta": {},
@@ -1589,18 +1673,27 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
     lane = next((item for item in lanes if item["id"] == lane_id), None)
     if lane is None:
         raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
+    _append_lane_event(config, lane_id, "start_requested", {"owner": lane["owner"]})
 
     cmd_name = _lane_command_for_owner(config, lane["owner"])
     if _resolve_binary(cmd_name) is None:
+        _append_lane_event(config, lane_id, "start_failed", {"reason": f"missing_cli:{cmd_name}"})
         raise RuntimeError(f"{lane['owner']} CLI not found in PATH: {cmd_name}")
 
     for repo in {lane["impl_repo"], lane["test_repo"]}:
         ok, message = _repo_basic_check(repo)
         if not ok:
+            _append_lane_event(config, lane_id, "start_failed", {"reason": message})
             raise RuntimeError(f"Lane {lane_id}: {message}")
     for required_file_key in ("tasks_file", "objective_file", "schema_file", "skill_protocol_file"):
         path = lane[required_file_key]
         if not path.exists():
+            _append_lane_event(
+                config,
+                lane_id,
+                "start_failed",
+                {"reason": f"missing_{required_file_key}", "path": str(path)},
+            )
             raise RuntimeError(f"Lane {lane_id}: missing {required_file_key} at {path}")
 
     pid_path = _lane_pid_file(config, lane_id)
@@ -1608,6 +1701,7 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
     meta_path = _lane_meta_file(config, lane_id)
     existing_pid = _read_pid(pid_path)
     if _pid_running(existing_pid):
+        _append_lane_event(config, lane_id, "start_skipped", {"reason": "already_running", "pid": existing_pid})
         status = lane_status_snapshot(config)
         existing = next((item for item in status["lanes"] if item["id"] == lane_id), None)
         return existing or {"id": lane_id, "running": True, "pid": existing_pid}
@@ -1633,6 +1727,7 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
         log_handle.close()
 
     _write_pid(pid_path, proc.pid)
+    _lane_pause_file(config, lane_id).unlink(missing_ok=True)
     _write_json_file(
         meta_path,
         {
@@ -1646,18 +1741,101 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "exclusive_paths": lane["exclusive_paths"],
         },
     )
+    _append_lane_event(
+        config,
+        lane_id,
+        "started",
+        {
+            "pid": proc.pid,
+            "owner": lane["owner"],
+            "log_file": str(log_path),
+            "tasks_file": str(lane["tasks_file"]),
+        },
+    )
     time.sleep(0.4)
     return next((item for item in lane_status_snapshot(config)["lanes"] if item["id"] == lane_id), {"id": lane_id})
 
 
-def stop_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]:
+def stop_lane_background(config: ManagerConfig, lane_id: str, *, reason: str = "manual") -> dict[str, Any]:
     pid_path = _lane_pid_file(config, lane_id)
     pid = _read_pid(pid_path)
+    _append_lane_event(config, lane_id, "stop_requested", {"pid": pid, "reason": reason})
     if pid:
         _terminate_pid(pid)
     pid_path.unlink(missing_ok=True)
+    if reason == "manual":
+        _lane_pause_file(config, lane_id).write_text("manual\n", encoding="utf-8")
+    else:
+        _lane_pause_file(config, lane_id).unlink(missing_ok=True)
+    _append_lane_event(config, lane_id, "stopped", {"pid": pid, "reason": reason})
     status = lane_status_snapshot(config)
     return next((item for item in status["lanes"] if item["id"] == lane_id), {"id": lane_id, "running": False})
+
+
+def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
+    lanes = load_lane_specs(config)
+    ensured: list[dict[str, Any]] = []
+    started: list[dict[str, Any]] = []
+    restarted: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    snapshot = lane_status_snapshot(config)
+    by_id = {lane["id"]: lane for lane in snapshot.get("lanes", [])}
+
+    for lane in lanes:
+        if not lane["enabled"]:
+            skipped.append({"id": lane["id"], "reason": "disabled"})
+            continue
+        lane_id = lane["id"]
+        pause_file = _lane_pause_file(config, lane_id)
+        current = by_id.get(lane_id, {})
+        running = bool(current.get("running", False))
+        stale = bool(current.get("heartbeat_stale", False))
+        state_counts = current.get("state_counts", {}) if isinstance(current.get("state_counts", {}), dict) else {}
+        completed = (
+            int(state_counts.get("done", 0)) > 0
+            and int(state_counts.get("pending", 0)) == 0
+            and int(state_counts.get("in_progress", 0)) == 0
+            and int(state_counts.get("blocked", 0)) == 0
+        )
+        if pause_file.exists():
+            skipped.append({"id": lane_id, "reason": "manually_paused"})
+            continue
+        if completed:
+            skipped.append({"id": lane_id, "reason": "completed"})
+            continue
+        if running and not stale:
+            ensured.append({"id": lane_id, "status": "running"})
+            continue
+        try:
+            if running and stale:
+                stop_lane_background(config, lane_id, reason="stale_restart")
+                started_lane = start_lane_background(config, lane_id)
+                restarted.append({"id": lane_id, "status": "restarted", "pid": started_lane.get("pid")})
+                _append_lane_event(config, lane_id, "auto_restarted", {"reason": "stale_heartbeat"})
+            else:
+                started_lane = start_lane_background(config, lane_id)
+                started.append({"id": lane_id, "status": "started", "pid": started_lane.get("pid")})
+                _append_lane_event(config, lane_id, "auto_started", {"reason": "not_running"})
+        except Exception as err:
+            failed.append({"id": lane_id, "error": str(err)})
+            _append_lane_event(config, lane_id, "ensure_failed", {"error": str(err)})
+
+    return {
+        "timestamp": _now_iso(),
+        "ensured_count": len(ensured),
+        "started_count": len(started),
+        "restarted_count": len(restarted),
+        "skipped_count": len(skipped),
+        "failed_count": len(failed),
+        "ensured": ensured,
+        "started": started,
+        "restarted": restarted,
+        "skipped": skipped,
+        "failed": failed,
+        "ok": len(failed) == 0,
+    }
 
 
 def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
@@ -1690,7 +1868,7 @@ def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> 
         raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
     stopped: list[dict[str, Any]] = []
     for lane in selected:
-        stopped.append(stop_lane_background(config, lane["id"]))
+        stopped.append(stop_lane_background(config, lane["id"], reason="manual"))
     return {
         "timestamp": _now_iso(),
         "requested_lane": lane_id or "all",

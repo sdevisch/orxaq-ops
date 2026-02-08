@@ -26,6 +26,7 @@ from .manager import (
     reset_state,
     render_monitor_text,
     run_foreground,
+    ensure_lanes_background,
     start_lanes_background,
     start_dashboard_background,
     start_background,
@@ -122,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
 
     lanes_start = sub.add_parser("lanes-start")
     lanes_start.add_argument("--lane", default="")
+
+    lanes_ensure = sub.add_parser("lanes-ensure")
+    lanes_ensure.add_argument("--json", action="store_true")
 
     lanes_stop = sub.add_parser("lanes-stop")
     lanes_stop.add_argument("--lane", default="")
@@ -306,6 +310,25 @@ def main(argv: list[str] | None = None) -> int:
             lane_id = args.lane.strip() or None
             payload = start_lanes_background(cfg, lane_id=lane_id)
             print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "lanes-ensure":
+            payload = ensure_lanes_background(cfg)
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(
+                    json.dumps(
+                        {
+                            "ensured_count": payload["ensured_count"],
+                            "started_count": payload["started_count"],
+                            "restarted_count": payload["restarted_count"],
+                            "failed_count": payload["failed_count"],
+                            "ok": payload["ok"],
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
             return 0 if payload.get("ok", False) else 1
         if args.command == "lanes-stop":
             lane_id = args.lane.strip() or None

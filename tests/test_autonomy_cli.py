@@ -184,6 +184,23 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "lanes-status"])
             self.assertEqual(rc, 0)
 
+    def test_lanes_ensure_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.ensure_lanes_background",
+                return_value={
+                    "ensured_count": 1,
+                    "started_count": 1,
+                    "restarted_count": 0,
+                    "failed_count": 0,
+                    "ok": True,
+                },
+            ):
+                rc = cli.main(["--root", str(root), "lanes-ensure"])
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
