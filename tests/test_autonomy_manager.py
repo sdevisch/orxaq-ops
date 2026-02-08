@@ -1177,6 +1177,49 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--metrics-summary-file", argv)
             self.assertIn("--pricing-file", argv)
 
+    def test_start_lanes_background_keeps_valid_lane_when_another_lane_is_invalid(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "unsupported-owner",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.start_lane_background", return_value={"id": "lane-a", "pid": 91}) as start:
+                payload = manager.start_lanes_background(cfg)
+            self.assertEqual(payload["requested_lane"], "all_enabled")
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["config_error_count"], 1)
+            self.assertEqual(payload["failed_count"], 1)
+            self.assertFalse(payload["ok"])
+            self.assertIn("lane-b", payload["config_errors"][0])
+            self.assertEqual(payload["failed"][0]["source"], "lane_config")
+            start.assert_called_once_with(cfg, "lane-a")
+
     def test_build_lane_runner_cmd_includes_dependency_state_and_handoff_dir(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -1326,6 +1369,66 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(payload["started_count"], 1)
             self.assertEqual(payload["started"][0]["id"], "lane-b")
             start.assert_called_once_with(cfg, "lane-b")
+
+    def test_ensure_lanes_background_keeps_valid_lane_when_another_lane_is_invalid(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "unsupported-owner",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.start_lane_background",
+                return_value={"id": "lane-a", "pid": 99},
+            ) as start, mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "lanes": [
+                        {
+                            "id": "lane-a",
+                            "running": False,
+                            "heartbeat_stale": False,
+                            "build_current": True,
+                            "state_counts": {"done": 0, "pending": 1, "in_progress": 0, "blocked": 0},
+                            "task_total": 1,
+                        }
+                    ]
+                },
+            ):
+                payload = manager.ensure_lanes_background(cfg)
+            self.assertEqual(payload["requested_lane"], "all_enabled")
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["config_error_count"], 1)
+            self.assertEqual(payload["failed_count"], 1)
+            self.assertFalse(payload["ok"])
+            self.assertIn("lane-b", payload["config_errors"][0])
+            self.assertEqual(payload["failed"][0]["source"], "lane_config")
+            start.assert_called_once_with(cfg, "lane-a")
 
     def test_ensure_lanes_background_raises_for_unknown_lane(self):
         with tempfile.TemporaryDirectory() as td:
