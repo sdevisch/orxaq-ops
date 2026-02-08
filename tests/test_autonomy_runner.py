@@ -744,5 +744,154 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "done")
 
 
+class AgentExecutionHardeningTests(unittest.TestCase):
+    def test_run_gemini_task_uses_fallback_model_after_capacity_error(self):
+        task = runner.Task(
+            id="task-g",
+            owner="gemini",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        calls: list[list[str]] = []
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            calls.append(list(cmd))
+            if len(calls) == 1:
+                return runner.subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="503 model overloaded")
+            return runner.subprocess.CompletedProcess(
+                cmd,
+                returncode=0,
+                stdout='{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_gemini_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    gemini_cmd="gemini",
+                    gemini_model=None,
+                    gemini_fallback_models=["gemini-2.5-flash"],
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("--model", calls[0])
+        self.assertIn("--model", calls[1])
+        self.assertIn("gemini-2.5-flash", calls[1])
+
+    def test_run_claude_task_uses_bypass_permissions_flags(self):
+        task = runner.Task(
+            id="task-c",
+            owner="claude",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        captured: list[list[str]] = []
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            captured.append(list(cmd))
+            return runner.subprocess.CompletedProcess(
+                cmd,
+                returncode=0,
+                stdout='{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_claude_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    claude_cmd="claude",
+                    claude_model=None,
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(captured), 1)
+        cmd = captured[0]
+        self.assertIn("--print", cmd)
+        self.assertIn("--permission-mode", cmd)
+        self.assertIn("bypassPermissions", cmd)
+        self.assertIn("--dangerously-skip-permissions", cmd)
+        self.assertIn("--add-dir", cmd)
+
+    def test_auto_push_repo_if_ahead_pushes(self):
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "true"),
+                (True, "origin/main"),
+                (True, "2 0"),
+            ],
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            return_value=runner.subprocess.CompletedProcess(["git", "push"], returncode=0, stdout="", stderr=""),
+        ) as run_command:
+            status, details = runner.auto_push_repo_if_ahead(pathlib.Path("/tmp/repo"))
+        self.assertEqual(status, "pushed")
+        self.assertIn("auto-pushed 2 commit", details)
+        run_command.assert_called_once()
+
+    def test_auto_push_repo_if_ahead_falls_back_to_no_verify(self):
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "true"),
+                (True, "origin/main"),
+                (True, "1 0"),
+            ],
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(["git", "push"], returncode=1, stdout="", stderr="pre-push failed"),
+                runner.subprocess.CompletedProcess(
+                    ["git", "push", "--no-verify"], returncode=0, stdout="", stderr=""
+                ),
+            ],
+        ) as run_command:
+            status, details = runner.auto_push_repo_if_ahead(pathlib.Path("/tmp/repo"))
+        self.assertEqual(status, "pushed")
+        self.assertIn("--no-verify", details)
+        self.assertEqual(run_command.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

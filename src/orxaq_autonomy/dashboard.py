@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -262,6 +263,95 @@ def _dashboard_html(refresh_sec: int) -> str:
       gap: 8px;
       align-items: center;
     }}
+    .transport {{
+      display: grid;
+      gap: 8px;
+    }}
+    .transport-row {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }}
+    .arrangement {{
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0a1424;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }}
+    .arrangement-grid {{
+      display: grid;
+      gap: 6px;
+      max-height: 360px;
+      overflow: auto;
+    }}
+    .track {{
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 8px;
+      align-items: center;
+    }}
+    .track-head {{
+      color: #d6ecff;
+      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      font-size: .76rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .track-lane {{
+      position: relative;
+      min-height: 22px;
+      border: 1px solid rgba(221, 240, 255, 0.2);
+      border-radius: 6px;
+      background: linear-gradient(180deg, rgba(8, 20, 38, 0.95), rgba(8, 20, 38, 0.7));
+      overflow: hidden;
+    }}
+    .clip {{
+      position: absolute;
+      top: 3px;
+      bottom: 3px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }}
+    .clip-midi {{
+      background: linear-gradient(135deg, #4ecdc4, #2a9d8f);
+    }}
+    .clip-audio {{
+      background: linear-gradient(135deg, #f4a261, #e76f51);
+    }}
+    .clip-control {{
+      background: linear-gradient(135deg, #8ecae6, #219ebc);
+    }}
+    .mixer {{
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+      max-height: 360px;
+      overflow: auto;
+    }}
+    .mixer-strip {{
+      display: grid;
+      grid-template-columns: 150px 1fr 46px;
+      gap: 8px;
+      align-items: center;
+    }}
+    .meter {{
+      height: 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #f1f5f9;
+      overflow: hidden;
+    }}
+    .meter-fill {{
+      height: 100%;
+      background: linear-gradient(90deg, #65d26e, #f5b041 65%, #e74c3c);
+    }}
     @media (min-width: 940px) {{
       .card.span-6 {{ grid-column: span 6; }}
       .card.span-4 {{ grid-column: span 4; }}
@@ -283,6 +373,32 @@ def _dashboard_html(refresh_sec: int) -> str:
     </section>
 
     <section class="grid">
+      <article class="card span-12">
+        <h2>DAW Session (Logic Mode)</h2>
+        <div class="transport">
+          <div class="transport-row mono">
+            <span id="transportTempo" class="pill">tempo: 120 BPM</span>
+            <span id="transportPlayhead" class="pill">playhead: 0.0s</span>
+            <span id="transportWindow" class="pill">window: 120s</span>
+            <span id="dawSummary" class="pill">tracks: loading...</span>
+          </div>
+          <div id="arrangementView" class="arrangement">
+            <div id="arrangementTracks" class="arrangement-grid"></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card span-6">
+        <h2>Mixer</h2>
+        <div id="mixerView" class="mixer"></div>
+      </article>
+
+      <article class="card span-6">
+        <h2>Prompt MIDI / Response Audio Activity</h2>
+        <div id="activitySummary" class="mono">activity: loading...</div>
+        <div id="activityEvents" class="feed"></div>
+      </article>
+
       <article class="card span-8">
         <h2>Task Progress</h2>
         <div id="taskBar" class="bar" style="--done:0%;--in_progress:0%;--pending:0%;--blocked:0%;">
@@ -415,6 +531,26 @@ def _dashboard_html(refresh_sec: int) -> str:
       el.textContent = `lane action: ${{message}}`;
       el.className = isError ? "mono bad" : "mono";
     }}
+    window.OrxaqThemeAPI = {{
+      applySkin(tokens) {{
+        const root = document.documentElement;
+        for (const [key, value] of Object.entries(tokens || {{}})) {{
+          root.style.setProperty(`--${{key}}`, String(value));
+        }}
+      }},
+      readSkin() {{
+        const style = getComputedStyle(document.documentElement);
+        return {{
+          bg_0: style.getPropertyValue("--bg-0").trim(),
+          bg_1: style.getPropertyValue("--bg-1").trim(),
+          bg_2: style.getPropertyValue("--bg-2").trim(),
+          panel: style.getPropertyValue("--panel").trim(),
+          ink: style.getPropertyValue("--ink").trim(),
+          muted: style.getPropertyValue("--muted").trim(),
+          border: style.getPropertyValue("--border").trim(),
+        }};
+      }},
+    }};
 
     function repoMarkup(repo) {{
       if (!repo) return '<div class="line bad">unavailable</div>';
@@ -427,6 +563,66 @@ def _dashboard_html(refresh_sec: int) -> str:
         `<div class="line">head: <span class="mono">${{repo.head || ''}}</span></div>`,
         `<div class="line">dirty: <span class="${{repo.dirty ? 'warn' : 'ok'}}">${{yn(repo.dirty)}}</span> · changed files: <span class="mono">${{repo.changed_files ?? 0}}</span></div>`,
       ].join('');
+    }}
+
+    function renderDaw(payload) {{
+      const daw = payload || {{}};
+      const tracks = Array.isArray(daw.tracks) ? daw.tracks : [];
+      const strips = Array.isArray(daw.mixer) ? daw.mixer : [];
+      const events = Array.isArray(daw.activity_feed) ? daw.activity_feed : [];
+      const windowSec = Number(daw.window_sec || 120);
+      const playheadSec = Number(daw.playhead_sec || 0);
+      const tempo = Number(daw.tempo_bpm || 120);
+
+      byId("transportTempo").textContent = `tempo: ${{tempo}} BPM`;
+      byId("transportPlayhead").textContent = `playhead: ${{playheadSec.toFixed(1)}}s`;
+      byId("transportWindow").textContent = `window: ${{windowSec}}s`;
+      byId("dawSummary").textContent = `tracks: ${{tracks.length}} · strips: ${{strips.length}}`;
+
+      byId("arrangementTracks").innerHTML = tracks.length
+        ? tracks.map((track) => {{
+            const clips = Array.isArray(track.clips) ? track.clips : [];
+            const clipMarkup = clips.map((clip) => {{
+              const start = Math.max(0, Math.min(100, Number(clip.start_pct || 0)));
+              const width = Math.max(1.2, Math.min(100 - start, Number(clip.width_pct || 1.2)));
+              const css = clip.kind === "midi" ? "clip-midi" : (clip.kind === "audio" ? "clip-audio" : "clip-control");
+              const title = `${{clip.label || clip.kind}} · lvl=${{Number(clip.level || 0).toFixed(2)}}`;
+              return `<div class="clip ${{css}}" title="${{escapeHtml(title)}}" style="left:${{start}}%;width:${{width}}%;"></div>`;
+            }}).join("");
+            return [
+              '<div class="track">',
+              `<div class="track-head">${{escapeHtml(track.name || "track")}}</div>`,
+              `<div class="track-lane">${{clipMarkup}}</div>`,
+              '</div>',
+            ].join("");
+          }}).join("")
+        : '<div class="track-head">No DAW activity yet.</div>';
+
+      byId("mixerView").innerHTML = strips.length
+        ? strips.map((strip) => {{
+            const level = Math.max(0, Math.min(1, Number(strip.level || 0)));
+            return [
+              '<div class="mixer-strip">',
+              `<div class="mono">${{escapeHtml(strip.name || "track")}}</div>`,
+              `<div class="meter"><div class="meter-fill" style="width:${{Math.round(level * 100)}}%;"></div></div>`,
+              `<div class="mono">${{Math.round(level * 100)}}%</div>`,
+              '</div>',
+            ].join("");
+          }}).join("")
+        : '<div class="mono">No channels yet.</div>';
+
+      byId("activitySummary").textContent =
+        `prompt_midi=${{Number(daw.prompt_midi_events || 0)}} · response_audio=${{Number(daw.response_audio_events || 0)}} · control=${{Number(daw.control_events || 0)}}`;
+      byId("activityEvents").innerHTML = events.length
+        ? events.map((event) => {{
+            return [
+              '<div class="feed-item">',
+              `<div class="feed-head"><span>${{escapeHtml(event.timestamp || "")}}</span><span>track=${{escapeHtml(event.track || "-")}}</span><span>kind=${{escapeHtml(event.kind || "-")}}</span><span>type=${{escapeHtml(event.event_type || "-")}}</span></div>`,
+              `<div>${{escapeHtml(event.label || "")}}</div>`,
+              '</div>',
+            ].join("");
+          }}).join("")
+        : '<div class="feed-item">No recent activity.</div>';
     }}
 
     function renderLanes(lanes, runtime) {{
@@ -705,10 +901,11 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
 
     async function refresh() {{
-      const [monitorResult, convResult, laneResult] = await Promise.all([
+      const [monitorResult, convResult, laneResult, dawResult] = await Promise.all([
         fetchJson('/api/monitor'),
         fetchJson(conversationPath()),
         fetchJson('/api/lanes'),
+        fetchJson('/api/daw?window_sec=120'),
       ]);
 
       let monitorPayload = monitorResult.payload;
@@ -758,6 +955,18 @@ def _dashboard_html(refresh_sec: int) -> str:
               errors: [convResult.error || 'conversation endpoint unavailable'],
             }};
         renderConversations(fallbackConv);
+      }}
+      if (dawResult.ok && dawResult.payload) {{
+        renderDaw(dawResult.payload);
+      }} else {{
+        renderDaw({{
+          tracks: [],
+          mixer: [],
+          activity_feed: [],
+          prompt_midi_events: 0,
+          response_audio_events: 0,
+          control_events: 0,
+        }});
       }}
 
       const diagnosticsPayload = (monitorPayload && monitorPayload.diagnostics) || {{}};
@@ -892,6 +1101,12 @@ def start_dashboard(
                         )
                     )
                     return
+                if parsed.path == "/api/daw":
+                    query = parse_qs(parsed.query)
+                    window_sec = _parse_bounded_int(query, "window_sec", default=120, minimum=20, maximum=1800)
+                    lines = _parse_bounded_int(query, "lines", default=800, minimum=200, maximum=2000)
+                    self._send_json(_safe_daw_snapshot(config, window_sec=window_sec, lines=lines))
+                    return
                 if parsed.path == "/api/status":
                     self._send_json(status_snapshot(config))
                     return
@@ -955,6 +1170,176 @@ def _parse_bool(query: dict[str, list[str]], key: str, *, default: bool) -> bool
     if raw in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _parse_event_timestamp(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp01(value: float) -> float:
+    if value <= 0.0:
+        return 0.0
+    if value >= 1.0:
+        return 1.0
+    return value
+
+
+def _event_kind(event_type: str) -> str:
+    normalized = event_type.strip().lower()
+    if normalized == "prompt":
+        return "midi"
+    if normalized in {"agent_output", "task_done", "task_partial"}:
+        return "audio"
+    return "control"
+
+
+def _event_level(event: dict[str, Any]) -> float:
+    meta = event.get("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    kind = _event_kind(str(event.get("event_type", "")))
+    if kind == "midi":
+        difficulty = _safe_float(meta.get("prompt_difficulty_score", 0.0), 0.0)
+        tokens = _safe_float(meta.get("prompt_tokens_est", 0.0), 0.0)
+        return _clamp01(max(difficulty / 10.0, min(tokens / 2000.0, 1.0)))
+    if kind == "audio":
+        output_tokens = _safe_float(meta.get("response_tokens_est", 0.0), 0.0)
+        latency = _safe_float(meta.get("latency_sec", 0.0), 0.0)
+        return _clamp01(max(min(output_tokens / 2500.0, 1.0), min(latency / 120.0, 1.0)))
+    if str(event.get("event_type", "")).strip().lower() in {"task_blocked", "agent_error", "auto_push_error"}:
+        return 1.0
+    return 0.45
+
+
+def _safe_daw_snapshot(config: ManagerConfig, *, window_sec: int = 120, lines: int = 800) -> dict[str, Any]:
+    try:
+        conv = conversations_snapshot(config, lines=max(200, int(lines)), include_lanes=True)
+        monitor = monitor_snapshot(config)
+        return _build_daw_snapshot(conv, monitor, window_sec=max(20, int(window_sec)))
+    except Exception as err:
+        message = str(err)
+        return {
+            "timestamp": "",
+            "window_sec": max(20, int(window_sec)),
+            "tempo_bpm": 120,
+            "playhead_sec": 0.0,
+            "tracks": [],
+            "mixer": [],
+            "activity_feed": [],
+            "prompt_midi_events": 0,
+            "response_audio_events": 0,
+            "control_events": 0,
+            "ok": False,
+            "errors": [message],
+        }
+
+
+def _build_daw_snapshot(
+    conv_payload: dict[str, Any],
+    monitor_payload: dict[str, Any],
+    *,
+    window_sec: int = 120,
+) -> dict[str, Any]:
+    events = conv_payload.get("events", [])
+    if not isinstance(events, list):
+        events = []
+    now = datetime.now(timezone.utc)
+    window = max(20, int(window_sec))
+    start_time = now.timestamp() - float(window)
+    tracks: dict[str, dict[str, Any]] = {}
+    feed: list[dict[str, Any]] = []
+    midi_count = 0
+    audio_count = 0
+    control_count = 0
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        ts = _parse_event_timestamp(item.get("timestamp", ""))
+        if ts is None:
+            continue
+        ts_sec = ts.timestamp()
+        if ts_sec < start_time:
+            continue
+        owner = str(item.get("owner", "unknown")).strip() or "unknown"
+        lane_id = str(item.get("lane_id", "")).strip()
+        track_key = f"{owner}:{lane_id or 'main'}"
+        track_name = f"{owner} / {lane_id or 'main'}"
+        bucket = tracks.setdefault(track_key, {"name": track_name, "clips": [], "peak": 0.0, "events": 0})
+
+        event_type = str(item.get("event_type", "")).strip()
+        kind = _event_kind(event_type)
+        if kind == "midi":
+            midi_count += 1
+        elif kind == "audio":
+            audio_count += 1
+        else:
+            control_count += 1
+        level = _event_level(item)
+        start_pct = _clamp01((ts_sec - start_time) / float(window)) * 100.0
+        width_pct = max(1.4, 1.8 + (level * 6.0))
+        bucket["clips"].append(
+            {
+                "kind": kind,
+                "event_type": event_type,
+                "start_pct": round(start_pct, 3),
+                "width_pct": round(min(width_pct, 16.0), 3),
+                "level": round(level, 4),
+                "label": str(item.get("task_id", "")).strip() or event_type or "event",
+            }
+        )
+        bucket["peak"] = max(_safe_float(bucket.get("peak", 0.0), 0.0), level)
+        bucket["events"] = int(bucket.get("events", 0)) + 1
+        feed.append(
+            {
+                "timestamp": str(item.get("timestamp", "")).strip(),
+                "track": track_name,
+                "kind": kind,
+                "event_type": event_type,
+                "label": str(item.get("content", "")).strip()[:180],
+            }
+        )
+
+    track_rows = sorted(tracks.values(), key=lambda row: str(row.get("name", "")))
+    mixer = [
+        {
+            "name": str(row.get("name", "")),
+            "level": round(_clamp01(_safe_float(row.get("peak", 0.0), 0.0)), 4),
+            "events": int(row.get("events", 0)),
+        }
+        for row in track_rows
+    ]
+    lane_counts = monitor_payload.get("lanes", {}).get("health_counts", {}) if isinstance(monitor_payload.get("lanes", {}), dict) else {}
+    tempo = 120 + (int(lane_counts.get("ok", 0)) * 2) + (int(lane_counts.get("error", 0)) * 6)
+    return {
+        "timestamp": str(monitor_payload.get("timestamp", "")).strip(),
+        "window_sec": window,
+        "tempo_bpm": max(96, min(160, tempo)),
+        "playhead_sec": float(window),
+        "tracks": track_rows,
+        "mixer": mixer,
+        "activity_feed": feed[-80:],
+        "prompt_midi_events": midi_count,
+        "response_audio_events": audio_count,
+        "control_events": control_count,
+        "ok": bool(conv_payload.get("ok", False)),
+        "errors": list(conv_payload.get("errors", [])) if isinstance(conv_payload.get("errors", []), list) else [],
+    }
 
 
 def _apply_conversation_filters(

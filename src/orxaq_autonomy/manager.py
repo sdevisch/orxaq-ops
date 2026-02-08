@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -227,7 +228,10 @@ class ManagerConfig:
     claude_cmd: str
     codex_model: str | None
     gemini_model: str | None
+    gemini_fallback_models: list[str]
     claude_model: str | None
+    auto_push_guard: bool
+    auto_push_interval_sec: int
 
     @classmethod
     def from_root(cls, root: Path, env_file_override: Path | None = None) -> "ManagerConfig":
@@ -249,6 +253,12 @@ class ManagerConfig:
                 return int(raw)
             except ValueError:
                 return default
+
+        def _bool(key: str, default: bool) -> bool:
+            raw = merged.get(key)
+            if raw is None:
+                return default
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
         artifacts = _path("ORXAQ_AUTONOMY_ARTIFACTS_DIR", root / "artifacts" / "autonomy")
         skill_protocol = _path("ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE", root / "config" / "skill_protocol.json")
@@ -274,6 +284,15 @@ class ManagerConfig:
         claude_cmd = merged.get("ORXAQ_AUTONOMY_CLAUDE_CMD", "claude").strip() or "claude"
         codex_model = merged.get("ORXAQ_AUTONOMY_CODEX_MODEL", "").strip() or None
         gemini_model = merged.get("ORXAQ_AUTONOMY_GEMINI_MODEL", "").strip() or None
+        gemini_fallback_models_raw = merged.get(
+            "ORXAQ_AUTONOMY_GEMINI_FALLBACK_MODELS",
+            "gemini-2.5-flash,gemini-2.0-flash",
+        )
+        gemini_fallback_models = [
+            item.strip()
+            for item in re.split(r"[;,]", gemini_fallback_models_raw)
+            if item.strip()
+        ]
         claude_model = merged.get("ORXAQ_AUTONOMY_CLAUDE_MODEL", "").strip() or None
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
@@ -335,7 +354,10 @@ class ManagerConfig:
             claude_cmd=claude_cmd,
             codex_model=codex_model,
             gemini_model=gemini_model,
+            gemini_fallback_models=gemini_fallback_models,
             claude_model=claude_model,
+            auto_push_guard=_bool("ORXAQ_AUTONOMY_AUTO_PUSH_GUARD", True),
+            auto_push_interval_sec=_int("ORXAQ_AUTONOMY_AUTO_PUSH_INTERVAL_SEC", 180),
         )
 
 
@@ -566,8 +588,17 @@ def runner_argv(config: ManagerConfig) -> list[str]:
         args.extend(["--codex-model", config.codex_model])
     if config.gemini_model:
         args.extend(["--gemini-model", config.gemini_model])
+    for model in config.gemini_fallback_models:
+        args.extend(["--gemini-fallback-model", model])
     if config.claude_model:
         args.extend(["--claude-model", config.claude_model])
+    args.extend(
+        [
+            "--auto-push-interval-sec",
+            str(config.auto_push_interval_sec),
+            ("--auto-push-guard" if config.auto_push_guard else "--no-auto-push-guard"),
+        ]
+    )
     if config.codex_startup_prompt_file is not None:
         args.extend(["--codex-startup-prompt-file", str(config.codex_startup_prompt_file)])
     if config.gemini_startup_prompt_file is not None:
@@ -2435,8 +2466,17 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         cmd.extend(["--codex-model", config.codex_model])
     if config.gemini_model:
         cmd.extend(["--gemini-model", config.gemini_model])
+    for model in config.gemini_fallback_models:
+        cmd.extend(["--gemini-fallback-model", model])
     if config.claude_model:
         cmd.extend(["--claude-model", config.claude_model])
+    cmd.extend(
+        [
+            "--auto-push-interval-sec",
+            str(config.auto_push_interval_sec),
+            ("--auto-push-guard" if config.auto_push_guard else "--no-auto-push-guard"),
+        ]
+    )
 
     codex_prompt = _lane_startup_prompt(config, "codex")
     gemini_prompt = _lane_startup_prompt(config, "gemini")
@@ -2782,6 +2822,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         source_events: list[dict[str, Any]] = []
         source_error = ""
         source_ok = True
+        recoverable_missing = False
         source_kind = source["kind"]
         resolved_path = source_path
         fallback_used = False
@@ -2799,10 +2840,8 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                     source_kind = "lane_events"
                     fallback_used = True
                 elif source["kind"] == "lane":
-                    source_ok = False
-                    source_error = f"missing lane conversation and event sources at {source_path}"
-                    lane_label = source.get("lane_id", "").strip() or source["path"]
-                    errors.append(f"{lane_label}: {source_error}")
+                    # A lane may not have produced logs yet; missing lane files are recoverable.
+                    recoverable_missing = True
             source_lane_id = str(source.get("lane_id", "")).strip()
             source_owner = str(source.get("owner", "")).strip()
             for item in source_events:
@@ -2831,6 +2870,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                 "owner": source["owner"],
                 "ok": source_ok,
                 "missing": missing,
+                "recoverable_missing": recoverable_missing,
                 "fallback_used": fallback_used,
                 "error": source_error,
                 "event_count": len(source_events),

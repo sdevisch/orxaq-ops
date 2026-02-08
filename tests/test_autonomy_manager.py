@@ -88,6 +88,9 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--metrics-file", argv)
             self.assertIn("--metrics-summary-file", argv)
             self.assertIn("--pricing-file", argv)
+            self.assertIn("--gemini-fallback-model", argv)
+            self.assertIn("--auto-push-guard", argv)
+            self.assertIn("--auto-push-interval-sec", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1090,6 +1093,44 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(len(lane_events_seen), 1)
             self.assertIn("task_done", lane_events_seen[0].get("content", ""))
 
+    def test_conversations_snapshot_treats_missing_lane_sources_as_recoverable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
+                encoding="utf-8",
+            )
+
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertTrue(snapshot["ok"])
+            self.assertFalse(snapshot["partial"])
+            self.assertEqual(snapshot["total_events"], 1)
+            lane_source = next(item for item in snapshot["sources"] if item.get("lane_id") == "lane-a")
+            self.assertTrue(lane_source["missing"])
+            self.assertTrue(lane_source["ok"])
+            self.assertTrue(lane_source["recoverable_missing"])
+            self.assertEqual(lane_source["event_count"], 0)
+
     def test_conversations_snapshot_normalizes_missing_lane_owner_fields(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -1253,6 +1294,9 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(handoff_value, str(lane["handoff_dir"]))
             self.assertIn("--continuous", argv)
             self.assertIn("--continuous-recycle-delay-sec", argv)
+            self.assertIn("--gemini-fallback-model", argv)
+            self.assertIn("--auto-push-guard", argv)
+            self.assertIn("--auto-push-interval-sec", argv)
 
     def test_ensure_lanes_background_starts_unexpectedly_stopped_lane(self):
         with tempfile.TemporaryDirectory() as td:
