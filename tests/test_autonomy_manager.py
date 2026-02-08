@@ -578,6 +578,61 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(len(snapshot["conversations"]["recent_events"]), 3)
             self.assertEqual(snapshot["conversations"]["latest"]["content"], "c")
 
+    def test_monitor_snapshot_counts_idle_lane_as_operational(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": True,
+                    "errors": [],
+                    "running_count": 0,
+                    "total_count": 1,
+                    "lanes": [
+                        {
+                            "id": "lane-a",
+                            "owner": "codex",
+                            "running": False,
+                            "health": "idle",
+                            "state_counts": {"pending": 0, "in_progress": 0, "done": 1, "blocked": 0, "unknown": 0},
+                            "task_total": 1,
+                        }
+                    ],
+                    "health_counts": {"idle": 1},
+                    "owner_counts": {"codex": {"total": 1, "running": 0, "healthy": 1, "degraded": 0}},
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 0,
+                    "events": [],
+                    "owner_counts": {},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(snapshot["runtime"]["lane_operational_count"], 1)
+            self.assertEqual(snapshot["runtime"]["lane_degraded_count"], 0)
+
     def test_dashboard_status_snapshot_defaults(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

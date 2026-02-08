@@ -1494,7 +1494,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     except Exception as err:
         response_metrics = _empty_response_metrics(str(err))
     _mark_source("response_metrics", bool(response_metrics.get("ok", False)), "; ".join(response_metrics.get("errors", [])))
-    lane_operational_states = {"ok", "paused"}
+    lane_operational_states = {"ok", "paused", "idle"}
     operational_lanes = [
         lane
         for lane in lane_items

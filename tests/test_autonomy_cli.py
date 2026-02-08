@@ -278,6 +278,30 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(start.call_args.kwargs["lane_id"], "codex-governance")
 
+    def test_lanes_stop_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.stop_lanes_background",
+                return_value={"stopped_count": 2, "stopped": [{"id": "lane-a"}, {"id": "lane-b"}]},
+            ) as stop:
+                rc = cli.main(["--root", str(root), "lanes-stop"])
+            self.assertEqual(rc, 0)
+            self.assertIsNone(stop.call_args.kwargs["lane_id"])
+
+    def test_lanes_stop_command_with_lane_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.stop_lanes_background",
+                return_value={"stopped_count": 1, "stopped": [{"id": "codex-governance"}]},
+            ) as stop:
+                rc = cli.main(["--root", str(root), "lanes-stop", "--lane", "codex-governance"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(stop.call_args.kwargs["lane_id"], "codex-governance")
+
     def test_lanes_status_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
