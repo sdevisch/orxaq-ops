@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible defect
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Include platform and command details.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Security/safety impact

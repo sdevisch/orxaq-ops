@@ -16,14 +16,18 @@
 cd /Users/sdevisch/dev/orxaq-ops
 make lint
 make test
+make version-check
+make repo-hygiene
 make package
 ```
 
 ## 3) Cut a release
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+make bump-patch   # or bump-minor / bump-major
+git commit -am "Bump version for release"
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The `Publish to PyPI` workflow builds distributions and publishes them through OIDC trusted publishing.

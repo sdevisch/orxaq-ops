@@ -70,6 +70,11 @@ make open-cursor
 make open-pycharm
 make lint
 make test
+make version-check
+make repo-hygiene
+make bump-patch
+make bump-minor
+make bump-major
 make package
 ```
 
@@ -99,6 +104,19 @@ orxaq-autonomy --root /path/to/orxaq-ops status
 
 Skill protocol + MCP context are data-driven, so you can swap project/task context without changing code.
 
+## Versioning
+
+- SemVer is enforced: `MAJOR.MINOR.PATCH`.
+- Use automated bump commands:
+  - `make bump-patch`
+  - `make bump-minor`
+  - `make bump-major`
+- Validate before push/release:
+  - `make version-check`
+  - `make repo-hygiene`
+
+See `/Users/sdevisch/dev/orxaq-ops/docs/VERSIONING.md`.
+
 ## CI/CD
 
 - CI matrix: `.github/workflows/ci.yml`
@@ -108,6 +126,14 @@ Skill protocol + MCP context are data-driven, so you can swap project/task conte
 - Release pipeline: `.github/workflows/release-pypi.yml`
   - Triggered on `v*` tags.
   - Builds package and publishes to PyPI using GitHub OIDC trusted publishing.
+
+## Governance
+
+- `/Users/sdevisch/dev/orxaq-ops/CODE_OF_CONDUCT.md`
+- `/Users/sdevisch/dev/orxaq-ops/GOVERNANCE.md`
+- `/Users/sdevisch/dev/orxaq-ops/SUPPORT.md`
+- `/Users/sdevisch/dev/orxaq-ops/SECURITY.md`
+- `/Users/sdevisch/dev/orxaq-ops/docs/AI_BEST_PRACTICES.md`
 
 ## Non-Admin Hardening (Windows/macOS)
 

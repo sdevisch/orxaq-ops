@@ -1,0 +1,30 @@
+repos:
+  - repo: local
+    hooks:
+      - id: version-policy
+        name: version-policy
+        entry: python3 scripts/check_version_policy.py
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: repo-hygiene
+        name: repo-hygiene
+        entry: python3 scripts/check_repo_hygiene.py --root .
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: lint
+        name: lint
+        entry: make lint
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: test
+        name: test
+        entry: make test
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

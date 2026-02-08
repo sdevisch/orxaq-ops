@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orxaq-autonomy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Reusable cross-platform autonomy supervisor and runner for multi-agent software delivery"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Orxaq"}]
 keywords = ["autonomy", "agent", "mcp", "orchestration", "resilience"]
 classifiers = [
+  "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Operating System :: MacOS",
@@ -20,6 +22,12 @@ classifiers = [
   "Topic :: Software Development :: Build Tools",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sdevisch/orxaq-ops"
+Repository = "https://github.com/sdevisch/orxaq-ops"
+Issues = "https://github.com/sdevisch/orxaq-ops/issues"
+Documentation = "https://github.com/sdevisch/orxaq-ops/blob/main/README.md"
 
 [project.scripts]
 orxaq-autonomy = "orxaq_autonomy.cli:main"

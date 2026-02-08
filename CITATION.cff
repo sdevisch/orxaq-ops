@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+title: orxaq-autonomy
+message: "If you use orxaq-autonomy in research, please cite this software."
+type: software
+authors:
+  - family-names: De Visch
+    given-names: Stijn
+repository-code: "https://github.com/sdevisch/orxaq-ops"
+license: MIT
