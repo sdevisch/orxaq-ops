@@ -81,6 +81,7 @@ make start
 make ensure
 make status
 make monitor
+make metrics
 make health
 make logs
 make dashboard

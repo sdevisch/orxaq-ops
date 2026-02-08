@@ -130,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
+    metrics = sub.add_parser("metrics")
+    metrics.add_argument("--json", action="store_true")
     monitor = sub.add_parser("monitor")
     monitor.add_argument("--json", action="store_true")
     pre = sub.add_parser("preflight")
@@ -230,6 +232,34 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "health":
             print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "metrics":
+            payload = monitor_snapshot(cfg).get("response_metrics", {})
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print(
+                json.dumps(
+                    {
+                        "responses_total": payload.get("responses_total", 0),
+                        "quality_score_avg": payload.get("quality_score_avg", 0.0),
+                        "first_time_pass_rate": payload.get("first_time_pass_rate", 0.0),
+                        "acceptance_pass_rate": payload.get("acceptance_pass_rate", 0.0),
+                        "latency_sec_avg": payload.get("latency_sec_avg", 0.0),
+                        "prompt_difficulty_score_avg": payload.get("prompt_difficulty_score_avg", 0.0),
+                        "cost_usd_total": payload.get("cost_usd_total", 0.0),
+                        "cost_usd_avg": payload.get("cost_usd_avg", 0.0),
+                        "exact_cost_coverage": payload.get("exact_cost_coverage", 0.0),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            recommendations = payload.get("optimization_recommendations", [])
+            if isinstance(recommendations, list) and recommendations:
+                print("recommendations:")
+                for item in recommendations:
+                    print(f"- {item}")
             return 0
         if args.command == "monitor":
             snapshot = monitor_snapshot(cfg)

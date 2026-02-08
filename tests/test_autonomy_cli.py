@@ -64,6 +64,53 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "monitor"])
             self.assertEqual(rc, 0)
 
+    def test_metrics_command_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            payload = {
+                "response_metrics": {
+                    "responses_total": 3,
+                    "quality_score_avg": 0.9,
+                    "cost_usd_total": 1.23,
+                }
+            }
+            with mock.patch("orxaq_autonomy.cli.monitor_snapshot", return_value=payload):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "metrics", "--json"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertEqual(data["responses_total"], 3)
+
+    def test_metrics_command_prints_recommendations(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            payload = {
+                "response_metrics": {
+                    "responses_total": 1,
+                    "quality_score_avg": 0.1,
+                    "first_time_pass_rate": 0.0,
+                    "acceptance_pass_rate": 0.0,
+                    "latency_sec_avg": 300.0,
+                    "prompt_difficulty_score_avg": 80.0,
+                    "cost_usd_total": 2.0,
+                    "cost_usd_avg": 2.0,
+                    "exact_cost_coverage": 0.0,
+                    "optimization_recommendations": ["Tighten prompts"],
+                }
+            }
+            with mock.patch("orxaq_autonomy.cli.monitor_snapshot", return_value=payload):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "metrics"])
+            self.assertEqual(rc, 0)
+            output = buffer.getvalue()
+            self.assertIn("responses_total", output)
+            self.assertIn("recommendations:", output)
+            self.assertIn("Tighten prompts", output)
+
     def test_bootstrap_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
