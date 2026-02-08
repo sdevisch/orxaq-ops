@@ -1,5 +1,12 @@
 # orxaq-ops
 
+[![CI](https://img.shields.io/github/actions/workflow/status/sdevisch/orxaq-ops/ci.yml?branch=main&label=CI)](https://github.com/sdevisch/orxaq-ops/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/actions/workflow/status/sdevisch/orxaq-ops/release-pypi.yml?branch=main&label=Release)](https://github.com/sdevisch/orxaq-ops/actions/workflows/release-pypi.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/sdevisch/orxaq-ops?display_name=tag)](https://github.com/sdevisch/orxaq-ops/releases)
+[![PyPI](https://img.shields.io/pypi/v/orxaq-autonomy)](https://pypi.org/project/orxaq-autonomy/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/orxaq-autonomy)](https://pypi.org/project/orxaq-autonomy/)
+[![License](https://img.shields.io/github/license/sdevisch/orxaq-ops)](https://github.com/sdevisch/orxaq-ops/blob/main/LICENSE)
+
 Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standalone Python package (`orxaq-autonomy`) with protocol-based task execution, optional MCP context ingestion, and cross-platform lifecycle management.
 
 ## What Changed
