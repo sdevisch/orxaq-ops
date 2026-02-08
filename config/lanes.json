@@ -10,6 +10,7 @@
       "test_repo": ".",
       "tasks_file": "config/lanes/codex_governance_tasks.json",
       "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
       "objective_file": "config/objectives/codex_governance.md",
       "validate_commands": [
         "make lint",
@@ -31,6 +32,7 @@
       "test_repo": "../orxaq_gemini",
       "tasks_file": "config/lanes/gemini_test_backlog_tasks.json",
       "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
       "objective_file": "config/objectives/gemini_rln_tests.md",
       "validate_commands": [
         "make lint",
@@ -51,6 +53,7 @@
       "test_repo": "../orxaq",
       "tasks_file": "config/lanes/claude_architecture_review_tasks.json",
       "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
       "objective_file": "config/objectives/claude_architecture_review.md",
       "validate_commands": [
         "make lint",

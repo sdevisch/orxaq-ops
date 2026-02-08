@@ -1375,6 +1375,11 @@ def load_lane_specs(config: ManagerConfig) -> list[dict[str, Any]]:
                 str(item.get("dependency_state_file", "")),
                 config.state_file,
             ),
+            "handoff_dir": _resolve_path(
+                config.root_dir,
+                str(item.get("handoff_dir", "")),
+                config.artifacts_dir / "handoffs",
+            ),
             "artifacts_dir": artifacts_dir,
             "heartbeat_file": heartbeat_file,
             "lock_file": lock_file,
@@ -1574,6 +1579,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "pid": pid,
                     "tasks_file": str(lane["tasks_file"]),
                     "dependency_state_file": str(lane["dependency_state_file"]),
+                    "handoff_dir": str(lane["handoff_dir"]),
                     "objective_file": str(lane["objective_file"]),
                     "impl_repo": str(lane["impl_repo"]),
                     "test_repo": str(lane["test_repo"]),
@@ -1610,6 +1616,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "pid": None,
                     "tasks_file": str(lane["tasks_file"]),
                     "dependency_state_file": str(lane["dependency_state_file"]),
+                    "handoff_dir": str(lane["handoff_dir"]),
                     "objective_file": str(lane["objective_file"]),
                     "impl_repo": str(lane["impl_repo"]),
                     "test_repo": str(lane["test_repo"]),
@@ -1694,7 +1701,7 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         "--conversation-log-file",
         str(lane["conversation_log_file"]),
         "--handoff-dir",
-        str(Path(lane["artifacts_dir"]) / "handoffs"),
+        str(lane["handoff_dir"]),
         "--max-cycles",
         str(config.max_cycles),
         "--max-attempts",
@@ -1819,6 +1826,7 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "command": cmd,
             "tasks_file": str(lane["tasks_file"]),
             "dependency_state_file": str(lane["dependency_state_file"]),
+            "handoff_dir": str(lane["handoff_dir"]),
             "objective_file": str(lane["objective_file"]),
             "conversation_log_file": str(lane["conversation_log_file"]),
             "exclusive_paths": lane["exclusive_paths"],
@@ -1836,6 +1844,23 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
         },
     )
     time.sleep(0.4)
+    if not _pid_running(proc.pid):
+        pid_path.unlink(missing_ok=True)
+        log_tail = ""
+        if log_path.exists():
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            log_tail = "\n".join(lines[-8:])
+        _append_lane_event(
+            config,
+            lane_id,
+            "start_failed",
+            {
+                "reason": "process_exited_early",
+                "pid": proc.pid,
+                "log_tail": log_tail[-1200:],
+            },
+        )
+        raise RuntimeError(f"Lane {lane_id} exited immediately after start.")
     return next((item for item in lane_status_snapshot(config)["lanes"] if item["id"] == lane_id), {"id": lane_id})
 
 
