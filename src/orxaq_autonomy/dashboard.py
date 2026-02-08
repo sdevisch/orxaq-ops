@@ -198,6 +198,23 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
     .repo .name {{ font-weight: 680; font-size: .84rem; }}
     .repo .line {{ color: var(--muted); font-size: .82rem; }}
+    .diag-list {{
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+      padding: 9px;
+      display: grid;
+      gap: 4px;
+    }}
+    .diag-item {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: baseline;
+      color: var(--muted);
+      font-size: .82rem;
+    }}
+    .diag-item .diag-name {{ min-width: 170px; font-weight: 680; color: var(--ink); }}
     .bar {{
       height: 10px;
       border-radius: 999px;
@@ -283,6 +300,12 @@ def _dashboard_html(refresh_sec: int) -> str:
         <div id="conversationSummary" class="mono">events: loading...</div>
         <div id="conversationFeed" class="feed"></div>
       </article>
+
+      <article class="card span-12">
+        <h2>Resilience Diagnostics</h2>
+        <div id="resilienceSummary" class="mono">sources: loading...</div>
+        <div id="resilienceList" class="diag-list"></div>
+      </article>
     </section>
   </main>
 
@@ -294,6 +317,10 @@ def _dashboard_html(refresh_sec: int) -> str:
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
     function yn(v) {{ return v ? "yes" : "no"; }}
+    function escapeHtml(value) {{
+      return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }}
+    function stateBadge(ok) {{ return ok ? '<span class="ok">ok</span>' : '<span class="bad">error</span>'; }}
 
     function repoMarkup(repo) {{
       if (!repo) return '<div class="line bad">unavailable</div>';
@@ -312,6 +339,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       const status = snapshot.status || {{}};
       const progress = snapshot.progress || {{}};
       const counts = progress.counts || {{}};
+      const diagnostics = snapshot.diagnostics || {{}};
       const done = counts.done || 0;
       const inProgress = counts.in_progress || 0;
       const pending = counts.pending || 0;
@@ -341,27 +369,65 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("latestLog").textContent = snapshot.latest_log_line || "(no log line yet)";
       byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
 
-       const lanes = snapshot.lanes || {{}};
-       const laneItems = lanes.lanes || [];
-       byId("laneSummary").textContent = `running lanes: ${{lanes.running_count ?? 0}}/${{lanes.total_count ?? 0}}`;
-       byId("laneList").innerHTML = laneItems.length
-         ? laneItems.map((lane) => {{
-             const state = lane.running ? "running" : "stopped";
-             return `<div class="line"><span class="mono">${{lane.id}}</span> [${{lane.owner}}] ${{state}}</div>`;
-           }}).join("")
-         : '<div class="line">No lanes configured.</div>';
+      const lanes = snapshot.lanes || {{}};
+      const laneItems = lanes.lanes || [];
+      byId("laneSummary").textContent = `running lanes: ${{lanes.running_count ?? 0}}/${{lanes.total_count ?? 0}}`;
+      byId("laneList").innerHTML = laneItems.length
+        ? laneItems.map((lane) => {{
+            const state = lane.running ? "running" : "stopped";
+            const health = lane.health || "unknown";
+            const age = lane.heartbeat_age_sec ?? -1;
+            return `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s</div>`;
+          }}).join("")
+        : '<div class="line">No lanes configured.</div>';
 
       byId("meta").innerHTML = [
         `<span class="pill">runner pid: ${{status.runner_pid ?? "-"}}</span>`,
         `<span class="pill">supervisor pid: ${{status.supervisor_pid ?? "-"}}</span>`,
         `<span class="pill mono">monitor file: ${{snapshot.monitor_file || "-"}}</span>`,
       ].join("");
+
+      renderDiagnostics(diagnostics, {{}});
+    }}
+
+    function renderDiagnostics(payload, endpointErrors) {{
+      const sources = (payload && payload.sources) || {{}};
+      const errors = (payload && payload.errors) || [];
+      const endpointIssues = Object.entries(endpointErrors || {{}})
+        .filter((entry) => Boolean(entry[1]))
+        .map((entry) => `${{entry[0]}}: ${{entry[1]}}`);
+      const sourceRows = Object.entries(sources);
+      const failedSourceCount = sourceRows.filter((entry) => !(entry[1] || {{}}).ok).length;
+      const totalSourceCount = sourceRows.length + endpointIssues.length;
+      byId("resilienceSummary").textContent =
+        `sources: ${{Math.max(totalSourceCount - failedSourceCount, 0)}}/${{totalSourceCount || 0}} healthy · errors: ${{errors.length + endpointIssues.length}}`;
+
+      const rows = [];
+      for (const [name, item] of sourceRows) {{
+        const source = item || {{}};
+        const message = source.error ? escapeHtml(source.error) : "";
+        rows.push(
+          `<div class="diag-item"><span class="diag-name mono">${{escapeHtml(name)}}</span><span>${{stateBadge(Boolean(source.ok))}}</span><span class="mono">${{message}}</span></div>`
+        );
+      }}
+      for (const issue of endpointIssues) {{
+        rows.push(
+          `<div class="diag-item"><span class="diag-name mono">dashboard_api</span><span>${{stateBadge(false)}}</span><span class="mono">${{escapeHtml(issue)}}</span></div>`
+        );
+      }}
+      if (!rows.length) {{
+        rows.push('<div class="diag-item">No diagnostics available yet.</div>');
+      }}
+      byId("resilienceList").innerHTML = rows.join('');
     }}
 
     function renderConversations(payload) {{
       const events = payload.events || [];
       const ownerCounts = payload.owner_counts || {{}};
-      byId("conversationSummary").textContent = `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}}`;
+      const partial = payload.partial ? " · partial=true" : "";
+      const errors = (payload.errors || []).length ? ` · errors=${{(payload.errors || []).length}}` : "";
+      byId("conversationSummary").textContent =
+        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}}${{partial}}${{errors}}`;
       if (!events.length) {{
         byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
         return;
@@ -371,10 +437,10 @@ def _dashboard_html(refresh_sec: int) -> str:
         const owner = event.owner || 'unknown';
         const task = event.task_id || '-';
         const type = event.event_type || '-';
-        const content = String(event.content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const content = escapeHtml(event.content || '');
         return [
           '<div class="feed-item">',
-          `<div class="feed-head"><span>${{ts}}</span><span>${{owner}}</span><span>${{task}}</span><span>${{type}}</span></div>`,
+          `<div class="feed-head"><span>${{escapeHtml(ts)}}</span><span>${{escapeHtml(owner)}}</span><span>${{escapeHtml(task)}}</span><span>${{escapeHtml(type)}}</span></div>`,
           `<div>${{content}}</div>`,
           '</div>',
         ].join('');
@@ -382,19 +448,57 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("conversationFeed").innerHTML = rows.join('');
     }}
 
-    async function refresh() {{
+    async function fetchJson(path) {{
       try {{
-        const [monitorResp, convResp] = await Promise.all([
-          fetch('/api/monitor', {{ cache: 'no-store' }}),
-          fetch('/api/conversations?lines=200', {{ cache: 'no-store' }}),
-        ]);
-        const monitorPayload = await monitorResp.json();
-        const convPayload = await convResp.json();
-        render(monitorPayload);
-        renderConversations(convPayload);
+        const response = await fetch(path, {{ cache: 'no-store' }});
+        if (!response.ok) {{
+          throw new Error(`HTTP ${{response.status}}`);
+        }}
+        return {{ ok: true, payload: await response.json(), error: "" }};
       }} catch (err) {{
-        byId("latestLog").textContent = `monitor fetch failed: ${{err}}`;
+        return {{ ok: false, payload: null, error: String(err) }};
       }}
+    }}
+
+    async function refresh() {{
+      const [monitorResult, convResult] = await Promise.all([
+        fetchJson('/api/monitor'),
+        fetchJson('/api/conversations?lines=200'),
+      ]);
+
+      let monitorPayload = monitorResult.payload;
+      if (monitorResult.ok && monitorPayload) {{
+        render(monitorPayload);
+      }} else {{
+        byId("latestLog").textContent = `monitor fetch failed: ${{monitorResult.error}}`;
+      }}
+
+      if (convResult.ok && convResult.payload) {{
+        renderConversations(convResult.payload);
+      }} else {{
+        const fallbackConv = monitorPayload && monitorPayload.conversations
+          ? {{
+              total_events: monitorPayload.conversations.total_events || 0,
+              owner_counts: monitorPayload.conversations.owner_counts || {{}},
+              events: monitorPayload.conversations.latest ? [monitorPayload.conversations.latest] : [],
+              partial: true,
+              errors: [convResult.error || 'conversation endpoint unavailable'],
+            }}
+          : {{
+              total_events: 0,
+              owner_counts: {{}},
+              events: [],
+              partial: true,
+              errors: [convResult.error || 'conversation endpoint unavailable'],
+            }};
+        renderConversations(fallbackConv);
+      }}
+
+      const diagnosticsPayload = (monitorPayload && monitorPayload.diagnostics) || {{}};
+      renderDiagnostics(diagnosticsPayload, {{
+        monitor_endpoint: monitorResult.ok ? "" : monitorResult.error,
+        conversations_endpoint: convResult.ok ? "" : convResult.error,
+      }});
     }}
 
     function schedule() {{
@@ -468,7 +572,7 @@ def start_dashboard(
                     self._send_json(snapshot_provider())
                     return
                 if parsed.path == "/api/lanes":
-                    self._send_json(lane_status_snapshot(config))
+                    self._send_json(_safe_lane_status_snapshot(config))
                     return
                 if parsed.path == "/api/conversations":
                     query = parse_qs(parsed.query)
@@ -477,7 +581,7 @@ def start_dashboard(
                         lines = max(1, min(2000, int(raw_lines)))
                     except ValueError:
                         lines = 200
-                    self._send_json(conversations_snapshot(config, lines=lines, include_lanes=True))
+                    self._send_json(_safe_conversations_snapshot(config, lines=lines))
                     return
                 if parsed.path == "/api/status":
                     self._send_json(status_snapshot(config))
@@ -525,9 +629,10 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
     try:
         return monitor_snapshot(config)
     except Exception as err:
+        message = str(err)
         return {
             "timestamp": "",
-            "latest_log_line": f"monitor snapshot error: {err}",
+            "latest_log_line": f"monitor snapshot error: {message}",
             "status": {
                 "supervisor_running": False,
                 "runner_running": False,
@@ -541,13 +646,59 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "active_tasks": [],
                 "blocked_tasks": [],
             },
-            "lanes": {"running_count": 0, "total_count": 0, "lanes": []},
-            "conversations": {"total_events": 0, "owner_counts": {}, "latest": {}},
+            "lanes": {"running_count": 0, "total_count": 0, "lanes": [], "ok": False, "errors": [message]},
+            "conversations": {
+                "total_events": 0,
+                "owner_counts": {},
+                "latest": {},
+                "partial": True,
+                "errors": [message],
+                "sources": [],
+            },
             "repos": {
-                "implementation": {"ok": False, "error": str(err)},
-                "tests": {"ok": False, "error": str(err)},
+                "implementation": {"ok": False, "error": message},
+                "tests": {"ok": False, "error": message},
+            },
+            "diagnostics": {
+                "ok": False,
+                "errors": [f"monitor: {message}"],
+                "sources": {"monitor": {"ok": False, "error": message}},
             },
             "monitor_file": "",
+        }
+
+
+def _safe_lane_status_snapshot(config: ManagerConfig) -> dict:
+    try:
+        return lane_status_snapshot(config)
+    except Exception as err:
+        message = str(err)
+        return {
+            "timestamp": "",
+            "lanes_file": str(config.lanes_file),
+            "running_count": 0,
+            "total_count": 0,
+            "lanes": [],
+            "ok": False,
+            "errors": [message],
+        }
+
+
+def _safe_conversations_snapshot(config: ManagerConfig, *, lines: int = 200) -> dict:
+    try:
+        return conversations_snapshot(config, lines=lines, include_lanes=True)
+    except Exception as err:
+        message = str(err)
+        return {
+            "timestamp": "",
+            "conversation_files": [str(config.conversation_log_file)],
+            "total_events": 0,
+            "events": [],
+            "owner_counts": {},
+            "sources": [],
+            "partial": True,
+            "ok": False,
+            "errors": [message],
         }
 
 

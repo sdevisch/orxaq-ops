@@ -547,11 +547,11 @@ def runner_argv(config: ManagerConfig) -> list[str]:
     return args
 
 
-def _heartbeat_age_sec(config: ManagerConfig) -> int:
-    if not config.heartbeat_file.exists():
+def _heartbeat_age_sec_from_file(path: Path) -> int:
+    if not path.exists():
         return -1
     try:
-        raw = json.loads(config.heartbeat_file.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
         ts = str(raw.get("timestamp", "")).strip()
         if not ts:
             return -1
@@ -561,6 +561,10 @@ def _heartbeat_age_sec(config: ManagerConfig) -> int:
         return int((_now_utc() - parsed).total_seconds())
     except Exception:
         return -1
+
+
+def _heartbeat_age_sec(config: ManagerConfig) -> int:
+    return _heartbeat_age_sec_from_file(config.heartbeat_file)
 
 
 def run_foreground(config: ManagerConfig) -> int:
@@ -932,9 +936,86 @@ def _state_progress_snapshot(config: ManagerConfig) -> dict[str, Any]:
 def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     status = status_snapshot(config)
     progress = _state_progress_snapshot(config)
-    lanes = lane_status_snapshot(config)
-    conv = conversations_snapshot(config, lines=60, include_lanes=True)
-    latest_log_line = tail_logs(config, lines=1, latest_run_only=True).strip()
+    diagnostics: dict[str, Any] = {"ok": True, "errors": [], "sources": {}}
+
+    def _mark_source(name: str, ok: bool, error: str = "") -> None:
+        diagnostics["sources"][name] = {"ok": bool(ok), "error": error}
+        if not ok:
+            diagnostics["ok"] = False
+            if error:
+                diagnostics["errors"].append(f"{name}: {error}")
+
+    lanes: dict[str, Any] = {
+        "timestamp": _now_iso(),
+        "lanes_file": str(config.lanes_file),
+        "running_count": 0,
+        "total_count": 0,
+        "lanes": [],
+        "ok": False,
+        "errors": [],
+    }
+    try:
+        lanes = lane_status_snapshot(config)
+    except Exception as err:
+        lanes["errors"] = [str(err)]
+        lanes["error"] = str(err)
+    _mark_source("lanes", bool(lanes.get("ok", False)), "; ".join(lanes.get("errors", [])))
+
+    conv: dict[str, Any] = {
+        "timestamp": _now_iso(),
+        "conversation_files": [str(config.conversation_log_file)],
+        "total_events": 0,
+        "events": [],
+        "owner_counts": {},
+        "ok": False,
+        "partial": True,
+        "errors": [],
+        "sources": [],
+    }
+    try:
+        conv = conversations_snapshot(config, lines=60, include_lanes=True)
+    except Exception as err:
+        conv["errors"] = [str(err)]
+        conv["partial"] = True
+    _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
+
+    try:
+        impl_repo = _repo_monitor_snapshot(config.impl_repo)
+    except Exception as err:
+        impl_repo = {
+            "path": str(config.impl_repo),
+            "ok": False,
+            "error": str(err),
+            "branch": "",
+            "head": "",
+            "dirty": False,
+            "changed_files": 0,
+        }
+    _mark_source("implementation_repo", bool(impl_repo.get("ok", False)), str(impl_repo.get("error", "")))
+
+    try:
+        test_repo = _repo_monitor_snapshot(config.test_repo)
+    except Exception as err:
+        test_repo = {
+            "path": str(config.test_repo),
+            "ok": False,
+            "error": str(err),
+            "branch": "",
+            "head": "",
+            "dirty": False,
+            "changed_files": 0,
+        }
+    _mark_source("tests_repo", bool(test_repo.get("ok", False)), str(test_repo.get("error", "")))
+
+    latest_log_line = ""
+    log_error = ""
+    try:
+        latest_log_line = tail_logs(config, lines=1, latest_run_only=True).strip()
+    except Exception as err:
+        log_error = str(err)
+        latest_log_line = f"log read error: {err}"
+    _mark_source("logs", log_error == "", log_error)
+
     snapshot = {
         "timestamp": _now_iso(),
         "status": status,
@@ -944,17 +1025,25 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "total_events": conv.get("total_events", 0),
             "owner_counts": conv.get("owner_counts", {}),
             "latest": (conv.get("events", [])[-1] if conv.get("events") else {}),
+            "partial": bool(conv.get("partial", False)),
+            "errors": conv.get("errors", []),
+            "sources": conv.get("sources", []),
         },
         "repos": {
-            "implementation": _repo_monitor_snapshot(config.impl_repo),
-            "tests": _repo_monitor_snapshot(config.test_repo),
+            "implementation": impl_repo,
+            "tests": test_repo,
         },
         "latest_log_line": latest_log_line,
+        "diagnostics": diagnostics,
     }
     monitor_file = config.artifacts_dir / "monitor.json"
-    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
-    monitor_file.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    snapshot["monitor_file"] = str(monitor_file)
+    try:
+        config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        monitor_file.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        snapshot["monitor_file"] = str(monitor_file)
+    except Exception as err:
+        _mark_source("monitor_file", False, str(err))
+        snapshot["monitor_file"] = ""
     return snapshot
 
 
@@ -966,6 +1055,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     repos = snapshot.get("repos", {})
     lanes = snapshot.get("lanes", {})
     conversations = snapshot.get("conversations", {})
+    diagnostics = snapshot.get("diagnostics", {})
     impl = repos.get("implementation", {})
     tests = repos.get("tests", {})
     latest_log_line = str(snapshot.get("latest_log_line", "")).strip()
@@ -1000,9 +1090,15 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
             f"conversations: events={conversations.get('total_events', 0)} "
             f"owners={conversations.get('owner_counts', {})}"
         ),
+        (
+            f"diagnostics: ok={diagnostics.get('ok', True)} "
+            f"errors={len(diagnostics.get('errors', []))}"
+        ),
         _repo_line("impl_repo", impl),
         _repo_line("test_repo", tests),
     ]
+    if diagnostics.get("errors"):
+        lines.append(f"diagnostic_errors: {' | '.join(str(item) for item in diagnostics['errors'])}")
     if latest_log_line:
         lines.append(f"log: {latest_log_line}")
     lines.append(f"monitor_file: {snapshot.get('monitor_file', '')}")
@@ -1291,46 +1387,100 @@ def _lane_log_file(config: ManagerConfig, lane_id: str) -> Path:
     return (config.lanes_runtime_dir / lane_id / "runner.log").resolve()
 
 
+def _lane_health_state(*, running: bool, heartbeat_age_sec: int, heartbeat_stale: bool) -> str:
+    if not running:
+        return "stopped"
+    if heartbeat_stale:
+        return "stale"
+    if heartbeat_age_sec == -1:
+        return "unknown"
+    return "ok"
+
+
 def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     lanes = load_lane_specs(config)
     snapshots: list[dict[str, Any]] = []
+    errors: list[str] = []
     for lane in lanes:
         lane_id = lane["id"]
         pid_path = _lane_pid_file(config, lane_id)
         log_path = _lane_log_file(config, lane_id)
         meta_path = _lane_meta_file(config, lane_id)
-        pid = _read_pid(pid_path)
-        running = _pid_running(pid)
-        meta = _read_json_file(meta_path)
-        latest = ""
-        if log_path.exists():
-            lines = log_path.read_text(encoding="utf-8").splitlines()
-            latest = lines[-1] if lines else ""
-        snapshots.append(
-            {
-                "id": lane_id,
-                "enabled": lane["enabled"],
-                "owner": lane["owner"],
-                "description": lane["description"],
-                "running": running,
-                "pid": pid,
-                "tasks_file": str(lane["tasks_file"]),
-                "objective_file": str(lane["objective_file"]),
-                "impl_repo": str(lane["impl_repo"]),
-                "test_repo": str(lane["test_repo"]),
-                "exclusive_paths": lane["exclusive_paths"],
-                "latest_log_line": latest,
-                "log_file": str(log_path),
-                "pid_file": str(pid_path),
-                "meta": meta,
-            }
-        )
+        heartbeat_file = Path(lane["heartbeat_file"])
+        try:
+            pid = _read_pid(pid_path)
+            running = _pid_running(pid)
+            meta = _read_json_file(meta_path)
+            latest = ""
+            if log_path.exists():
+                lines = log_path.read_text(encoding="utf-8").splitlines()
+                latest = lines[-1] if lines else ""
+            heartbeat_age_sec = _heartbeat_age_sec_from_file(heartbeat_file)
+            heartbeat_stale = heartbeat_age_sec != -1 and heartbeat_age_sec > config.heartbeat_stale_sec
+            health = _lane_health_state(
+                running=running,
+                heartbeat_age_sec=heartbeat_age_sec,
+                heartbeat_stale=heartbeat_stale,
+            )
+            snapshots.append(
+                {
+                    "id": lane_id,
+                    "enabled": lane["enabled"],
+                    "owner": lane["owner"],
+                    "description": lane["description"],
+                    "running": running,
+                    "pid": pid,
+                    "tasks_file": str(lane["tasks_file"]),
+                    "objective_file": str(lane["objective_file"]),
+                    "impl_repo": str(lane["impl_repo"]),
+                    "test_repo": str(lane["test_repo"]),
+                    "exclusive_paths": lane["exclusive_paths"],
+                    "latest_log_line": latest,
+                    "log_file": str(log_path),
+                    "pid_file": str(pid_path),
+                    "meta_file": str(meta_path),
+                    "heartbeat_file": str(heartbeat_file),
+                    "heartbeat_age_sec": heartbeat_age_sec,
+                    "heartbeat_stale": heartbeat_stale,
+                    "health": health,
+                    "meta": meta,
+                }
+            )
+        except Exception as err:
+            errors.append(f"{lane_id}: {err}")
+            snapshots.append(
+                {
+                    "id": lane_id,
+                    "enabled": lane["enabled"],
+                    "owner": lane["owner"],
+                    "description": lane["description"],
+                    "running": False,
+                    "pid": None,
+                    "tasks_file": str(lane["tasks_file"]),
+                    "objective_file": str(lane["objective_file"]),
+                    "impl_repo": str(lane["impl_repo"]),
+                    "test_repo": str(lane["test_repo"]),
+                    "exclusive_paths": lane["exclusive_paths"],
+                    "latest_log_line": "",
+                    "log_file": str(log_path),
+                    "pid_file": str(pid_path),
+                    "meta_file": str(meta_path),
+                    "heartbeat_file": str(heartbeat_file),
+                    "heartbeat_age_sec": -1,
+                    "heartbeat_stale": False,
+                    "health": "error",
+                    "error": str(err),
+                    "meta": {},
+                }
+            )
     return {
         "timestamp": _now_iso(),
         "lanes_file": str(config.lanes_file),
         "running_count": sum(1 for lane in snapshots if lane["running"]),
         "total_count": len(snapshots),
         "lanes": snapshots,
+        "ok": len(errors) == 0,
+        "errors": errors,
     }
 
 
@@ -1551,18 +1701,66 @@ def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> 
 
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
     line_limit = max(1, min(2000, int(lines)))
-    sources: list[Path] = [config.conversation_log_file]
+    source_specs: list[dict[str, str]] = [
+        {
+            "path": str(config.conversation_log_file),
+            "kind": "primary",
+            "lane_id": "",
+            "owner": "",
+        }
+    ]
+    errors: list[str] = []
     if include_lanes:
-        for lane in load_lane_specs(config):
+        try:
+            lanes = load_lane_specs(config)
+        except Exception as err:
+            lanes = []
+            errors.append(f"lane_specs: {err}")
+        for lane in lanes:
             lane_file = Path(lane["conversation_log_file"])
-            if lane_file not in sources:
-                sources.append(lane_file)
+            lane_path = str(lane_file)
+            exists = any(item["path"] == lane_path for item in source_specs)
+            if not exists:
+                source_specs.append(
+                    {
+                        "path": lane_path,
+                        "kind": "lane",
+                        "lane_id": str(lane["id"]),
+                        "owner": str(lane["owner"]),
+                    }
+                )
 
     events: list[dict[str, Any]] = []
-    for source in sources:
-        for item in _tail_ndjson(source, line_limit):
-            item["source"] = str(source)
-            events.append(item)
+    source_reports: list[dict[str, Any]] = []
+    for source in source_specs:
+        source_path = Path(source["path"])
+        source_events: list[dict[str, Any]] = []
+        source_error = ""
+        source_ok = True
+        try:
+            source_events = _tail_ndjson(source_path, line_limit)
+            for item in source_events:
+                item["source"] = str(source_path)
+                if source["lane_id"] and "lane_id" not in item:
+                    item["lane_id"] = source["lane_id"]
+                if source["owner"] and "owner" not in item:
+                    item["owner"] = source["owner"]
+                events.append(item)
+        except Exception as err:
+            source_ok = False
+            source_error = str(err)
+            errors.append(f"{source['path']}: {err}")
+        source_reports.append(
+            {
+                "path": source["path"],
+                "kind": source["kind"],
+                "lane_id": source["lane_id"],
+                "owner": source["owner"],
+                "ok": source_ok,
+                "error": source_error,
+                "event_count": len(source_events),
+            }
+        )
     events = sorted(events, key=lambda item: str(item.get("timestamp", "")))[-line_limit:]
 
     owners: dict[str, int] = {}
@@ -1570,12 +1768,17 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         owner = str(event.get("owner", "unknown")).strip() or "unknown"
         owners[owner] = owners.get(owner, 0) + 1
 
+    partial = bool(errors) or any(not item["ok"] for item in source_reports)
     return {
         "timestamp": _now_iso(),
-        "conversation_files": [str(path) for path in sources],
+        "conversation_files": [item["path"] for item in source_specs],
         "total_events": len(events),
         "events": events,
         "owner_counts": owners,
+        "sources": source_reports,
+        "partial": partial,
+        "ok": not partial,
+        "errors": errors,
     }
 
 

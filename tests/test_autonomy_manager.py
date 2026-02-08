@@ -275,6 +275,43 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("monitor_file", snapshot)
             self.assertTrue(pathlib.Path(snapshot["monitor_file"]).exists())
             self.assertIn("repos", snapshot)
+            self.assertIn("diagnostics", snapshot)
+
+    def test_monitor_snapshot_retains_output_when_lane_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                side_effect=RuntimeError("lane source unavailable"),
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 0,
+                    "events": [],
+                    "owner_counts": {},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertFalse(snapshot["diagnostics"]["ok"])
+            self.assertFalse(snapshot["diagnostics"]["sources"]["lanes"]["ok"])
+            self.assertFalse(snapshot["lanes"]["ok"])
+            self.assertIn("lane source unavailable", snapshot["lanes"]["errors"][0])
 
     def test_dashboard_status_snapshot_defaults(self):
         with tempfile.TemporaryDirectory() as td:
@@ -536,6 +573,23 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["total_events"], 2)
             self.assertIn("codex", snapshot["owner_counts"])
             self.assertIn("gemini", snapshot["owner_counts"])
+            self.assertTrue(snapshot["ok"])
+            self.assertFalse(snapshot["partial"])
+
+    def test_conversations_snapshot_degrades_if_lane_specs_fail(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch("orxaq_autonomy.manager.load_lane_specs", side_effect=RuntimeError("bad lanes config")):
+                snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 1)
+            self.assertFalse(snapshot["ok"])
+            self.assertTrue(snapshot["partial"])
+            self.assertIn("lane_specs: bad lanes config", snapshot["errors"][0])
 
     def test_start_lanes_background_starts_selected_lane(self):
         with tempfile.TemporaryDirectory() as td:
@@ -576,6 +630,45 @@ class ManagerTests(unittest.TestCase):
             argv = popen.call_args[0][0]
             self.assertIn("--owner-filter", argv)
             self.assertIn("codex", argv)
+
+    def test_lane_status_snapshot_includes_lane_health_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane_runtime = root / "artifacts" / "autonomy" / "lanes" / "lane-a"
+            lane_runtime.mkdir(parents=True, exist_ok=True)
+            (lane_runtime / "lane.pid").write_text("891\n", encoding="utf-8")
+            (lane_runtime / "heartbeat.json").write_text(
+                json.dumps({"timestamp": "2000-01-01T00:00:00+00:00"}),
+                encoding="utf-8",
+            )
+            with mock.patch("orxaq_autonomy.manager._pid_running", return_value=True):
+                snapshot = manager.lane_status_snapshot(cfg)
+            self.assertTrue(snapshot["ok"])
+            lane = snapshot["lanes"][0]
+            self.assertEqual(lane["owner"], "codex")
+            self.assertEqual(lane["health"], "stale")
+            self.assertTrue(lane["heartbeat_stale"])
+            self.assertGreaterEqual(lane["heartbeat_age_sec"], 1)
 
 
 if __name__ == "__main__":

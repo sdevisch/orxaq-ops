@@ -295,7 +295,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             for lane in snapshot["lanes"]:
                 state = "running" if lane["running"] else "stopped"
-                print(f"- {lane['id']} [{lane['owner']}] {state} pid={lane['pid']}")
+                print(
+                    f"- {lane['id']} [{lane['owner']}] {state} pid={lane['pid']} "
+                    f"health={lane.get('health', 'unknown')} heartbeat_age={lane.get('heartbeat_age_sec', -1)}s"
+                )
+                if lane.get("error"):
+                    print(f"  error: {lane['error']}")
             return 0
         if args.command == "lanes-start":
             lane_id = args.lane.strip() or None
