@@ -8,6 +8,8 @@ This keeps operational autonomy tooling out of `orxaq` so product releases stay 
 
 - `scripts/autonomy_runner.py` - task scheduler and agent executor.
 - `scripts/autonomy_manager.sh` - lifecycle commands (`run/start/stop/status/logs/reset`).
+- `scripts/preflight.sh` - strict readiness gate (auth, tools, repo cleanliness).
+- `scripts/generate_workspace.sh` - writes VS Code multi-root workspace file.
 - `config/tasks.json` - prioritized queue.
 - `config/objective.md` - project objective and stop criteria.
 - `config/codex_result.schema.json` - expected Codex JSON response schema.
@@ -43,6 +45,9 @@ make status
 make logs
 make stop
 make reset
+make preflight
+make workspace
+make open-vscode
 ```
 
 Run foreground (for debugging):
