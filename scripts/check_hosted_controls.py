@@ -45,6 +45,14 @@ def _gh_api_json(endpoint: str) -> tuple[bool, dict | None, str]:
         return False, None, f"Non-JSON response from gh api: {raw}"
 
 
+def is_repo_private(repo: str) -> tuple[bool, bool, str]:
+    ok, payload, raw_error = _gh_api_json(f"repos/{repo}")
+    if not ok:
+        return False, False, f"Failed to inspect repo visibility for {repo}: {raw_error}"
+    assert payload is not None
+    return True, bool(payload.get("private", False)), ""
+
+
 def branch_protection_errors(repo: str, branch: str) -> list[str]:
     ok, payload, raw_error = _gh_api_json(f"repos/{repo}/branches/{branch}/protection")
     if not ok:
@@ -143,7 +151,12 @@ def main() -> int:
     all_errors: list[str] = []
     for spec in specs:
         all_errors.extend(branch_protection_errors(spec.repo, spec.branch))
-        all_errors.extend(badge_errors(spec.readme))
+        visibility_ok, is_private, visibility_error = is_repo_private(spec.repo)
+        if not visibility_ok:
+            all_errors.append(visibility_error)
+            continue
+        if not is_private:
+            all_errors.extend(badge_errors(spec.readme))
 
     if all_errors:
         print("Hosted controls check failed:")

@@ -66,6 +66,28 @@ class HostedControlsTests(unittest.TestCase):
                 errs = check_hosted_controls.badge_errors(readme)
                 self.assertEqual(len(errs), 1)
 
+    def test_is_repo_private_true(self):
+        with mock.patch.object(
+            check_hosted_controls,
+            "_gh_api_json",
+            return_value=(True, {"private": True}, ""),
+        ):
+            ok, private, err = check_hosted_controls.is_repo_private("owner/repo")
+            self.assertTrue(ok)
+            self.assertTrue(private)
+            self.assertEqual(err, "")
+
+    def test_is_repo_private_failure(self):
+        with mock.patch.object(
+            check_hosted_controls,
+            "_gh_api_json",
+            return_value=(False, None, "boom"),
+        ):
+            ok, private, err = check_hosted_controls.is_repo_private("owner/repo")
+            self.assertFalse(ok)
+            self.assertFalse(private)
+            self.assertIn("owner/repo", err)
+
 
 if __name__ == "__main__":
     unittest.main()
