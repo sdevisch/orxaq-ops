@@ -397,7 +397,7 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["lanes"]["ok"])
             self.assertIn("lane source unavailable", snapshot["lanes"]["errors"][0])
 
-    def test_monitor_snapshot_prefers_lane_progress_when_available(self):
+    def test_monitor_snapshot_merges_primary_and_lane_progress_when_available(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
             cfg = manager.ManagerConfig.from_root(root)
@@ -428,9 +428,11 @@ class ManagerTests(unittest.TestCase):
             }
             with mock.patch("orxaq_autonomy.manager.lane_status_snapshot", return_value=lane_payload):
                 snapshot = manager.monitor_snapshot(cfg)
-            self.assertEqual(snapshot["progress"]["source"], "lane_states")
+            self.assertEqual(snapshot["progress"]["source"], "merged_states")
             self.assertEqual(snapshot["progress"]["counts"]["pending"], 1)
             self.assertEqual(snapshot["progress"]["counts"]["in_progress"], 1)
+            self.assertEqual(snapshot["progress"]["counts"]["done"], 2)
+            self.assertEqual(snapshot["progress"]["active_tasks"], ["lane:lane-a"])
 
     def test_dashboard_status_snapshot_defaults(self):
         with tempfile.TemporaryDirectory() as td:

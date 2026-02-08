@@ -1162,6 +1162,8 @@ def build_agent_prompt(
         f"{continuation_block}\n"
         "Execution requirements:\n"
         "- Work fully autonomously for this task.\n"
+        "- Scope boundary: complete only the current autonomous task listed above.\n"
+        "- Do not start another task in this run; return final JSON immediately after this task is done/partial/blocked.\n"
         "- Do not ask for user nudges unless blocked by credentials, destructive actions, or true tradeoff decisions.\n"
         "- Run validation commands: `make lint` then `make test`.\n"
         "- Commit and push contiguous changes.\n"

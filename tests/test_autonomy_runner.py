@@ -327,6 +327,8 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertIn("Autonomy skill protocol", prompt)
         self.assertIn("proto", prompt)
         self.assertIn("MCP context", prompt)
+        self.assertIn("Scope boundary: complete only the current autonomous task listed above.", prompt)
+        self.assertIn("Do not start another task in this run", prompt)
 
     def test_prompt_includes_startup_instructions(self):
         task = runner.Task(

@@ -1078,36 +1078,45 @@ def _combined_progress_snapshot(config: ManagerConfig, lanes: dict[str, Any]) ->
         primary["source"] = "primary_state"
         return primary
 
-    counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
-    active_tasks: list[str] = []
-    blocked_tasks: list[str] = []
+    lane_counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
+    lane_active_tasks: list[str] = []
+    lane_blocked_tasks: list[str] = []
     task_total = 0
     for lane in lane_items:
         if not isinstance(lane, dict):
             continue
-        lane_counts = lane.get("state_counts", {})
-        if not isinstance(lane_counts, dict):
+        lane_state_counts = lane.get("state_counts", {})
+        if not isinstance(lane_state_counts, dict):
             continue
-        for key in counts:
-            counts[key] += _int_value(lane_counts.get(key, 0), 0)
+        for key in lane_counts:
+            lane_counts[key] += _int_value(lane_state_counts.get(key, 0), 0)
         task_total += _int_value(lane.get("task_total", 0), 0)
         lane_id = str(lane.get("id", "")).strip() or "unknown"
-        if _int_value(lane_counts.get("in_progress", 0), 0) > 0:
-            active_tasks.append(lane_id)
-        if _int_value(lane_counts.get("blocked", 0), 0) > 0:
-            blocked_tasks.append(lane_id)
+        if _int_value(lane_state_counts.get("in_progress", 0), 0) > 0:
+            lane_active_tasks.append(f"lane:{lane_id}")
+        if _int_value(lane_state_counts.get("blocked", 0), 0) > 0:
+            lane_blocked_tasks.append(f"lane:{lane_id}")
 
-    if sum(counts.values()) == 0 and task_total == 0:
+    if sum(lane_counts.values()) == 0 and task_total == 0:
         primary["source"] = "primary_state"
         return primary
 
+    primary_counts = primary.get("counts", {})
+    counts = {
+        key: _int_value(primary_counts.get(key, 0), 0) + _int_value(lane_counts.get(key, 0), 0)
+        for key in {"pending", "in_progress", "done", "blocked", "unknown"}
+    }
+    primary_active = [str(item) for item in primary.get("active_tasks", []) if str(item).strip()]
+    primary_blocked = [str(item) for item in primary.get("blocked_tasks", []) if str(item).strip()]
+
     return {
         "counts": counts,
-        "active_tasks": sorted(set(active_tasks)),
-        "blocked_tasks": sorted(set(blocked_tasks)),
-        "source": "lane_states",
+        "active_tasks": sorted(set(primary_active + lane_active_tasks)),
+        "blocked_tasks": sorted(set(primary_blocked + lane_blocked_tasks)),
+        "source": "merged_states",
         "lane_task_total": task_total,
-        "primary_state_counts": primary.get("counts", {}),
+        "primary_state_counts": primary_counts,
+        "lane_state_counts": lane_counts,
     }
 
 
