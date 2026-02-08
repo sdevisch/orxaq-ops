@@ -337,11 +337,16 @@ def _dashboard_html(refresh_sec: int) -> str:
 
     function render(snapshot) {{
       const status = snapshot.status || {{}};
+      const runtime = snapshot.runtime || {{}};
       const lanes = snapshot.lanes || {{}};
       const laneItems = lanes.lanes || [];
       const runningLanes = Number(lanes.running_count || 0);
       const totalLanes = Number(lanes.total_count || 0);
-      const healthyLanes = laneItems.filter((lane) => (lane.health || "unknown") === "ok").length;
+      const operationalLanes = Number(runtime.lane_operational_count ?? laneItems.filter((lane) => {{
+        const h = String(lane.health || "unknown").toLowerCase();
+        return h === "ok" || h === "completed" || h === "paused";
+      }}).length);
+      const degradedLanes = Number(runtime.lane_degraded_count ?? Math.max(totalLanes - operationalLanes, 0));
       const progress = snapshot.progress || {{}};
       const counts = progress.counts || {{}};
       const diagnostics = snapshot.diagnostics || {{}};
@@ -369,11 +374,14 @@ def _dashboard_html(refresh_sec: int) -> str:
       const laneAgentState = runningLanes > 0
         ? '<span class="ok">active</span>'
         : (totalLanes > 0 ? '<span class="warn">idle</span>' : '<span class="mono">n/a</span>');
+      const fabricState = runtime.effective_agents_running
+        ? '<span class="ok">active</span>'
+        : '<span class="bad">stopped</span>';
       const effectiveRunnerState = (!status.runner_running && runningLanes > 0)
         ? '<span class="warn">idle (lane mode)</span>'
         : runnerState;
       byId("runtimeState").innerHTML =
-        `supervisor: ${{supervisorState}} · runner: ${{effectiveRunnerState}} · lane_agents: ${{laneAgentState}}`;
+        `supervisor: ${{supervisorState}} · runner: ${{effectiveRunnerState}} · lane_agents: ${{laneAgentState}} · fabric: ${{fabricState}}`;
       const hbNote = (!status.runner_running && runningLanes > 0)
         ? ' · note: lane runners active'
         : '';
@@ -386,7 +394,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
 
       byId("laneSummary").textContent =
-        `running lanes: ${{runningLanes}}/${{totalLanes}} · healthy: ${{healthyLanes}}`;
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}}`;
       byId("laneList").innerHTML = laneItems.length
         ? laneItems.map((lane) => {{
             const state = lane.running ? "running" : "stopped";

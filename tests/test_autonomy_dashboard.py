@@ -25,6 +25,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("renderDiagnostics", html)
         self.assertIn("lane_agents", html)
         self.assertIn("idle (lane mode)", html)
+        self.assertIn("operational", html)
+        self.assertIn("fabric", html)
 
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):

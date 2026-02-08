@@ -277,6 +277,8 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("repos", snapshot)
             self.assertIn("diagnostics", snapshot)
             self.assertIn("handoffs", snapshot)
+            self.assertIn("runtime", snapshot)
+            self.assertIn("effective_agents_running", snapshot["runtime"])
 
     def test_monitor_snapshot_reports_handoff_counts(self):
         with tempfile.TemporaryDirectory() as td:

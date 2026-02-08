@@ -1051,6 +1051,18 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         conv["errors"] = [str(err)]
         conv["partial"] = True
     _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
+    lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
+    lane_operational_states = {"ok", "completed", "paused"}
+    operational_lanes = [
+        lane
+        for lane in lane_items
+        if str(lane.get("health", "")).strip().lower() in lane_operational_states
+    ]
+    degraded_lanes = [
+        lane
+        for lane in lane_items
+        if str(lane.get("health", "")).strip().lower() not in lane_operational_states
+    ]
 
     try:
         impl_repo = _repo_monitor_snapshot(config.impl_repo)
@@ -1097,6 +1109,13 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     snapshot = {
         "timestamp": _now_iso(),
         "status": status,
+        "runtime": {
+            "primary_runner_running": bool(status.get("runner_running", False)),
+            "lane_agents_running": int(lanes.get("running_count", 0)) > 0,
+            "effective_agents_running": bool(status.get("runner_running", False)) or int(lanes.get("running_count", 0)) > 0,
+            "lane_operational_count": len(operational_lanes),
+            "lane_degraded_count": len(degraded_lanes),
+        },
         "progress": progress,
         "lanes": lanes,
         "conversations": {
