@@ -82,6 +82,25 @@ class ManagerTests(unittest.TestCase):
                 self.assertIn("schtasks", cmd[0].lower())
                 self.assertNotIn("/RL", " ".join(cmd))
                 self.assertEqual(subprocess_result.returncode, 0)
+                tr_index = cmd.index("/TR") + 1
+                task_command = cmd[tr_index]
+                self.assertIn("orxaq_autonomy.cli --root", task_command)
+                self.assertIn(" ensure", task_command)
+
+    def test_start_background_places_root_before_subcommand(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager._read_pid", return_value=None), mock.patch(
+                "orxaq_autonomy.manager._pid_running", return_value=False
+            ), mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager.subprocess.Popen"
+            ) as popen:
+                popen.return_value = mock.Mock(pid=1234)
+                manager.start_background(cfg)
+                argv = popen.call_args[0][0]
+                self.assertIn("--root", argv)
+                self.assertLess(argv.index("--root"), argv.index("supervise"))
 
     def test_ensure_background_restarts_stale_runner(self):
         with tempfile.TemporaryDirectory() as td:
@@ -178,6 +197,9 @@ class ManagerTests(unittest.TestCase):
 
             def fake_popen(*args, **kwargs):
                 popen_calls.append(1)
+                argv = args[0]
+                self.assertIn("--root", argv)
+                self.assertLess(argv.index("--root"), argv.index("run"))
                 return _Child(pid=100 + len(popen_calls), rc=1 if len(popen_calls) == 1 else 0)
 
             with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(

@@ -346,7 +346,7 @@ def supervise_foreground(config: ManagerConfig) -> int:
                 log.write(f"[{_now_iso()}] supervisor: launching runner\n")
                 log.flush()
                 child = subprocess.Popen(
-                    [sys.executable, "-m", "orxaq_autonomy.cli", "run", "--root", str(config.root_dir)],
+                    [sys.executable, "-m", "orxaq_autonomy.cli", "--root", str(config.root_dir), "run"],
                     cwd=str(config.root_dir),
                     stdin=subprocess.DEVNULL,
                     stdout=log,
@@ -407,7 +407,7 @@ def start_background(config: ManagerConfig) -> None:
     else:
         kwargs["start_new_session"] = True
     proc = subprocess.Popen(
-        [sys.executable, "-m", "orxaq_autonomy.cli", "supervise", "--root", str(config.root_dir)],
+        [sys.executable, "-m", "orxaq_autonomy.cli", "--root", str(config.root_dir), "supervise"],
         **kwargs,
     )
     _write_pid(config.supervisor_pid_file, proc.pid)
@@ -499,7 +499,7 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
 def install_keepalive(config: ManagerConfig) -> str:
     if os.name == "nt":
         task_name = "OrxaqAutonomyEnsure"
-        command = f'"{sys.executable}" -m orxaq_autonomy.cli ensure --root "{config.root_dir}"'
+        command = f'"{sys.executable}" -m orxaq_autonomy.cli --root "{config.root_dir}" ensure'
         cmd = [
             "schtasks",
             "/Create",
@@ -532,9 +532,9 @@ def install_keepalive(config: ManagerConfig) -> str:
     <string>{sys.executable}</string>
     <string>-m</string>
     <string>orxaq_autonomy.cli</string>
-    <string>ensure</string>
     <string>--root</string>
     <string>{config.root_dir}</string>
+    <string>ensure</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>60</integer>
