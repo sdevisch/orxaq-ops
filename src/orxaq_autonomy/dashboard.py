@@ -329,6 +329,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       <article class="card span-6">
         <h2>Parallel Lanes</h2>
         <div id="laneSummary" class="mono">lanes: loading...</div>
+        <div id="laneOwnerSummary" class="mono">owners: loading...</div>
         <div class="inline-controls">
           <div class="actions">
             <input id="laneTarget" type="text" placeholder="lane id (optional)" />
@@ -433,14 +434,43 @@ def _dashboard_html(refresh_sec: int) -> str:
       const laneItems = lanePayload.lanes || [];
       const runningLanes = Number(lanePayload.running_count || 0);
       const totalLanes = Number(lanePayload.total_count || 0);
+      const laneHealthCounts = lanePayload.health_counts || {{}};
       const runtimePayload = runtime || {{}};
       const operationalLanes = Number(runtimePayload.lane_operational_count ?? laneItems.filter((lane) => {{
         const h = String(lane.health || "unknown").toLowerCase();
-        return h === "ok" || h === "paused";
+        return h === "ok" || h === "paused" || h === "idle";
       }}).length);
       const degradedLanes = Number(runtimePayload.lane_degraded_count ?? Math.max(totalLanes - operationalLanes, 0));
+      const healthSummary = Object.entries(laneHealthCounts)
+        .map(([name, count]) => `${{name}}=${{Number(count || 0)}}`)
+        .join(", ");
+      const derivedOwnerSummary = {{}};
+      for (const lane of laneItems) {{
+        const owner = String((lane && lane.owner) || "unknown").trim() || "unknown";
+        if (!derivedOwnerSummary[owner]) {{
+          derivedOwnerSummary[owner] = {{ total: 0, running: 0, healthy: 0, degraded: 0 }};
+        }}
+        const health = String((lane && lane.health) || "unknown").toLowerCase();
+        derivedOwnerSummary[owner].total += 1;
+        if (lane && lane.running) derivedOwnerSummary[owner].running += 1;
+        if (health === "ok" || health === "paused" || health === "idle") {{
+          derivedOwnerSummary[owner].healthy += 1;
+        }} else {{
+          derivedOwnerSummary[owner].degraded += 1;
+        }}
+      }}
+      const ownerPayload = (lanePayload.owner_counts && Object.keys(lanePayload.owner_counts).length)
+        ? lanePayload.owner_counts
+        : derivedOwnerSummary;
+      const ownerSummary = Object.entries(ownerPayload)
+        .map(([owner, stats]) => {{
+          const item = stats || {{}};
+          return `${{owner}} t=${{Number(item.total || 0)}} r=${{Number(item.running || 0)}} h=${{Number(item.healthy || 0)}} d=${{Number(item.degraded || 0)}}`;
+        }})
+        .join(" · ");
       byId("laneSummary").textContent =
-        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}}`;
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}}`;
+      byId("laneOwnerSummary").textContent = `owners: ${{ownerSummary || "none"}}`;
       byId("laneList").innerHTML = laneItems.length
         ? laneItems.map((lane) => {{
             const state = lane.running ? "running" : "stopped";
@@ -1054,7 +1084,19 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "active_tasks": [],
                 "blocked_tasks": [],
             },
-            "lanes": {"running_count": 0, "total_count": 0, "lanes": [], "ok": False, "errors": [message]},
+            "lanes": {
+                "running_count": 0,
+                "total_count": 0,
+                "lanes": [],
+                "health_counts": {},
+                "owner_counts": {},
+                "ok": False,
+                "errors": [message],
+            },
+            "runtime": {
+                "lane_health_counts": {},
+                "lane_owner_health": {},
+            },
             "conversations": {
                 "total_events": 0,
                 "owner_counts": {},
@@ -1109,6 +1151,8 @@ def _safe_lane_status_snapshot(config: ManagerConfig) -> dict:
             "running_count": 0,
             "total_count": 0,
             "lanes": [],
+            "health_counts": {},
+            "owner_counts": {},
             "ok": False,
             "errors": [message],
         }

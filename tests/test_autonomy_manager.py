@@ -397,6 +397,108 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["lanes"]["ok"])
             self.assertIn("lane source unavailable", snapshot["lanes"]["errors"][0])
 
+    def test_monitor_snapshot_retains_output_when_response_metrics_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": True,
+                    "errors": [],
+                    "running_count": 1,
+                    "total_count": 1,
+                    "lanes": [
+                        {
+                            "id": "lane-a",
+                            "owner": "codex",
+                            "running": True,
+                            "health": "ok",
+                            "state_counts": {"pending": 0, "in_progress": 1, "done": 0, "blocked": 0, "unknown": 0},
+                            "task_total": 1,
+                        }
+                    ],
+                    "health_counts": {"ok": 1},
+                    "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 0,
+                    "events": [],
+                    "owner_counts": {},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._response_metrics_snapshot",
+                side_effect=RuntimeError("metrics source unavailable"),
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertFalse(snapshot["diagnostics"]["sources"]["response_metrics"]["ok"])
+            self.assertFalse(snapshot["response_metrics"]["ok"])
+            self.assertIn("metrics source unavailable", snapshot["response_metrics"]["errors"][0])
+            self.assertEqual(snapshot["runtime"]["lane_owner_health"]["codex"]["running"], 1)
+
+    def test_monitor_snapshot_retains_output_when_handoff_source_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"ok": True, "errors": [], "running_count": 0, "total_count": 0, "lanes": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 0,
+                    "events": [],
+                    "owner_counts": {},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""), mock.patch(
+                "orxaq_autonomy.manager._tail_ndjson",
+                side_effect=OSError("handoff read denied"),
+            ):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertFalse(snapshot["diagnostics"]["sources"]["handoffs"]["ok"])
+            self.assertEqual(snapshot["handoffs"]["to_codex_events"], 0)
+            self.assertEqual(snapshot["handoffs"]["to_gemini_events"], 0)
+
     def test_monitor_snapshot_merges_primary_and_lane_progress_when_available(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -566,6 +668,11 @@ class ManagerTests(unittest.TestCase):
                     },
                     "tests": {"ok": False, "error": "missing repo"},
                 },
+                "lanes": {
+                    "running_count": 1,
+                    "total_count": 1,
+                    "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                },
                 "handoffs": {"to_codex_events": 3, "to_gemini_events": 1},
                 "latest_log_line": "running task",
                 "monitor_file": "/tmp/monitor.json",
@@ -577,6 +684,7 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("test_repo", text)
         self.assertIn("sync=synced", text)
         self.assertIn("handoffs: to_codex=3 to_gemini=1", text)
+        self.assertIn("lane_owners: codex(total=1,running=1,healthy=1,degraded=0)", text)
         self.assertIn("exciting_stat:", text)
 
     def test_repo_monitor_snapshot_flags_behind_branch(self):
@@ -1523,6 +1631,9 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(lane["health"], "stale")
             self.assertTrue(lane["heartbeat_stale"])
             self.assertGreaterEqual(lane["heartbeat_age_sec"], 1)
+            self.assertEqual(snapshot["health_counts"]["stale"], 1)
+            self.assertEqual(snapshot["owner_counts"]["codex"]["total"], 1)
+            self.assertEqual(snapshot["owner_counts"]["codex"]["degraded"], 1)
 
     def test_lane_status_snapshot_keeps_valid_lane_when_another_lane_is_invalid(self):
         with tempfile.TemporaryDirectory() as td:

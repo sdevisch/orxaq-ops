@@ -34,6 +34,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("fabric", html)
         self.assertIn("optimization_recommendations", html)
         self.assertIn("laneActionStatus", html)
+        self.assertIn("laneOwnerSummary", html)
         self.assertIn("convOwner", html)
         self.assertIn("conversationPath", html)
 
@@ -43,6 +44,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("monitor snapshot error", payload["latest_log_line"])
         self.assertFalse(payload["diagnostics"]["ok"])
         self.assertEqual(payload["conversations"]["recent_events"], [])
+        self.assertIn("owner_counts", payload["lanes"])
+        self.assertIn("lane_owner_health", payload["runtime"])
         self.assertIn("response_metrics", payload)
         self.assertFalse(payload["response_metrics"]["ok"])
 
@@ -53,6 +56,8 @@ class DashboardTests(unittest.TestCase):
             payload = dashboard._safe_lane_status_snapshot(cfg)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["total_count"], 0)
+        self.assertEqual(payload["health_counts"], {})
+        self.assertEqual(payload["owner_counts"], {})
         self.assertIn("lane parse failed", payload["errors"][0])
 
     def test_safe_conversations_snapshot_degrades_on_failure(self):

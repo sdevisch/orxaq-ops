@@ -413,6 +413,25 @@ def main(argv: list[str] | None = None) -> int:
             filtered["lanes"] = lane_items
             filtered["running_count"] = sum(1 for lane in lane_items if bool(lane.get("running", False)))
             filtered["total_count"] = len(lane_items)
+            health_counts: dict[str, int] = {}
+            owner_counts: dict[str, dict[str, int]] = {}
+            healthy_states = {"ok", "paused", "idle"}
+            for lane in lane_items:
+                if not isinstance(lane, dict):
+                    continue
+                health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
+                health_counts[health] = health_counts.get(health, 0) + 1
+                owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+                owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
+                owner_entry["total"] += 1
+                if bool(lane.get("running", False)):
+                    owner_entry["running"] += 1
+                if health in healthy_states:
+                    owner_entry["healthy"] += 1
+                else:
+                    owner_entry["degraded"] += 1
+            filtered["health_counts"] = health_counts
+            filtered["owner_counts"] = owner_counts
             if args.json:
                 print(json.dumps(filtered, indent=2, sort_keys=True))
                 return 0
@@ -428,6 +447,21 @@ def main(argv: list[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
+            if filtered["health_counts"]:
+                health_pairs = ", ".join(
+                    f"{key}={filtered['health_counts'][key]}"
+                    for key in sorted(filtered["health_counts"])
+                )
+                print(f"health_counts: {health_pairs}")
+            if filtered["owner_counts"]:
+                owner_parts = []
+                for owner in sorted(filtered["owner_counts"]):
+                    stats = filtered["owner_counts"][owner]
+                    owner_parts.append(
+                        f"{owner}(total={stats.get('total', 0)},running={stats.get('running', 0)},"
+                        f"healthy={stats.get('healthy', 0)},degraded={stats.get('degraded', 0)})"
+                    )
+                print(f"owner_counts: {' | '.join(owner_parts)}")
             for lane in filtered["lanes"]:
                 state = "running" if lane["running"] else "stopped"
                 print(

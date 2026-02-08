@@ -1166,6 +1166,47 @@ def _build_exciting_stat(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _empty_response_metrics(error: str = "") -> dict[str, Any]:
+    message = str(error).strip()
+    return {
+        "timestamp": _now_iso(),
+        "summary_file": "",
+        "sources": [],
+        "ok": False,
+        "partial": True,
+        "errors": [message] if message else [],
+        "responses_total": 0,
+        "quality_score_avg": 0.0,
+        "latency_sec_avg": 0.0,
+        "prompt_difficulty_score_avg": 0.0,
+        "first_time_pass_count": 0,
+        "first_time_pass_rate": 0.0,
+        "acceptance_pass_count": 0,
+        "acceptance_pass_rate": 0.0,
+        "exact_cost_count": 0,
+        "exact_cost_coverage": 0.0,
+        "cost_usd_total": 0.0,
+        "cost_usd_avg": 0.0,
+        "tokens_total": 0,
+        "tokens_input_total": 0,
+        "tokens_output_total": 0,
+        "tokens_avg": 0.0,
+        "token_exact_count": 0,
+        "token_exact_coverage": 0.0,
+        "token_rate_per_minute": 0.0,
+        "currency": "USD",
+        "by_owner": {},
+        "latest_metric": {},
+        "optimization_recommendations": [],
+        "exciting_stat": {
+            "label": "Awaiting Data",
+            "value": "0",
+            "detail": "No response metrics recorded yet.",
+            "kind": "idle",
+        },
+    }
+
+
 def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str, Any]]) -> dict[str, Any]:
     candidate_paths: list[Path] = [config.metrics_summary_file]
     for lane in lane_items:
@@ -1413,6 +1454,8 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "running_count": 0,
         "total_count": 0,
         "lanes": [],
+        "health_counts": {},
+        "owner_counts": {},
         "ok": False,
         "errors": [],
     }
@@ -1446,7 +1489,10 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         conv_events = []
     recent_conversations = [item for item in conv_events if isinstance(item, dict)][-20:]
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
-    response_metrics = _response_metrics_snapshot(config, lane_items)
+    try:
+        response_metrics = _response_metrics_snapshot(config, lane_items)
+    except Exception as err:
+        response_metrics = _empty_response_metrics(str(err))
     _mark_source("response_metrics", bool(response_metrics.get("ok", False)), "; ".join(response_metrics.get("errors", [])))
     lane_operational_states = {"ok", "paused"}
     operational_lanes = [
@@ -1499,8 +1545,18 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     handoff_dir = (config.artifacts_dir / "handoffs").resolve()
     to_codex_file = handoff_dir / "to_codex.ndjson"
     to_gemini_file = handoff_dir / "to_gemini.ndjson"
-    to_codex_events = _tail_ndjson(to_codex_file, 500)
-    to_gemini_events = _tail_ndjson(to_gemini_file, 500)
+    handoff_errors: list[str] = []
+    try:
+        to_codex_events = _tail_ndjson(to_codex_file, 500)
+    except Exception as err:
+        to_codex_events = []
+        handoff_errors.append(f"to_codex: {err}")
+    try:
+        to_gemini_events = _tail_ndjson(to_gemini_file, 500)
+    except Exception as err:
+        to_gemini_events = []
+        handoff_errors.append(f"to_gemini: {err}")
+    _mark_source("handoffs", len(handoff_errors) == 0, "; ".join(handoff_errors))
 
     snapshot = {
         "timestamp": _now_iso(),
@@ -1511,6 +1567,8 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "effective_agents_running": bool(status.get("runner_running", False)) or int(lanes.get("running_count", 0)) > 0,
             "lane_operational_count": len(operational_lanes),
             "lane_degraded_count": len(degraded_lanes),
+            "lane_health_counts": lanes.get("health_counts", {}),
+            "lane_owner_health": lanes.get("owner_counts", {}),
         },
         "progress": progress,
         "lanes": lanes,
@@ -1561,6 +1619,16 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     exciting_stat = response_metrics.get("exciting_stat", {}) if isinstance(response_metrics.get("exciting_stat", {}), dict) else {}
     conversations = snapshot.get("conversations", {})
     diagnostics = snapshot.get("diagnostics", {})
+    lane_owner_counts = lanes.get("owner_counts", {}) if isinstance(lanes.get("owner_counts", {}), dict) else {}
+    owner_summary_parts: list[str] = []
+    for owner in sorted(lane_owner_counts):
+        payload = lane_owner_counts.get(owner, {})
+        if not isinstance(payload, dict):
+            continue
+        owner_summary_parts.append(
+            f"{owner}(total={payload.get('total', 0)},running={payload.get('running', 0)},"
+            f"healthy={payload.get('healthy', 0)},degraded={payload.get('degraded', 0)})"
+        )
     impl = repos.get("implementation", {})
     tests = repos.get("tests", {})
     latest_log_line = str(snapshot.get("latest_log_line", "")).strip()
@@ -1595,6 +1663,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
             f"lanes: running={lanes.get('running_count', 0)}/"
             f"{lanes.get('total_count', 0)}"
         ),
+        f"lane_owners: {' | '.join(owner_summary_parts) if owner_summary_parts else 'none'}",
         (
             f"conversations: events={conversations.get('total_events', 0)} "
             f"owners={conversations.get('owner_counts', {})}"
@@ -2228,12 +2297,29 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "meta": {},
                 }
             )
+    health_counts: dict[str, int] = {}
+    owner_counts: dict[str, dict[str, int]] = {}
+    healthy_states = {"ok", "paused", "idle"}
+    for lane in snapshots:
+        health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
+        health_counts[health] = health_counts.get(health, 0) + 1
+        owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+        owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
+        owner_entry["total"] += 1
+        if bool(lane.get("running", False)):
+            owner_entry["running"] += 1
+        if health in healthy_states:
+            owner_entry["healthy"] += 1
+        else:
+            owner_entry["degraded"] += 1
     return {
         "timestamp": _now_iso(),
         "lanes_file": str(config.lanes_file),
         "running_count": sum(1 for lane in snapshots if lane["running"]),
         "total_count": len(snapshots),
         "lanes": snapshots,
+        "health_counts": health_counts,
+        "owner_counts": owner_counts,
         "ok": len(errors) == 0,
         "errors": errors,
     }

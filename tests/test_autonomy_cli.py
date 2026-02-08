@@ -305,8 +305,8 @@ class CliTests(unittest.TestCase):
                     "running_count": 1,
                     "total_count": 2,
                     "lanes": [
-                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100},
-                        {"id": "lane-b", "owner": "gemini", "running": False, "pid": None},
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"},
+                        {"id": "lane-b", "owner": "gemini", "running": False, "pid": None, "health": "stopped"},
                     ],
                 },
             ):
@@ -318,6 +318,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["requested_lane"], "lane-a")
             self.assertEqual(data["total_count"], 1)
             self.assertEqual(data["lanes"][0]["id"], "lane-a")
+            self.assertEqual(data["health_counts"], {"ok": 1})
+            self.assertEqual(data["owner_counts"]["codex"]["running"], 1)
 
     def test_lanes_status_command_returns_error_for_unknown_lane_filter(self):
         with tempfile.TemporaryDirectory() as td:
