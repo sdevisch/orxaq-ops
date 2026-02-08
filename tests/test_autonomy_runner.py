@@ -266,6 +266,57 @@ class RuntimeSafeguardTests(unittest.TestCase):
             self.assertIn("impl-1", text)
             self.assertIn("contradictory facts", text)
 
+    def test_handoff_round_trip_between_codex_and_gemini(self):
+        with tempfile.TemporaryDirectory() as td:
+            handoff_dir = pathlib.Path(td)
+            impl_task = runner.Task(
+                id="impl-task",
+                owner="codex",
+                priority=1,
+                title="impl",
+                description="impl",
+                depends_on=[],
+                acceptance=[],
+            )
+            test_task = runner.Task(
+                id="test-task",
+                owner="gemini",
+                priority=1,
+                title="test",
+                description="test",
+                depends_on=[],
+                acceptance=[],
+            )
+            runner.record_handoff_event(
+                handoff_dir=handoff_dir,
+                task=impl_task,
+                outcome={
+                    "status": "done",
+                    "summary": "Changed merge logic",
+                    "blocker": "",
+                    "next_actions": ["Add regression for small-context detail loss."],
+                    "commit": "abc123",
+                },
+            )
+            gemini_context = runner.render_handoff_context(handoff_dir, "gemini")
+            self.assertIn("impl-task", gemini_context)
+            self.assertIn("small-context", gemini_context)
+
+            runner.record_handoff_event(
+                handoff_dir=handoff_dir,
+                task=test_task,
+                outcome={
+                    "status": "blocked",
+                    "summary": "Found failing edge test",
+                    "blocker": "Compaction dropped contradictory facts in merge stage.",
+                    "next_actions": ["Preserve contradictory fact markers in recursive merge."],
+                    "commit": "",
+                },
+            )
+            codex_context = runner.render_handoff_context(handoff_dir, "codex")
+            self.assertIn("test-task", codex_context)
+            self.assertIn("contradictory facts", codex_context)
+
     def test_run_validations_retries_test_command(self):
         calls = []
 
@@ -317,6 +368,36 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("ahead=0", details)
 
+    def test_ensure_repo_pushed_blocks_when_behind(self):
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "true"),
+                (True, "origin/main"),
+                (True, "0 3"),
+            ],
+        ), mock.patch.object(runner, "run_command") as run_command:
+            ok, details = runner.ensure_repo_pushed(pathlib.Path("/tmp/repo"))
+        self.assertFalse(ok)
+        self.assertIn("behind upstream", details)
+        run_command.assert_not_called()
+
+    def test_ensure_repo_pushed_blocks_when_diverged(self):
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "true"),
+                (True, "origin/main"),
+                (True, "2 1"),
+            ],
+        ), mock.patch.object(runner, "run_command") as run_command:
+            ok, details = runner.ensure_repo_pushed(pathlib.Path("/tmp/repo"))
+        self.assertFalse(ok)
+        self.assertIn("diverged", details)
+        run_command.assert_not_called()
+
     def test_ensure_repo_pushed_pushes_when_ahead(self):
         with mock.patch.object(
             runner,
@@ -324,7 +405,7 @@ class RuntimeSafeguardTests(unittest.TestCase):
             side_effect=[
                 (True, "true"),
                 (True, "origin/main"),
-                (True, "0 2"),
+                (True, "2 0"),
                 (True, "0 0"),
             ],
         ), mock.patch.object(

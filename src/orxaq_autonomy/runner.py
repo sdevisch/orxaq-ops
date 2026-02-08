@@ -833,6 +833,18 @@ def _git_output(repo: Path, args: list[str], timeout_sec: int = 120) -> tuple[bo
     return True, result.stdout.strip()
 
 
+def _parse_ahead_behind(counts: str) -> tuple[int, int] | None:
+    parts = counts.split()
+    if len(parts) != 2:
+        return None
+    try:
+        ahead = int(parts[0])
+        behind = int(parts[1])
+    except ValueError:
+        return None
+    return ahead, behind
+
+
 def ensure_repo_pushed(repo: Path, timeout_sec: int = 180) -> tuple[bool, str]:
     ok, inside = _git_output(repo, ["rev-parse", "--is-inside-work-tree"])
     if not ok:
@@ -845,17 +857,17 @@ def ensure_repo_pushed(repo: Path, timeout_sec: int = 180) -> tuple[bool, str]:
     ok, counts = _git_output(repo, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
     if not ok:
         return False, f"unable to compare branch with upstream: {counts}"
-    parts = counts.split()
-    if len(parts) != 2:
+    parsed = _parse_ahead_behind(counts)
+    if parsed is None:
         return False, f"unexpected rev-list output: {counts}"
-    try:
-        behind = int(parts[0])
-        ahead = int(parts[1])
-    except ValueError:
-        return False, f"unable to parse ahead/behind counts: {counts}"
+    ahead, behind = parsed
 
-    if ahead <= 0:
+    if ahead <= 0 and behind <= 0:
         return True, f"branch synced to {upstream} (behind={behind}, ahead={ahead})"
+    if ahead <= 0 and behind > 0:
+        return False, f"branch behind upstream; rebase/pull required (behind={behind}, ahead={ahead})"
+    if ahead > 0 and behind > 0:
+        return False, f"branch diverged from upstream; reconcile before push (behind={behind}, ahead={ahead})"
 
     push = run_command(["git", "push"], cwd=repo, timeout_sec=timeout_sec)
     if push.returncode != 0:
@@ -864,16 +876,14 @@ def ensure_repo_pushed(repo: Path, timeout_sec: int = 180) -> tuple[bool, str]:
     ok, recounted = _git_output(repo, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
     if not ok:
         return False, f"push verification failed: {recounted}"
-    parts = recounted.split()
-    if len(parts) != 2:
+    parsed_after = _parse_ahead_behind(recounted)
+    if parsed_after is None:
         return False, f"unexpected post-push rev-list output: {recounted}"
-    try:
-        behind_after = int(parts[0])
-        ahead_after = int(parts[1])
-    except ValueError:
-        return False, f"unable to parse post-push counts: {recounted}"
+    ahead_after, behind_after = parsed_after
     if ahead_after > 0:
         return False, f"branch still ahead after push (behind={behind_after}, ahead={ahead_after})"
+    if behind_after > 0:
+        return False, f"branch behind after push verification (behind={behind_after}, ahead={ahead_after})"
     return True, f"push verified to {upstream} (behind={behind_after}, ahead={ahead_after})"
 
 
