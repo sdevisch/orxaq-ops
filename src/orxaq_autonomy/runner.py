@@ -534,6 +534,26 @@ def save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
     _write_json(path, state)
 
 
+def recycle_tasks_for_continuous_mode(
+    state: dict[str, dict[str, Any]],
+    tasks: list[Task],
+    *,
+    delay_sec: int,
+) -> None:
+    delay = max(1, int(delay_sec))
+    not_before = (_now_utc() + dt.timedelta(seconds=delay)).isoformat()
+    for task in tasks:
+        entry = state.get(task.id)
+        if not entry:
+            continue
+        entry["status"] = STATUS_PENDING
+        entry["attempts"] = 0
+        entry["retryable_failures"] = 0
+        entry["not_before"] = not_before
+        entry["last_error"] = ""
+        entry["last_update"] = _now_iso()
+
+
 def load_dependency_state(path: Path | None) -> dict[str, dict[str, Any]] | None:
     if path is None or not path.exists():
         return None
@@ -1376,6 +1396,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--conversation-log-file", default="artifacts/autonomy/conversations.ndjson")
     parser.add_argument("--handoff-dir", default="artifacts/autonomy/handoffs")
     parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Continuously recycle completed tasks instead of exiting when all tasks are done.",
+    )
+    parser.add_argument(
+        "--continuous-recycle-delay-sec",
+        type=int,
+        default=90,
+        help="Cooldown before recycled tasks become runnable in continuous mode.",
+    )
+    parser.add_argument(
         "--dependency-state-file",
         default="",
         help="Optional state file to resolve dependencies outside the current owner-filtered task set.",
@@ -1463,6 +1494,34 @@ def main(argv: list[str] | None = None) -> int:
         dependency_state = load_dependency_state(dependency_state_file)
 
         if all(state[t.id]["status"] == STATUS_DONE for t in tasks):
+            if args.continuous:
+                recycle_tasks_for_continuous_mode(
+                    state,
+                    tasks,
+                    delay_sec=args.continuous_recycle_delay_sec,
+                )
+                save_state(state_file, state)
+                _print("All tasks completed; recycled for continuous autonomy mode.")
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="continuous_recycle",
+                    cycle=cycle,
+                    task_id=None,
+                    message="all tasks recycled for continuous mode",
+                    extra={"recycle_delay_sec": int(args.continuous_recycle_delay_sec)},
+                )
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=None,
+                    owner="system",
+                    event_type="continuous_recycle",
+                    content=(
+                        "All tasks reached done; recycled to pending "
+                        f"with delay={int(args.continuous_recycle_delay_sec)}s."
+                    ),
+                )
+                continue
             _print("All tasks are marked done.")
             write_heartbeat(
                 heartbeat_file,

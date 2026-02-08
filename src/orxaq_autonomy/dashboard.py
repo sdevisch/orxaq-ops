@@ -344,7 +344,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       const totalLanes = Number(lanes.total_count || 0);
       const operationalLanes = Number(runtime.lane_operational_count ?? laneItems.filter((lane) => {{
         const h = String(lane.health || "unknown").toLowerCase();
-        return h === "ok" || h === "completed" || h === "paused";
+        return h === "ok" || h === "paused";
       }}).length);
       const degradedLanes = Number(runtime.lane_degraded_count ?? Math.max(totalLanes - operationalLanes, 0));
       const progress = snapshot.progress || {{}};

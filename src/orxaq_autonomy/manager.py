@@ -1052,7 +1052,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         conv["partial"] = True
     _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
-    lane_operational_states = {"ok", "completed", "paused"}
+    lane_operational_states = {"ok", "paused"}
     operational_lanes = [
         lane
         for lane in lane_items
@@ -1629,8 +1629,12 @@ def _lane_health_state(
     if not running:
         if int(state_counts.get("in_progress", 0)) > 0:
             return "stopped_unexpected"
-        if int(state_counts.get("done", 0)) > 0 and int(state_counts.get("pending", 0)) == 0:
-            return "completed"
+        if (
+            int(state_counts.get("done", 0)) > 0
+            and int(state_counts.get("pending", 0)) == 0
+            and int(state_counts.get("blocked", 0)) == 0
+        ):
+            return "idle"
         return "stopped"
     if heartbeat_stale:
         return "stale"
@@ -1831,6 +1835,9 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         str(config.agent_timeout_sec),
         "--validate-timeout-sec",
         str(config.validate_timeout_sec),
+        "--continuous",
+        "--continuous-recycle-delay-sec",
+        "90",
         "--skill-protocol-file",
         str(lane["skill_protocol_file"]),
         "--codex-cmd",
@@ -2023,20 +2030,8 @@ def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
         current = by_id.get(lane_id, {})
         running = bool(current.get("running", False))
         stale = bool(current.get("heartbeat_stale", False))
-        state_counts = current.get("state_counts", {}) if isinstance(current.get("state_counts", {}), dict) else {}
-        task_total = int(current.get("task_total", 0) or 0)
-        completed = (
-            task_total > 0
-            and int(state_counts.get("done", 0)) == task_total
-            and int(state_counts.get("pending", 0)) == 0
-            and int(state_counts.get("in_progress", 0)) == 0
-            and int(state_counts.get("blocked", 0)) == 0
-        )
         if pause_file.exists():
             skipped.append({"id": lane_id, "reason": "manually_paused"})
-            continue
-        if completed:
-            skipped.append({"id": lane_id, "reason": "completed"})
             continue
         if running and not stale:
             ensured.append({"id": lane_id, "status": "running"})

@@ -741,6 +741,8 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--handoff-dir", argv)
             handoff_value = argv[argv.index("--handoff-dir") + 1]
             self.assertEqual(handoff_value, str(lane["handoff_dir"]))
+            self.assertIn("--continuous", argv)
+            self.assertIn("--continuous-recycle-delay-sec", argv)
 
     def test_ensure_lanes_background_starts_unexpectedly_stopped_lane(self):
         with tempfile.TemporaryDirectory() as td:
@@ -845,7 +847,7 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(payload["failed_count"], 1)
             self.assertIn("exited immediately", payload["failed"][0]["error"])
 
-    def test_ensure_lanes_background_skips_completed_lane(self):
+    def test_ensure_lanes_background_restarts_completed_lane_for_continuous_mode(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
             lanes_file = root / "config" / "lanes.json"
@@ -884,9 +886,9 @@ class ManagerTests(unittest.TestCase):
                 },
             ):
                 payload = manager.ensure_lanes_background(cfg)
-            self.assertEqual(payload["started_count"], 0)
-            self.assertEqual(payload["skipped_count"], 1)
-            start.assert_not_called()
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["skipped_count"], 0)
+            start.assert_called_once_with(cfg, "lane-a")
 
     def test_stop_lane_background_marks_pause_flag(self):
         with tempfile.TemporaryDirectory() as td:

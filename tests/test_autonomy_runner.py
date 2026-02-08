@@ -150,6 +150,36 @@ class SchedulingTests(unittest.TestCase):
         self.assertGreater(entry["retryable_failures"], 0)
         self.assertTrue(entry["not_before"])
 
+    def test_recycle_tasks_for_continuous_mode_resets_done_tasks(self):
+        task = runner.Task(
+            id="task-a",
+            owner="codex",
+            priority=1,
+            title="A",
+            description="A",
+            depends_on=[],
+            acceptance=[],
+        )
+        state = {
+            "task-a": {
+                "status": runner.STATUS_DONE,
+                "attempts": 4,
+                "retryable_failures": 2,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "done",
+                "last_error": "old",
+                "owner": "codex",
+            }
+        }
+        runner.recycle_tasks_for_continuous_mode(state, [task], delay_sec=45)
+        entry = state["task-a"]
+        self.assertEqual(entry["status"], runner.STATUS_PENDING)
+        self.assertEqual(entry["attempts"], 0)
+        self.assertEqual(entry["retryable_failures"], 0)
+        self.assertTrue(entry["not_before"])
+        self.assertEqual(entry["last_error"], "")
+
 
 class RuntimeSafeguardTests(unittest.TestCase):
     def test_build_subprocess_env_sets_non_interactive_defaults(self):
