@@ -21,6 +21,7 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `config/skill_protocol.json` - reusable autonomy protocol contract.
 - `config/mcp_context.example.json` - sample MCP-style context payload.
 - `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
+- `docs/release-pypi.md` - trusted-publishing release runbook.
 
 Legacy shell scripts remain for compatibility, but `make` now uses the package CLI.
 
@@ -30,6 +31,13 @@ Legacy shell scripts remain for compatibility, but `make` now uses the package C
 cd /Users/sdevisch/dev/orxaq-ops
 cp .env.autonomy.example .env.autonomy
 python3 -m pip install -e .
+```
+
+Windows PowerShell alternative:
+
+```powershell
+cd C:\path\to\orxaq-ops
+python -m pip install -e .
 ```
 
 Set auth and repos in `.env.autonomy`:
@@ -63,6 +71,14 @@ make open-pycharm
 make lint
 make test
 make package
+```
+
+Windows PowerShell wrappers:
+
+```powershell
+.\scripts\autonomy_manager.ps1 status
+.\scripts\autonomy_manager.ps1 start
+.\scripts\install_keepalive.ps1 install
 ```
 
 Foreground debug:
