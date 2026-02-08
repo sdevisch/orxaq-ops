@@ -8,7 +8,8 @@
     "commit",
     "validations",
     "blocker",
-    "next_actions"
+    "next_actions",
+    "usage"
   ],
   "properties": {
     "status": {
@@ -60,6 +61,12 @@
           "type": "string"
         }
       },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "model"
+      ],
       "additionalProperties": false
     }
   },

@@ -1172,7 +1172,7 @@ def build_agent_prompt(
         "- If you are implementation-owner: provide explicit test requests for Gemini in next_actions.\n"
         "- If you are test-owner: when you find implementation issues, provide concrete fix feedback and hints for Codex in blocker/next_actions.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
-        "- Include optional `usage` object when available: input_tokens, output_tokens, total_tokens, model.\n"
+        "- Include `usage` object: input_tokens, output_tokens, total_tokens, model.\n"
         "- status must be one of: done, partial, blocked.\n"
     )
 
