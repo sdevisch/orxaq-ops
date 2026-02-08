@@ -161,6 +161,7 @@ make lanes-plan
 make lanes-start
 make lanes-stop
 make lanes-ensure
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-ensure --lane codex-governance
 ```
 
 - Inspect recent collaboration conversations (primary + lane logs):

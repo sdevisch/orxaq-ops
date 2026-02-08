@@ -2488,8 +2488,11 @@ def stop_lane_background(config: ManagerConfig, lane_id: str, *, reason: str = "
     return next((item for item in status["lanes"] if item["id"] == lane_id), {"id": lane_id, "running": False})
 
 
-def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
+def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
     lanes = load_lane_specs(config)
+    selected = [lane for lane in lanes if lane["enabled"]] if lane_id is None else [lane for lane in lanes if lane["id"] == lane_id]
+    if lane_id is not None and not selected:
+        raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
     ensured: list[dict[str, Any]] = []
     started: list[dict[str, Any]] = []
     restarted: list[dict[str, Any]] = []
@@ -2499,7 +2502,7 @@ def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
     snapshot = lane_status_snapshot(config)
     by_id = {lane["id"]: lane for lane in snapshot.get("lanes", [])}
 
-    for lane in lanes:
+    for lane in selected:
         if not lane["enabled"]:
             skipped.append({"id": lane["id"], "reason": "disabled"})
             continue
@@ -2532,6 +2535,7 @@ def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
 
     return {
         "timestamp": _now_iso(),
+        "requested_lane": lane_id or "all_enabled",
         "ensured_count": len(ensured),
         "started_count": len(started),
         "restarted_count": len(restarted),

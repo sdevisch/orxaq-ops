@@ -976,7 +976,7 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
     normalized_lane = lane_id.strip() or None
     try:
         if normalized_action == "ensure":
-            payload = ensure_lanes_background(config)
+            payload = ensure_lanes_background(config, lane_id=normalized_lane)
             payload["action"] = "ensure"
             payload["lane"] = normalized_lane or ""
             return payload

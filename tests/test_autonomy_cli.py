@@ -307,9 +307,29 @@ class CliTests(unittest.TestCase):
                     "failed_count": 0,
                     "ok": True,
                 },
-            ):
+            ) as ensure:
                 rc = cli.main(["--root", str(root), "lanes-ensure"])
             self.assertEqual(rc, 0)
+            self.assertIsNone(ensure.call_args.kwargs["lane_id"])
+
+    def test_lanes_ensure_command_with_lane_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.ensure_lanes_background",
+                return_value={
+                    "requested_lane": "codex-governance",
+                    "ensured_count": 1,
+                    "started_count": 0,
+                    "restarted_count": 0,
+                    "failed_count": 0,
+                    "ok": True,
+                },
+            ) as ensure:
+                rc = cli.main(["--root", str(root), "lanes-ensure", "--lane", "codex-governance"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(ensure.call_args.kwargs["lane_id"], "codex-governance")
 
 
 if __name__ == "__main__":

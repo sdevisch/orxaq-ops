@@ -202,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lanes_ensure = sub.add_parser("lanes-ensure")
     lanes_ensure.add_argument("--json", action="store_true")
+    lanes_ensure.add_argument("--lane", default="")
 
     lanes_stop = sub.add_parser("lanes-stop")
     lanes_stop.add_argument("--lane", default="")
@@ -427,7 +428,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if payload.get("ok", False) else 1
         if args.command == "lanes-ensure":
-            payload = ensure_lanes_background(cfg)
+            lane_id = args.lane.strip() or None
+            payload = ensure_lanes_background(cfg, lane_id=lane_id)
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:

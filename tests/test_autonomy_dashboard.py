@@ -145,6 +145,18 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertIn("unsupported action", payload["error"])
 
+    def test_safe_lane_action_ensure_forwards_lane_id(self):
+        cfg = mock.Mock()
+        with mock.patch(
+            "orxaq_autonomy.dashboard.ensure_lanes_background",
+            return_value={"ok": True, "ensured_count": 1, "failed_count": 0},
+        ) as ensure:
+            payload = dashboard._safe_lane_action(cfg, action="ensure", lane_id="lane-a")
+        ensure.assert_called_once_with(cfg, lane_id="lane-a")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["lane"], "lane-a")
+        self.assertEqual(payload["action"], "ensure")
+
     def test_safe_lane_action_start_handles_exceptions(self):
         cfg = mock.Mock()
         with mock.patch("orxaq_autonomy.dashboard.start_lanes_background", side_effect=RuntimeError("spawn failed")):
