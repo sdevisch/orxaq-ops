@@ -161,6 +161,8 @@ make lanes-ensure
 ```bash
 make conversations
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --lines 400
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --owner codex --lane codex-governance --tail 80
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --event-type ensure_failed --contains stale
 ```
 
 ## Collaboration Contract

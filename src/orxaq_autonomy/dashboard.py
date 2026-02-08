@@ -335,18 +335,37 @@ def _dashboard_html(refresh_sec: int) -> str:
       ].join('');
     }}
 
-    function render(snapshot) {{
-      const status = snapshot.status || {{}};
-      const runtime = snapshot.runtime || {{}};
-      const lanes = snapshot.lanes || {{}};
-      const laneItems = lanes.lanes || [];
-      const runningLanes = Number(lanes.running_count || 0);
-      const totalLanes = Number(lanes.total_count || 0);
-      const operationalLanes = Number(runtime.lane_operational_count ?? laneItems.filter((lane) => {{
+    function renderLanes(lanes, runtime) {{
+      const lanePayload = lanes || {{}};
+      const laneItems = lanePayload.lanes || [];
+      const runningLanes = Number(lanePayload.running_count || 0);
+      const totalLanes = Number(lanePayload.total_count || 0);
+      const runtimePayload = runtime || {{}};
+      const operationalLanes = Number(runtimePayload.lane_operational_count ?? laneItems.filter((lane) => {{
         const h = String(lane.health || "unknown").toLowerCase();
         return h === "ok" || h === "paused";
       }}).length);
-      const degradedLanes = Number(runtime.lane_degraded_count ?? Math.max(totalLanes - operationalLanes, 0));
+      const degradedLanes = Number(runtimePayload.lane_degraded_count ?? Math.max(totalLanes - operationalLanes, 0));
+      byId("laneSummary").textContent =
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}}`;
+      byId("laneList").innerHTML = laneItems.length
+        ? laneItems.map((lane) => {{
+            const state = lane.running ? "running" : "stopped";
+            const health = lane.health || "unknown";
+            const age = lane.heartbeat_age_sec ?? -1;
+            return `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s</div>`;
+          }}).join("")
+        : '<div class="line">No lanes configured.</div>';
+      return {{ runningLanes, totalLanes }};
+    }}
+
+    function render(snapshot, laneOverride) {{
+      const status = snapshot.status || {{}};
+      const runtime = snapshot.runtime || {{}};
+      const lanes = laneOverride || snapshot.lanes || {{}};
+      const laneStats = renderLanes(lanes, runtime);
+      const runningLanes = laneStats.runningLanes;
+      const totalLanes = laneStats.totalLanes;
       const progress = snapshot.progress || {{}};
       const counts = progress.counts || {{}};
       const diagnostics = snapshot.diagnostics || {{}};
@@ -393,17 +412,6 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("latestLog").textContent = snapshot.latest_log_line || "(no log line yet)";
       byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
 
-      byId("laneSummary").textContent =
-        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}}`;
-      byId("laneList").innerHTML = laneItems.length
-        ? laneItems.map((lane) => {{
-            const state = lane.running ? "running" : "stopped";
-            const health = lane.health || "unknown";
-            const age = lane.heartbeat_age_sec ?? -1;
-            return `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s</div>`;
-          }}).join("")
-        : '<div class="line">No lanes configured.</div>';
-
       byId("meta").innerHTML = [
         `<span class="pill">runner pid: ${{status.runner_pid ?? "-"}}</span>`,
         `<span class="pill">supervisor pid: ${{status.supervisor_pid ?? "-"}}</span>`,
@@ -420,10 +428,11 @@ def _dashboard_html(refresh_sec: int) -> str:
         .filter((entry) => Boolean(entry[1]))
         .map((entry) => `${{entry[0]}}: ${{entry[1]}}`);
       const sourceRows = Object.entries(sources);
-      const failedSourceCount = sourceRows.filter((entry) => !(entry[1] || {{}}).ok).length;
+      const failedSourceCount = sourceRows.filter((entry) => !(entry[1] || {{}}).ok).length + endpointIssues.length;
       const totalSourceCount = sourceRows.length + endpointIssues.length;
+      const healthySourceCount = Math.max(totalSourceCount - failedSourceCount, 0);
       byId("resilienceSummary").textContent =
-        `sources: ${{Math.max(totalSourceCount - failedSourceCount, 0)}}/${{totalSourceCount || 0}} healthy · errors: ${{errors.length + endpointIssues.length}}`;
+        `sources: ${{healthySourceCount}}/${{totalSourceCount || 0}} healthy · errors: ${{errors.length + endpointIssues.length}}`;
 
       const rows = [];
       for (const [name, item] of sourceRows) {{
@@ -449,10 +458,11 @@ def _dashboard_html(refresh_sec: int) -> str:
       const ownerCounts = payload.owner_counts || {{}};
       const sourceReports = payload.sources || [];
       const failedSources = sourceReports.filter((source) => !source.ok).length;
+      const healthySources = Math.max(sourceReports.length - failedSources, 0);
       const partial = payload.partial ? " · partial=true" : "";
       const errors = (payload.errors || []).length ? ` · errors=${{(payload.errors || []).length}}` : "";
       byId("conversationSummary").textContent =
-        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{sourceReports.length}}/${{Math.max(sourceReports.length - failedSources, 0)}} healthy${{partial}}${{errors}}`;
+        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{healthySources}}/${{sourceReports.length}} healthy${{partial}}${{errors}}`;
       if (!events.length) {{
         byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
         return;
@@ -489,16 +499,25 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
 
     async function refresh() {{
-      const [monitorResult, convResult] = await Promise.all([
+      const [monitorResult, convResult, laneResult] = await Promise.all([
         fetchJson('/api/monitor'),
         fetchJson('/api/conversations?lines=200'),
+        fetchJson('/api/lanes'),
       ]);
 
       let monitorPayload = monitorResult.payload;
+      const lanePayload = laneResult.ok ? laneResult.payload : null;
       if (monitorResult.ok && monitorPayload) {{
-        render(monitorPayload);
+        render(monitorPayload, lanePayload);
       }} else {{
         byId("latestLog").textContent = `monitor fetch failed: ${{monitorResult.error}}`;
+        byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
+        if (lanePayload) {{
+          renderLanes(lanePayload, {{}});
+        }} else {{
+          byId("laneSummary").textContent = "lanes: unavailable";
+          byId("laneList").innerHTML = '<div class="line bad">lane endpoint unavailable</div>';
+        }}
       }}
 
       if (convResult.ok && convResult.payload) {{
@@ -526,6 +545,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       renderDiagnostics(diagnosticsPayload, {{
         monitor_endpoint: monitorResult.ok ? "" : monitorResult.error,
         conversations_endpoint: convResult.ok ? "" : convResult.error,
+        lanes_endpoint: laneResult.ok ? "" : laneResult.error,
       }});
     }}
 

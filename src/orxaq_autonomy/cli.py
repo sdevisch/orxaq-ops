@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from .context import write_default_skill_protocol
 from .dashboard import start_dashboard
@@ -40,6 +41,74 @@ from .manager import (
     monitor_snapshot,
     uninstall_keepalive,
 )
+
+
+def _apply_conversation_filters(
+    payload: dict[str, Any],
+    *,
+    owner: str = "",
+    lane_id: str = "",
+    event_type: str = "",
+    contains: str = "",
+    tail: int = 0,
+) -> dict[str, Any]:
+    owner_filter = owner.strip().lower()
+    lane_filter = lane_id.strip().lower()
+    type_filter = event_type.strip().lower()
+    contains_filter = contains.strip().lower()
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        events = []
+
+    filtered: list[dict[str, Any]] = []
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        owner_value = str(item.get("owner", "")).strip().lower()
+        lane_value = str(item.get("lane_id", "")).strip().lower()
+        type_value = str(item.get("event_type", "")).strip().lower()
+        haystack = " ".join(
+            [
+                str(item.get("timestamp", "")),
+                str(item.get("owner", "")),
+                str(item.get("lane_id", "")),
+                str(item.get("task_id", "")),
+                str(item.get("event_type", "")),
+                str(item.get("content", "")),
+            ]
+        ).lower()
+        if owner_filter and owner_value != owner_filter:
+            continue
+        if lane_filter and lane_value != lane_filter:
+            continue
+        if type_filter and type_value != type_filter:
+            continue
+        if contains_filter and contains_filter not in haystack:
+            continue
+        filtered.append(item)
+
+    tail_count = max(0, int(tail))
+    if tail_count:
+        filtered = filtered[-tail_count:]
+
+    owner_counts: dict[str, int] = {}
+    for event in filtered:
+        event_owner = str(event.get("owner", "unknown")).strip() or "unknown"
+        owner_counts[event_owner] = owner_counts.get(event_owner, 0) + 1
+
+    result = dict(payload)
+    result["events"] = filtered
+    result["owner_counts"] = owner_counts
+    result["total_events"] = len(filtered)
+    result["unfiltered_total_events"] = len(events)
+    result["filters"] = {
+        "owner": owner.strip(),
+        "lane": lane_id.strip(),
+        "event_type": event_type.strip(),
+        "contains": contains.strip(),
+        "tail": tail_count,
+    }
+    return result
 
 
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
@@ -114,6 +183,11 @@ def main(argv: list[str] | None = None) -> int:
     conversations = sub.add_parser("conversations")
     conversations.add_argument("--lines", type=int, default=200)
     conversations.add_argument("--no-lanes", action="store_true")
+    conversations.add_argument("--owner", default="")
+    conversations.add_argument("--lane", default="")
+    conversations.add_argument("--event-type", default="")
+    conversations.add_argument("--contains", default="")
+    conversations.add_argument("--tail", type=int, default=0)
 
     lanes_plan = sub.add_parser("lanes-plan")
     lanes_plan.add_argument("--json", action="store_true")
@@ -259,6 +333,14 @@ def main(argv: list[str] | None = None) -> int:
                 cfg,
                 lines=args.lines,
                 include_lanes=not args.no_lanes,
+            )
+            payload = _apply_conversation_filters(
+                payload,
+                owner=args.owner,
+                lane_id=args.lane,
+                event_type=args.event_type,
+                contains=args.contains,
+                tail=args.tail,
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
