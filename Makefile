@@ -61,4 +61,10 @@ test:
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 
 package:
-	$(PYTHON) -m build
+	@if $(PYTHON) -m build --version >/dev/null 2>&1; then \
+		$(PYTHON) -m build; \
+	else \
+		$(PYTHON) -m venv .pkg-venv; \
+		./.pkg-venv/bin/python -m pip install --upgrade pip build; \
+		./.pkg-venv/bin/python -m build; \
+	fi

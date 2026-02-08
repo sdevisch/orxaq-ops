@@ -177,6 +177,43 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertIn("proto", prompt)
         self.assertIn("MCP context", prompt)
 
+    def test_run_validations_retries_test_command(self):
+        calls = []
+
+        def fake_run_command(*args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 1:
+                return runner.subprocess.CompletedProcess(args[0], returncode=1, stdout="", stderr="boom")
+            return runner.subprocess.CompletedProcess(args[0], returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+            ok, details = runner.run_validations(
+                repo=pathlib.Path("/tmp"),
+                validate_commands=["make test"],
+                timeout_sec=1,
+                retries_per_command=1,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(details, "ok")
+        self.assertEqual(len(calls), 2)
+
+    def test_run_validations_uses_fallback_when_make_target_missing(self):
+        def fake_run_command(cmd, **kwargs):
+            first = cmd[0]
+            if first == "make":
+                return runner.subprocess.CompletedProcess(cmd, returncode=2, stdout="", stderr="No rule to make target")
+            return runner.subprocess.CompletedProcess(cmd, returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+            ok, details = runner.run_validations(
+                repo=pathlib.Path("/tmp"),
+                validate_commands=["make lint"],
+                timeout_sec=1,
+                retries_per_command=0,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(details, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

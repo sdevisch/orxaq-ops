@@ -59,6 +59,9 @@ make workspace
 make open-vscode
 make open-cursor
 make open-pycharm
+make lint
+make test
+make package
 ```
 
 Foreground debug:
@@ -78,6 +81,16 @@ orxaq-autonomy --root /path/to/orxaq-ops status
 ```
 
 Skill protocol + MCP context are data-driven, so you can swap project/task context without changing code.
+
+## CI/CD
+
+- CI matrix: `.github/workflows/ci.yml`
+  - Unit tests on Linux, macOS, and Windows (Python 3.11/3.12).
+  - Unix shell/lint checks.
+  - Package build artifact generation.
+- Release pipeline: `.github/workflows/release-pypi.yml`
+  - Triggered on `v*` tags.
+  - Builds package and publishes to PyPI using GitHub OIDC trusted publishing.
 
 ## Non-Admin Hardening (Windows/macOS)
 

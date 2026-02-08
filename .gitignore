@@ -9,3 +9,4 @@ orxaq-dual-agent.code-workspace
 build/
 dist/
 *.egg-info/
+.pkg-venv/

@@ -83,6 +83,64 @@ class ManagerTests(unittest.TestCase):
                 self.assertNotIn("/RL", " ".join(cmd))
                 self.assertEqual(subprocess_result.returncode, 0)
 
+    def test_ensure_background_restarts_stale_runner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager._read_pid",
+                side_effect=[123, 456],
+            ), mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                side_effect=[True, True],
+            ), mock.patch(
+                "orxaq_autonomy.manager._heartbeat_age_sec",
+                return_value=9999,
+            ), mock.patch(
+                "orxaq_autonomy.manager._terminate_pid"
+            ) as terminate:
+                manager.ensure_background(cfg)
+                terminate.assert_called_once_with(456)
+
+    def test_preflight_detects_dirty_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager._repo_is_clean",
+                side_effect=[(False, "dirty"), (True, "ok")],
+            ):
+                payload = manager.preflight(cfg, require_clean=True)
+            self.assertFalse(payload["clean"])
+            self.assertEqual(len(payload["checks"]), 2)
+
+    def test_install_keepalive_macos_uses_launch_agent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            fake_home = pathlib.Path(td) / "home"
+            fake_home.mkdir(parents=True, exist_ok=True)
+            with mock.patch("orxaq_autonomy.manager.os.name", "posix"), mock.patch(
+                "orxaq_autonomy.manager.sys.platform", "darwin"
+            ), mock.patch("orxaq_autonomy.manager.Path.home", return_value=fake_home), mock.patch(
+                "orxaq_autonomy.manager.subprocess.run"
+            ) as run:
+                run.return_value = mock.Mock(returncode=0, stdout=b"", stderr=b"")
+                label = manager.install_keepalive(cfg)
+                self.assertEqual(label, "com.orxaq.autonomy.ensure")
+                plist = fake_home / "Library" / "LaunchAgents" / "com.orxaq.autonomy.ensure.plist"
+                self.assertTrue(plist.exists())
+
+    def test_install_keepalive_unsupported_platform_raises(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.os.name", "posix"), mock.patch(
+                "orxaq_autonomy.manager.sys.platform", "linux"
+            ):
+                with self.assertRaises(RuntimeError):
+                    manager.install_keepalive(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()
