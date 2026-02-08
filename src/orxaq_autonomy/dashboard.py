@@ -487,6 +487,7 @@ def _dashboard_html(refresh_sec: int) -> str:
 
   <script>
     const REFRESH_MS = {refresh_ms};
+    const FETCH_TIMEOUT_MS = Math.max(1800, Math.min(12000, Math.floor(REFRESH_MS * 0.8)));
     let paused = false;
     let timer = null;
     const conversationFilters = {{
@@ -861,14 +862,30 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
 
     async function fetchJson(path) {{
+      let controller = null;
+      let timeoutHandle = null;
       try {{
-        const response = await fetch(path, {{ cache: 'no-store' }});
+        controller = typeof AbortController === "function" ? new AbortController() : null;
+        const options = controller
+          ? {{ cache: 'no-store', signal: controller.signal }}
+          : {{ cache: 'no-store' }};
+        const timeoutPromise = new Promise((_, reject) => {{
+          timeoutHandle = setTimeout(() => {{
+            if (controller) {{
+              controller.abort();
+            }}
+            reject(new Error(`timeout after ${{FETCH_TIMEOUT_MS}}ms`));
+          }}, FETCH_TIMEOUT_MS);
+        }});
+        const response = await Promise.race([fetch(path, options), timeoutPromise]);
         if (!response.ok) {{
           throw new Error(`HTTP ${{response.status}}`);
         }}
         return {{ ok: true, payload: await response.json(), error: "" }};
       }} catch (err) {{
         return {{ ok: false, payload: null, error: String(err) }};
+      }} finally {{
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }}
     }}
 
@@ -1230,7 +1247,7 @@ def _event_level(event: dict[str, Any]) -> float:
 def _safe_daw_snapshot(config: ManagerConfig, *, window_sec: int = 120, lines: int = 800) -> dict[str, Any]:
     try:
         conv = conversations_snapshot(config, lines=max(200, int(lines)), include_lanes=True)
-        monitor = monitor_snapshot(config)
+        monitor = _safe_monitor_snapshot(config)
         return _build_daw_snapshot(conv, monitor, window_sec=max(20, int(window_sec)))
     except Exception as err:
         message = str(err)

@@ -1,5 +1,6 @@
 import pathlib
 import sys
+from datetime import datetime, timezone
 import unittest
 from unittest import mock
 
@@ -37,6 +38,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("laneOwnerSummary", html)
         self.assertIn("convOwner", html)
         self.assertIn("conversationPath", html)
+        self.assertIn("FETCH_TIMEOUT_MS", html)
+        self.assertIn("timeout after", html)
 
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):
@@ -170,6 +173,32 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["lane"], "lane-a")
         self.assertIn("spawn failed", payload["error"])
+
+    def test_safe_daw_snapshot_uses_monitor_fallback_when_monitor_fails(self):
+        cfg = mock.Mock()
+        now = datetime.now(timezone.utc).isoformat()
+        conv_payload = {
+            "ok": True,
+            "errors": [],
+            "events": [
+                {
+                    "timestamp": now,
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "prompt",
+                    "content": "hello",
+                }
+            ],
+        }
+        with mock.patch("orxaq_autonomy.dashboard.conversations_snapshot", return_value=conv_payload), mock.patch(
+            "orxaq_autonomy.dashboard.monitor_snapshot",
+            side_effect=RuntimeError("monitor unavailable"),
+        ):
+            payload = dashboard._safe_daw_snapshot(cfg, window_sec=120, lines=200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["tempo_bpm"], 120)
+        self.assertEqual(payload["prompt_midi_events"], 1)
+        self.assertTrue(payload["tracks"])
 
 
 if __name__ == "__main__":
