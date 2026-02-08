@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test version-check repo-hygiene hosted-controls-check readiness-check bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -83,6 +83,11 @@ version-check:
 
 repo-hygiene:
 	$(PYTHON) scripts/check_repo_hygiene.py --root .
+
+hosted-controls-check:
+	$(PYTHON) scripts/check_hosted_controls.py --root .
+
+readiness-check: version-check repo-hygiene hosted-controls-check preflight
 
 bump-patch:
 	$(PYTHON) scripts/bump_version.py --part patch --apply

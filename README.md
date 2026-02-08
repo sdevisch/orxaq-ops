@@ -79,6 +79,8 @@ make lint
 make test
 make version-check
 make repo-hygiene
+make hosted-controls-check
+make readiness-check
 make bump-patch
 make bump-minor
 make bump-major
@@ -121,6 +123,8 @@ Skill protocol + MCP context are data-driven, so you can swap project/task conte
 - Validate before push/release:
   - `make version-check`
   - `make repo-hygiene`
+  - `make hosted-controls-check`
+  - `make readiness-check`
 
 See `/Users/sdevisch/dev/orxaq-ops/docs/VERSIONING.md`.
 
