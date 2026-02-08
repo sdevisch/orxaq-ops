@@ -23,7 +23,10 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `skills/orxaq-autonomy-agent/SKILL.md` - reusable skill definition for autonomy workflows.
 - `config/skill_protocol.json` - reusable autonomy protocol contract.
 - `config/mcp_context.example.json` - sample MCP-style context payload.
+- `config/prompts/codex_impl_prompt.md` - baseline implementation prompt for Codex.
+- `config/prompts/gemini_test_prompt.md` - baseline independent-test prompt for Gemini.
 - `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
+- `docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md` - end-to-end VS Code + multi-agent operating guide.
 - `docs/release-pypi.md` - trusted-publishing release runbook.
 
 Legacy shell scripts remain for compatibility, but `make` now uses the package CLI.
@@ -96,6 +99,21 @@ Foreground debug:
 ```bash
 make run
 make supervise
+```
+
+## VS Code Collaboration Quick Start
+
+Use the full operator guide at `/Users/sdevisch/dev/orxaq-ops/docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md`.
+
+Minimal startup flow:
+
+```bash
+make workspace
+make open-vscode
+make preflight
+make start
+make status
+make logs
 ```
 
 ## Reuse Model
