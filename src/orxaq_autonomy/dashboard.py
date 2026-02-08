@@ -337,6 +337,11 @@ def _dashboard_html(refresh_sec: int) -> str:
 
     function render(snapshot) {{
       const status = snapshot.status || {{}};
+      const lanes = snapshot.lanes || {{}};
+      const laneItems = lanes.lanes || [];
+      const runningLanes = Number(lanes.running_count || 0);
+      const totalLanes = Number(lanes.total_count || 0);
+      const healthyLanes = laneItems.filter((lane) => (lane.health || "unknown") === "ok").length;
       const progress = snapshot.progress || {{}};
       const counts = progress.counts || {{}};
       const diagnostics = snapshot.diagnostics || {{}};
@@ -361,17 +366,27 @@ def _dashboard_html(refresh_sec: int) -> str:
 
       const runnerState = status.runner_running ? '<span class="ok">running</span>' : '<span class="bad">stopped</span>';
       const supervisorState = status.supervisor_running ? '<span class="ok">running</span>' : '<span class="bad">stopped</span>';
-      byId("runtimeState").innerHTML = `supervisor: ${{supervisorState}} · runner: ${{runnerState}}`;
-      byId("heartbeatState").innerHTML = `heartbeat_age: <span class="mono">${{status.heartbeat_age_sec ?? -1}}s</span> · stale_threshold: <span class="mono">${{status.heartbeat_stale_threshold_sec ?? -1}}s</span>`;
+      const laneAgentState = runningLanes > 0
+        ? '<span class="ok">active</span>'
+        : (totalLanes > 0 ? '<span class="warn">idle</span>' : '<span class="mono">n/a</span>');
+      const effectiveRunnerState = (!status.runner_running && runningLanes > 0)
+        ? '<span class="warn">idle (lane mode)</span>'
+        : runnerState;
+      byId("runtimeState").innerHTML =
+        `supervisor: ${{supervisorState}} · runner: ${{effectiveRunnerState}} · lane_agents: ${{laneAgentState}}`;
+      const hbNote = (!status.runner_running && runningLanes > 0)
+        ? ' · note: lane runners active'
+        : '';
+      byId("heartbeatState").innerHTML =
+        `heartbeat_age: <span class="mono">${{status.heartbeat_age_sec ?? -1}}s</span> · stale_threshold: <span class="mono">${{status.heartbeat_stale_threshold_sec ?? -1}}s</span>${{hbNote}}`;
 
       byId("repoImpl").innerHTML = repoMarkup((snapshot.repos || {{}}).implementation);
       byId("repoTest").innerHTML = repoMarkup((snapshot.repos || {{}}).tests);
       byId("latestLog").textContent = snapshot.latest_log_line || "(no log line yet)";
       byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
 
-      const lanes = snapshot.lanes || {{}};
-      const laneItems = lanes.lanes || [];
-      byId("laneSummary").textContent = `running lanes: ${{lanes.running_count ?? 0}}/${{lanes.total_count ?? 0}}`;
+      byId("laneSummary").textContent =
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · healthy: ${{healthyLanes}}`;
       byId("laneList").innerHTML = laneItems.length
         ? laneItems.map((lane) => {{
             const state = lane.running ? "running" : "stopped";
