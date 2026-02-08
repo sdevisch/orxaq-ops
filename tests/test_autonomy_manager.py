@@ -141,6 +141,59 @@ class ManagerTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     manager.install_keepalive(cfg)
 
+    def test_health_snapshot_writes_health_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "task-a": {"status": "done"},
+                        "task-b": {"status": "blocked"},
+                        "task-c": {"status": "pending"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg.heartbeat_file.write_text(json.dumps({"timestamp": "2000-01-01T00:00:00+00:00"}), encoding="utf-8")
+            snapshot = manager.health_snapshot(cfg)
+            self.assertIn("health_file", snapshot)
+            self.assertEqual(snapshot["state_counts"]["blocked"], 1)
+            self.assertTrue(pathlib.Path(snapshot["health_file"]).exists())
+
+    def test_supervise_foreground_restarts_after_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+
+            class _Child:
+                def __init__(self, pid: int, rc: int) -> None:
+                    self.pid = pid
+                    self._rc = rc
+
+                def wait(self) -> int:
+                    return self._rc
+
+            popen_calls: list[int] = []
+
+            def fake_popen(*args, **kwargs):
+                popen_calls.append(1)
+                return _Child(pid=100 + len(popen_calls), rc=1 if len(popen_calls) == 1 else 0)
+
+            with mock.patch("orxaq_autonomy.manager.ensure_runtime"), mock.patch(
+                "orxaq_autonomy.manager.subprocess.Popen",
+                side_effect=fake_popen,
+            ), mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                return_value=False,
+            ), mock.patch(
+                "orxaq_autonomy.manager.time.sleep",
+                return_value=None,
+            ):
+                rc = manager.supervise_foreground(cfg)
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(popen_calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

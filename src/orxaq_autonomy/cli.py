@@ -12,6 +12,7 @@ from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
     ensure_background,
+    health_snapshot,
     install_keepalive,
     keepalive_status,
     preflight,
@@ -44,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop")
     sub.add_parser("ensure")
     sub.add_parser("status")
+    sub.add_parser("health")
     pre = sub.add_parser("preflight")
     pre.add_argument("--allow-dirty", action="store_true")
     sub.add_parser("reset")
@@ -84,6 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         if logs:
             print("--- logs ---")
             print(logs)
+        return 0
+    if args.command == "health":
+        print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
         return 0
     if args.command == "preflight":
         payload = preflight(cfg, require_clean=not args.allow_dirty)

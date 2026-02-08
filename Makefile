@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test package
+.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test package
 
 run:
 	$(AUTONOMY) run
@@ -22,6 +22,9 @@ ensure:
 
 status:
 	$(AUTONOMY) status
+
+health:
+	$(AUTONOMY) health
 
 logs:
 	$(AUTONOMY) logs

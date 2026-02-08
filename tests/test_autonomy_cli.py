@@ -42,6 +42,14 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "status"])
             self.assertEqual(rc, 0)
 
+    def test_health_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.health_snapshot", return_value={"healthy": True}):
+                rc = cli.main(["--root", str(root), "health"])
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -458,6 +458,44 @@ def status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     }
 
 
+def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
+    state_counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
+    blocked_tasks: list[str] = []
+
+    if config.state_file.exists():
+        try:
+            raw = json.loads(config.state_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for task_id, item in raw.items():
+                    status = "unknown"
+                    if isinstance(item, dict):
+                        status = str(item.get("status", "unknown")).strip().lower()
+                    if status in state_counts:
+                        state_counts[status] += 1
+                    else:
+                        state_counts["unknown"] += 1
+                    if status == "blocked":
+                        blocked_tasks.append(str(task_id))
+        except Exception:
+            state_counts["unknown"] += 1
+
+    status = status_snapshot(config)
+    heartbeat_age = int(status.get("heartbeat_age_sec", -1))
+    stale = heartbeat_age != -1 and heartbeat_age > config.heartbeat_stale_sec
+    out = {
+        "timestamp": _now_iso(),
+        "status": status,
+        "state_counts": state_counts,
+        "blocked_tasks": blocked_tasks,
+        "heartbeat_stale": stale,
+    }
+    health_file = config.artifacts_dir / "health.json"
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    health_file.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    out["health_file"] = str(health_file)
+    return out
+
+
 def install_keepalive(config: ManagerConfig) -> str:
     if os.name == "nt":
         task_name = "OrxaqAutonomyEnsure"

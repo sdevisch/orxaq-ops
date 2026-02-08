@@ -51,6 +51,7 @@ make preflight
 make start
 make ensure
 make status
+make health
 make logs
 make stop
 make install-keepalive
@@ -108,3 +109,4 @@ Skill protocol + MCP context are data-driven, so you can swap project/task conte
 - Exponential backoff for retryable failures.
 - Validation retries + fallback validation commands.
 - Prompt includes file-type profile + repo-state hints + protocol requirements.
+- Machine-readable health snapshot (`make health`) written to `artifacts/autonomy/health.json`.
