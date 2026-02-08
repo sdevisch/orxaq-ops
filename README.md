@@ -10,6 +10,7 @@ This keeps operational autonomy tooling out of `orxaq` so product releases stay 
 - `scripts/autonomy_manager.sh` - lifecycle and self-healing supervisor (`run/supervise/start/stop/ensure/status/logs/reset`).
 - `scripts/preflight.sh` - strict readiness gate (auth, tools, repo cleanliness).
 - `scripts/generate_workspace.sh` - writes VS Code multi-root workspace file.
+- `scripts/install_keepalive.sh` - installs/uninstalls user-space keepalive job (macOS launchd).
 - `config/tasks.json` - prioritized queue.
 - `config/objective.md` - project objective and stop criteria.
 - `config/codex_result.schema.json` - expected Codex JSON response schema.
@@ -49,6 +50,8 @@ make reset
 make preflight
 make workspace
 make open-vscode
+make install-keepalive
+make keepalive-status
 make lint
 make test
 ```
@@ -60,6 +63,12 @@ Run foreground (for debugging):
 ```bash
 make run         # runner only
 make supervise   # supervisor + auto-restart in foreground
+```
+
+Install OS-level self-heal (recommended):
+
+```bash
+make install-keepalive
 ```
 
 ## Resilience Features
@@ -84,10 +93,6 @@ make supervise   # supervisor + auto-restart in foreground
 
 ## Recommended Cron Self-Heal
 
-Run every minute on the host:
-
-```bash
-cd /Users/sdevisch/dev/orxaq-ops && ./scripts/autonomy_manager.sh ensure
-```
-
-This gives graceful restart even if the supervisor process itself is terminated.
+- macOS: use `make install-keepalive` (launchd, user-space, no admin).
+- Other systems fallback command:
+  `cd /Users/sdevisch/dev/orxaq-ops && ./scripts/autonomy_manager.sh ensure`

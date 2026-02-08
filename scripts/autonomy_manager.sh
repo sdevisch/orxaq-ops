@@ -243,13 +243,13 @@ supervise_foreground() {
     echo "$child" >"$RUNNER_PID_FILE"
 
     while is_pid_running "$child"; do
-      sleep "$HEARTBEAT_POLL_SEC"
+      sleep "$HEARTBEAT_POLL_SEC" || true
       if heartbeat_is_stale; then
         local age
         age="$(heartbeat_age_seconds)"
         echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] supervisor: stale heartbeat (${age}s), restarting runner pid=$child" >>"$LOG_FILE"
         kill "$child" >/dev/null 2>&1 || true
-        sleep 2
+        sleep 2 || true
         if is_pid_running "$child"; then
           kill -9 "$child" >/dev/null 2>&1 || true
         fi
@@ -276,7 +276,7 @@ supervise_foreground() {
       return "$rc"
     fi
 
-    sleep "$backoff"
+    sleep "$backoff" || true
     backoff=$((backoff * 2))
     if (( backoff > SUPERVISOR_MAX_BACKOFF_SEC )); then
       backoff="$SUPERVISOR_MAX_BACKOFF_SEC"
@@ -339,6 +339,10 @@ stop_background() {
 
 status_background() {
   local age
+  cleanup_runner_pid
+  if ! is_supervisor_running; then
+    rm -f "$SUPERVISOR_PID_FILE"
+  fi
   age="$(heartbeat_age_seconds || echo -1)"
 
   if is_supervisor_running; then

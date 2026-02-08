@@ -23,7 +23,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 STATUS_PENDING = "pending"
 STATUS_IN_PROGRESS = "in_progress"
@@ -345,30 +345,61 @@ def build_agent_prompt(
     )
 
 
-def run_command(cmd: list[str], cwd: Path, timeout_sec: int) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            text=True,
-            capture_output=True,
-            timeout=timeout_sec,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as err:
-        stdout = err.stdout if isinstance(err.stdout, str) else ""
-        stderr = err.stderr if isinstance(err.stderr, str) else ""
-        timeout_msg = f"\n[TIMEOUT] command exceeded {timeout_sec}s: {' '.join(cmd)}"
-        return subprocess.CompletedProcess(cmd, returncode=124, stdout=stdout, stderr=stderr + timeout_msg)
+def run_command(
+    cmd: list[str],
+    cwd: Path,
+    timeout_sec: int,
+    progress_callback: Callable[[int], None] | None = None,
+    progress_interval_sec: int = 15,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    start = time.monotonic()
+    last_progress = start
+
+    while True:
+        elapsed = int(time.monotonic() - start)
+        if progress_callback and (time.monotonic() - last_progress) >= progress_interval_sec:
+            progress_callback(elapsed)
+            last_progress = time.monotonic()
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+            return subprocess.CompletedProcess(cmd, returncode=process.returncode or 0, stdout=stdout, stderr=stderr)
+        except subprocess.TimeoutExpired:
+            if elapsed >= timeout_sec:
+                process.kill()
+                stdout, stderr = process.communicate()
+                timeout_msg = f"\n[TIMEOUT] command exceeded {timeout_sec}s: {' '.join(cmd)}"
+                return subprocess.CompletedProcess(
+                    cmd,
+                    returncode=124,
+                    stdout=stdout,
+                    stderr=stderr + timeout_msg,
+                )
 
 
-def run_validations(repo: Path, validate_commands: list[str], timeout_sec: int) -> tuple[bool, str]:
+def run_validations(
+    repo: Path,
+    validate_commands: list[str],
+    timeout_sec: int,
+    progress_callback: Callable[[str, int], None] | None = None,
+) -> tuple[bool, str]:
     for raw in validate_commands:
         cmd = shlex.split(raw)
         if not cmd:
             continue
         _print(f"Running validation in {repo}: {raw}")
-        result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec)
+        result = run_command(
+            cmd,
+            cwd=repo,
+            timeout_sec=timeout_sec,
+            progress_callback=(lambda elapsed: progress_callback(raw, elapsed)) if progress_callback else None,
+        )
         if result.returncode != 0:
             details = (result.stdout + "\n" + result.stderr).strip()
             return False, f"Validation failed for `{raw}`:\n{details}"
@@ -449,6 +480,7 @@ def run_codex_task(
     codex_model: str | None,
     timeout_sec: int,
     retry_context: dict[str, Any],
+    progress_callback: Callable[[int], None] | None,
 ) -> tuple[bool, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{task.id}_codex_result.json"
@@ -477,7 +509,7 @@ def run_codex_task(
         cmd[2:2] = ["--model", codex_model]
 
     _print(f"Running Codex task {task.id}")
-    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec)
+    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
     if result.returncode != 0:
         return False, normalize_outcome(
             {
@@ -510,6 +542,7 @@ def run_gemini_task(
     gemini_model: str | None,
     timeout_sec: int,
     retry_context: dict[str, Any],
+    progress_callback: Callable[[int], None] | None,
 ) -> tuple[bool, dict[str, Any]]:
     prompt = build_agent_prompt(
         task,
@@ -537,7 +570,7 @@ def run_gemini_task(
         cmd[1:1] = ["--model", gemini_model]
 
     _print(f"Running Gemini task {task.id}")
-    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec)
+    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
     if result.returncode != 0:
         return False, normalize_outcome(
             {
@@ -792,6 +825,14 @@ def main() -> int:
             )
             ok = False
         elif task.owner == "codex":
+            task_progress = lambda elapsed: write_heartbeat(
+                heartbeat_file,
+                phase="task_running",
+                cycle=cycle,
+                task_id=task.id,
+                message=f"task running for {elapsed}s",
+                extra={"owner": task.owner},
+            )
             ok, outcome = run_codex_task(
                 task=task,
                 repo=owner_repo,
@@ -802,8 +843,17 @@ def main() -> int:
                 codex_model=args.codex_model,
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
+                progress_callback=task_progress,
             )
         else:
+            task_progress = lambda elapsed: write_heartbeat(
+                heartbeat_file,
+                phase="task_running",
+                cycle=cycle,
+                task_id=task.id,
+                message=f"task running for {elapsed}s",
+                extra={"owner": task.owner},
+            )
             ok, outcome = run_gemini_task(
                 task=task,
                 repo=owner_repo,
@@ -812,6 +862,7 @@ def main() -> int:
                 gemini_model=args.gemini_model,
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
+                progress_callback=task_progress,
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)
@@ -880,6 +931,13 @@ def main() -> int:
                 repo=validation_repo,
                 validate_commands=args.validate_command,
                 timeout_sec=args.validate_timeout_sec,
+                progress_callback=lambda cmd, elapsed: write_heartbeat(
+                    heartbeat_file,
+                    phase="task_validating",
+                    cycle=cycle,
+                    task_id=task.id,
+                    message=f"validation `{cmd}` running for {elapsed}s",
+                ),
             )
             if valid:
                 task_state["status"] = STATUS_DONE
