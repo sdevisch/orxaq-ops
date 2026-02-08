@@ -50,6 +50,17 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
+    def test_monitor_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.monitor_snapshot",
+                return_value={"status": {}, "progress": {}, "repos": {}, "latest_log_line": ""},
+            ), mock.patch("orxaq_autonomy.cli.render_monitor_text", return_value="monitor"):
+                rc = cli.main(["--root", str(root), "monitor"])
+            self.assertEqual(rc, 0)
+
     def test_bootstrap_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -83,6 +94,32 @@ class CliTests(unittest.TestCase):
             with mock.patch("orxaq_autonomy.cli.start_background", side_effect=RuntimeError("codex missing")):
                 rc = cli.main(["--root", str(root), "start"])
             self.assertEqual(rc, 1)
+
+    def test_dashboard_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.start_dashboard", return_value=0) as start:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "dashboard",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "8789",
+                        "--refresh-sec",
+                        "2",
+                        "--no-browser",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            kwargs = start.call_args.kwargs
+            self.assertEqual(kwargs["host"], "127.0.0.1")
+            self.assertEqual(kwargs["port"], 8789)
+            self.assertEqual(kwargs["refresh_sec"], 2)
+            self.assertFalse(kwargs["open_browser"])
 
 
 if __name__ == "__main__":

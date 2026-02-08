@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .context import write_default_skill_protocol
+from .dashboard import start_dashboard
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
@@ -18,12 +19,14 @@ from .manager import (
     keepalive_status,
     preflight,
     reset_state,
+    render_monitor_text,
     run_foreground,
     start_background,
     status_snapshot,
     stop_background,
     supervise_foreground,
     tail_logs,
+    monitor_snapshot,
     uninstall_keepalive,
 )
 
@@ -47,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
+    monitor = sub.add_parser("monitor")
+    monitor.add_argument("--json", action="store_true")
     pre = sub.add_parser("preflight")
     pre.add_argument("--allow-dirty", action="store_true")
     sub.add_parser("reset")
@@ -70,6 +75,12 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap.add_argument("--ide", choices=["vscode", "cursor", "pycharm", "none"], default="vscode")
     bootstrap.add_argument("--require-clean", action="store_true")
     bootstrap.add_argument("--skip-keepalive", action="store_true")
+
+    dashboard = sub.add_parser("dashboard")
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--refresh-sec", type=int, default=5)
+    dashboard.add_argument("--no-browser", action="store_true")
 
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
@@ -97,6 +108,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "health":
             print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "monitor":
+            snapshot = monitor_snapshot(cfg)
+            if args.json:
+                print(json.dumps(snapshot, indent=2, sort_keys=True))
+            else:
+                print(render_monitor_text(snapshot))
             return 0
         if args.command == "preflight":
             payload = preflight(cfg, require_clean=not args.allow_dirty)
@@ -149,6 +167,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if payload.get("ok") else 1
+        if args.command == "dashboard":
+            return start_dashboard(
+                cfg,
+                host=args.host,
+                port=args.port,
+                refresh_sec=args.refresh_sec,
+                open_browser=not args.no_browser,
+            )
     except (FileNotFoundError, RuntimeError) as err:
         print(
             json.dumps(

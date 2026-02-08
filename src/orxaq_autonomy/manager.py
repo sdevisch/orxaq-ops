@@ -616,6 +616,177 @@ def status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     }
 
 
+def _git_command(repo: Path, args: list[str], timeout_sec: int = 10) -> tuple[bool, str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+    )
+    if result.returncode == 0:
+        return True, result.stdout.strip()
+    message = (result.stderr.strip() or result.stdout.strip() or f"git {' '.join(args)} failed").strip()
+    return False, message
+
+
+def _repo_monitor_snapshot(repo: Path) -> dict[str, Any]:
+    ok, message = _repo_basic_check(repo)
+    if not ok:
+        return {
+            "path": str(repo),
+            "ok": False,
+            "error": message,
+            "branch": "",
+            "head": "",
+            "dirty": False,
+            "changed_files": 0,
+        }
+
+    branch_ok, branch_value = _git_command(repo, ["rev-parse", "--abbrev-ref", "HEAD"])
+    head_ok, head_value = _git_command(repo, ["rev-parse", "--short", "HEAD"])
+    dirty_ok, dirty_value = _git_command(repo, ["status", "--porcelain"])
+    changed_files = len([line for line in dirty_value.splitlines() if line.strip()]) if dirty_ok else 0
+
+    errors: list[str] = []
+    if not branch_ok:
+        errors.append(f"branch: {branch_value}")
+    if not head_ok:
+        errors.append(f"head: {head_value}")
+    if not dirty_ok:
+        errors.append(f"dirty: {dirty_value}")
+
+    return {
+        "path": str(repo),
+        "ok": len(errors) == 0,
+        "error": "; ".join(errors),
+        "branch": branch_value if branch_ok else "",
+        "head": head_value if head_ok else "",
+        "dirty": bool(changed_files) if dirty_ok else False,
+        "changed_files": changed_files,
+    }
+
+
+def _state_progress_snapshot(config: ManagerConfig) -> dict[str, Any]:
+    counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
+    active_tasks: list[str] = []
+    blocked_tasks: list[str] = []
+
+    if config.state_file.exists():
+        try:
+            raw = json.loads(config.state_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for task_id, payload in raw.items():
+                    status = "unknown"
+                    if isinstance(payload, dict):
+                        status = str(payload.get("status", "unknown")).strip().lower()
+                    if status in counts:
+                        counts[status] += 1
+                    else:
+                        counts["unknown"] += 1
+                    if status == "in_progress":
+                        active_tasks.append(str(task_id))
+                    if status == "blocked":
+                        blocked_tasks.append(str(task_id))
+        except Exception:
+            counts["unknown"] += 1
+
+    return {
+        "counts": counts,
+        "active_tasks": sorted(active_tasks),
+        "blocked_tasks": sorted(blocked_tasks),
+    }
+
+
+def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
+    status = status_snapshot(config)
+    progress = _state_progress_snapshot(config)
+    latest_log_line = tail_logs(config, lines=1, latest_run_only=True).strip()
+    snapshot = {
+        "timestamp": _now_iso(),
+        "status": status,
+        "progress": progress,
+        "repos": {
+            "implementation": _repo_monitor_snapshot(config.impl_repo),
+            "tests": _repo_monitor_snapshot(config.test_repo),
+        },
+        "latest_log_line": latest_log_line,
+    }
+    monitor_file = config.artifacts_dir / "monitor.json"
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    monitor_file.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    snapshot["monitor_file"] = str(monitor_file)
+    return snapshot
+
+
+def render_monitor_text(snapshot: dict[str, Any]) -> str:
+    status = snapshot.get("status", {})
+    progress = snapshot.get("progress", {})
+    counts = progress.get("counts", {})
+    active = progress.get("active_tasks", [])
+    repos = snapshot.get("repos", {})
+    impl = repos.get("implementation", {})
+    tests = repos.get("tests", {})
+    latest_log_line = str(snapshot.get("latest_log_line", "")).strip()
+
+    def _repo_line(label: str, payload: dict[str, Any]) -> str:
+        if not payload:
+            return f"{label}: unavailable"
+        if not payload.get("ok", False):
+            return f"{label}: error={payload.get('error', 'unknown')}"
+        return (
+            f"{label}: branch={payload.get('branch', '')} "
+            f"head={payload.get('head', '')} "
+            f"dirty={payload.get('dirty', False)} "
+            f"changed_files={payload.get('changed_files', 0)}"
+        )
+
+    lines = [
+        f"[{snapshot.get('timestamp', '')}] supervisor={status.get('supervisor_running', False)} "
+        f"runner={status.get('runner_running', False)} heartbeat_age={status.get('heartbeat_age_sec', -1)}s",
+        "tasks: "
+        f"done={counts.get('done', 0)} "
+        f"in_progress={counts.get('in_progress', 0)} "
+        f"pending={counts.get('pending', 0)} "
+        f"blocked={counts.get('blocked', 0)} "
+        f"unknown={counts.get('unknown', 0)}",
+        f"active_tasks: {', '.join(active) if active else 'none'}",
+        _repo_line("impl_repo", impl),
+        _repo_line("test_repo", tests),
+    ]
+    if latest_log_line:
+        lines.append(f"log: {latest_log_line}")
+    lines.append(f"monitor_file: {snapshot.get('monitor_file', '')}")
+    return "\n".join(lines)
+
+
+def monitor_loop(
+    config: ManagerConfig,
+    *,
+    interval_sec: int = 15,
+    cycles: int = 0,
+    json_mode: bool = False,
+) -> int:
+    interval = max(1, int(interval_sec))
+    remaining = int(cycles)
+    while True:
+        snapshot = monitor_snapshot(config)
+        if json_mode:
+            print(json.dumps(snapshot, sort_keys=True))
+        else:
+            print(render_monitor_text(snapshot), flush=True)
+            print("", flush=True)
+
+        if remaining > 0:
+            remaining -= 1
+            if remaining <= 0:
+                return 0
+        elif remaining == 0 and cycles > 0:
+            return 0
+
+        time.sleep(interval)
+
+
 def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
     state_counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
     blocked_tasks: list[str] = []

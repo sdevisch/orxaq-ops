@@ -254,6 +254,53 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["state_counts"]["blocked"], 1)
             self.assertTrue(pathlib.Path(snapshot["health_file"]).exists())
 
+    def test_monitor_snapshot_writes_monitor_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "task-a": {"status": "done"},
+                        "task-b": {"status": "in_progress"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg.heartbeat_file.write_text(json.dumps({"timestamp": "2000-01-01T00:00:00+00:00"}), encoding="utf-8")
+            snapshot = manager.monitor_snapshot(cfg)
+            self.assertIn("monitor_file", snapshot)
+            self.assertTrue(pathlib.Path(snapshot["monitor_file"]).exists())
+            self.assertIn("repos", snapshot)
+
+    def test_render_monitor_text_contains_key_fields(self):
+        text = manager.render_monitor_text(
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "status": {"supervisor_running": True, "runner_running": False, "heartbeat_age_sec": 5},
+                "progress": {
+                    "counts": {"done": 1, "in_progress": 2, "pending": 3, "blocked": 0, "unknown": 0},
+                    "active_tasks": ["a", "b"],
+                },
+                "repos": {
+                    "implementation": {
+                        "ok": True,
+                        "branch": "main",
+                        "head": "abc123",
+                        "dirty": False,
+                        "changed_files": 0,
+                    },
+                    "tests": {"ok": False, "error": "missing repo"},
+                },
+                "latest_log_line": "running task",
+                "monitor_file": "/tmp/monitor.json",
+            }
+        )
+        self.assertIn("supervisor=True", text)
+        self.assertIn("done=1", text)
+        self.assertIn("impl_repo", text)
+        self.assertIn("test_repo", text)
+
     def test_supervise_foreground_restarts_after_failure(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

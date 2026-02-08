@@ -70,8 +70,10 @@ make bootstrap
 make start
 make ensure
 make status
+make monitor
 make health
 make logs
+make dashboard
 make stop
 make install-keepalive
 make keepalive-status
@@ -126,6 +128,22 @@ make bootstrap
 - install keepalive,
 - open VS Code,
 - write an AI startup packet to `artifacts/autonomy/startup_packet.md`.
+
+## Monitoring
+
+One-shot console snapshot:
+
+```bash
+make monitor
+```
+
+Live GUI dashboard:
+
+```bash
+make dashboard
+```
+
+The dashboard provides live runner/supervisor state, task progress, repo drift, and latest log signals.
 
 Manual startup flow (if you want finer control):
 

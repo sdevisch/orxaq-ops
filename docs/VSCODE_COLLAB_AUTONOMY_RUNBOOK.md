@@ -100,6 +100,12 @@ make health
 make logs
 ```
 
+4. Open GUI monitor (recommended for ongoing visibility).
+
+```bash
+make dashboard
+```
+
 4. Enable host keepalive for restart resilience.
 
 ```bash
