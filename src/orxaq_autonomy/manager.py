@@ -1441,6 +1441,10 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         conv["errors"] = [str(err)]
         conv["partial"] = True
     _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
+    conv_events = conv.get("events", [])
+    if not isinstance(conv_events, list):
+        conv_events = []
+    recent_conversations = [item for item in conv_events if isinstance(item, dict)][-20:]
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
     response_metrics = _response_metrics_snapshot(config, lane_items)
     _mark_source("response_metrics", bool(response_metrics.get("ok", False)), "; ".join(response_metrics.get("errors", [])))
@@ -1514,7 +1518,8 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "conversations": {
             "total_events": conv.get("total_events", 0),
             "owner_counts": conv.get("owner_counts", {}),
-            "latest": (conv.get("events", [])[-1] if conv.get("events") else {}),
+            "latest": (recent_conversations[-1] if recent_conversations else {}),
+            "recent_events": recent_conversations,
             "partial": bool(conv.get("partial", False)),
             "errors": conv.get("errors", []),
             "sources": conv.get("sources", []),
@@ -2602,6 +2607,34 @@ def _conversation_content_from_lane_event(event: dict[str, Any]) -> str:
     return event_type
 
 
+def _normalize_conversation_event(
+    item: dict[str, Any],
+    *,
+    source_path: Path,
+    source_kind: str,
+    lane_id: str = "",
+    owner: str = "",
+) -> dict[str, Any]:
+    event = dict(item)
+    event["source"] = str(source_path)
+    event["source_kind"] = source_kind
+
+    normalized_lane = str(event.get("lane_id", "")).strip()
+    if lane_id and not normalized_lane:
+        event["lane_id"] = lane_id
+
+    normalized_owner = str(event.get("owner", "")).strip()
+    if owner and not normalized_owner:
+        event["owner"] = owner
+    if not str(event.get("owner", "")).strip():
+        event["owner"] = "unknown"
+
+    if source_kind == "lane_events" and not str(event.get("content", "")).strip():
+        event["content"] = _conversation_content_from_lane_event(event)
+
+    return event
+
+
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
     line_limit = max(1, min(2000, int(lines)))
     source_specs: list[dict[str, str]] = [
@@ -2661,16 +2694,20 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                     source_error = f"missing lane conversation and event sources at {source_path}"
                     lane_label = source.get("lane_id", "").strip() or source["path"]
                     errors.append(f"{lane_label}: {source_error}")
+            source_lane_id = str(source.get("lane_id", "")).strip()
+            source_owner = str(source.get("owner", "")).strip()
             for item in source_events:
-                item["source"] = str(resolved_path)
-                item["source_kind"] = source_kind
-                if source["lane_id"] and "lane_id" not in item:
-                    item["lane_id"] = source["lane_id"]
-                if source["owner"] and "owner" not in item:
-                    item["owner"] = source["owner"]
-                if source_kind == "lane_events" and not str(item.get("content", "")).strip():
-                    item["content"] = _conversation_content_from_lane_event(item)
-                events.append(item)
+                if not isinstance(item, dict):
+                    continue
+                events.append(
+                    _normalize_conversation_event(
+                        item,
+                        source_path=resolved_path,
+                        source_kind=source_kind,
+                        lane_id=source_lane_id,
+                        owner=source_owner,
+                    )
+                )
         except Exception as err:
             source_ok = False
             source_error = str(err)

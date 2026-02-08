@@ -196,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lanes_status = sub.add_parser("lanes-status")
     lanes_status.add_argument("--json", action="store_true")
+    lanes_status.add_argument("--lane", default="")
 
     lanes_start = sub.add_parser("lanes-start")
     lanes_start.add_argument("--lane", default="")
@@ -399,21 +400,35 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "lanes-status":
             snapshot = lane_status_snapshot(cfg)
+            requested_lane = args.lane.strip()
+            lane_items = snapshot.get("lanes", [])
+            if not isinstance(lane_items, list):
+                lane_items = []
+            if requested_lane:
+                lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == requested_lane]
+                if not lane_items:
+                    raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {cfg.lanes_file}.")
+            filtered = dict(snapshot)
+            filtered["requested_lane"] = requested_lane or "all"
+            filtered["lanes"] = lane_items
+            filtered["running_count"] = sum(1 for lane in lane_items if bool(lane.get("running", False)))
+            filtered["total_count"] = len(lane_items)
             if args.json:
-                print(json.dumps(snapshot, indent=2, sort_keys=True))
+                print(json.dumps(filtered, indent=2, sort_keys=True))
                 return 0
             print(
                 json.dumps(
                     {
-                        "lanes_file": snapshot["lanes_file"],
-                        "running_count": snapshot["running_count"],
-                        "total_count": snapshot["total_count"],
+                        "lanes_file": filtered["lanes_file"],
+                        "requested_lane": filtered["requested_lane"],
+                        "running_count": filtered["running_count"],
+                        "total_count": filtered["total_count"],
                     },
                     indent=2,
                     sort_keys=True,
                 )
             )
-            for lane in snapshot["lanes"]:
+            for lane in filtered["lanes"]:
                 state = "running" if lane["running"] else "stopped"
                 print(
                     f"- {lane['id']} [{lane['owner']}] {state} pid={lane['pid']} "

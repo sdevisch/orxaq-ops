@@ -434,6 +434,48 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["progress"]["counts"]["done"], 2)
             self.assertEqual(snapshot["progress"]["active_tasks"], ["lane:lane-a"])
 
+    def test_monitor_snapshot_includes_recent_conversation_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"ok": True, "errors": [], "running_count": 0, "total_count": 0, "lanes": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 3,
+                    "events": [
+                        {"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "a"},
+                        {"timestamp": "2026-01-01T00:00:01+00:00", "owner": "gemini", "content": "b"},
+                        {"timestamp": "2026-01-01T00:00:02+00:00", "owner": "claude", "content": "c"},
+                    ],
+                    "owner_counts": {"codex": 1, "gemini": 1, "claude": 1},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(len(snapshot["conversations"]["recent_events"]), 3)
+            self.assertEqual(snapshot["conversations"]["latest"]["content"], "c")
+
     def test_dashboard_status_snapshot_defaults(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -884,6 +926,50 @@ class ManagerTests(unittest.TestCase):
             lane_events_seen = [item for item in snapshot["events"] if item.get("source_kind") == "lane_events"]
             self.assertEqual(len(lane_events_seen), 1)
             self.assertIn("task_done", lane_events_seen[0].get("content", ""))
+
+    def test_conversations_snapshot_normalizes_missing_lane_owner_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "gemini",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane_conv = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "conversations.ndjson"
+            lane_conv.parent.mkdir(parents=True, exist_ok=True)
+            lane_conv.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "",
+                        "lane_id": "",
+                        "event_type": "agent_output",
+                        "content": "lane update",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            lane_events = [item for item in snapshot["events"] if item.get("source_kind") == "lane"]
+            self.assertEqual(len(lane_events), 1)
+            self.assertEqual(lane_events[0]["owner"], "gemini")
+            self.assertEqual(lane_events[0]["lane_id"], "lane-a")
 
     def test_start_lanes_background_starts_selected_lane(self):
         with tempfile.TemporaryDirectory() as td:

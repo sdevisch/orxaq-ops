@@ -42,6 +42,7 @@ class DashboardTests(unittest.TestCase):
             payload = dashboard._safe_monitor_snapshot(mock.Mock())
         self.assertIn("monitor snapshot error", payload["latest_log_line"])
         self.assertFalse(payload["diagnostics"]["ok"])
+        self.assertEqual(payload["conversations"]["recent_events"], [])
         self.assertIn("response_metrics", payload)
         self.assertFalse(payload["response_metrics"]["ok"])
 

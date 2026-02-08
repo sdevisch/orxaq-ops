@@ -294,6 +294,47 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "lanes-status"])
             self.assertEqual(rc, 0)
 
+    def test_lanes_status_command_with_lane_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "running_count": 1,
+                    "total_count": 2,
+                    "lanes": [
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100},
+                        {"id": "lane-b", "owner": "gemini", "running": False, "pid": None},
+                    ],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertEqual(data["requested_lane"], "lane-a")
+            self.assertEqual(data["total_count"], 1)
+            self.assertEqual(data["lanes"][0]["id"], "lane-a")
+
+    def test_lanes_status_command_returns_error_for_unknown_lane_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "running_count": 1,
+                    "total_count": 1,
+                    "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "pid": 100}],
+                },
+            ):
+                rc = cli.main(["--root", str(root), "lanes-status", "--lane", "missing"])
+            self.assertEqual(rc, 1)
+
     def test_lanes_ensure_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

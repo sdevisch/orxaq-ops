@@ -446,7 +446,19 @@ def _dashboard_html(refresh_sec: int) -> str:
             const state = lane.running ? "running" : "stopped";
             const health = lane.health || "unknown";
             const age = lane.heartbeat_age_sec ?? -1;
-            return `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s</div>`;
+            const counts = lane.state_counts || {{}};
+            const done = Number(counts.done || 0);
+            const inProgress = Number(counts.in_progress || 0);
+            const pending = Number(counts.pending || 0);
+            const blocked = Number(counts.blocked || 0);
+            const buildCurrent = lane.build_current ? "current" : "stale";
+            const lastEvent = (lane.last_event && lane.last_event.event_type) ? ` · event=${{lane.last_event.event_type}}` : "";
+            const error = lane.error ? `<div class="line bad">error: ${{escapeHtml(lane.error)}}</div>` : "";
+            return [
+              `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s · build=${{buildCurrent}}</div>`,
+              `<div class="line mono">tasks d=${{done}} p=${{pending}} w=${{inProgress}} b=${{blocked}}${{lastEvent}}</div>`,
+              error,
+            ].join("");
           }}).join("")
         : '<div class="line">No lanes configured.</div>';
       return {{ runningLanes, totalLanes }};
@@ -687,11 +699,24 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (convResult.ok && convResult.payload) {{
         renderConversations(convResult.payload);
       }} else {{
+        const monitorRecentEvents = (
+          monitorPayload &&
+          monitorPayload.conversations &&
+          Array.isArray(monitorPayload.conversations.recent_events)
+        ) ? monitorPayload.conversations.recent_events : [];
+        const monitorLatestEvent = (
+          monitorPayload &&
+          monitorPayload.conversations &&
+          monitorPayload.conversations.latest
+        ) ? monitorPayload.conversations.latest : null;
+        const fallbackEvents = monitorRecentEvents.length
+          ? monitorRecentEvents
+          : (monitorLatestEvent ? [monitorLatestEvent] : []);
         const fallbackConv = monitorPayload && monitorPayload.conversations
           ? {{
               total_events: monitorPayload.conversations.total_events || 0,
               owner_counts: monitorPayload.conversations.owner_counts || {{}},
-              events: monitorPayload.conversations.latest ? [monitorPayload.conversations.latest] : [],
+              events: fallbackEvents,
               partial: true,
               errors: [convResult.error || 'conversation endpoint unavailable'],
             }}
@@ -1034,6 +1059,7 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "total_events": 0,
                 "owner_counts": {},
                 "latest": {},
+                "recent_events": [],
                 "partial": True,
                 "errors": [message],
                 "sources": [],
