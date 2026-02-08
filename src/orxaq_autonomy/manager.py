@@ -1370,6 +1370,11 @@ def load_lane_specs(config: ManagerConfig) -> list[dict[str, Any]]:
             ),
             "mcp_context_file": mcp_context_file,
             "state_file": state_file,
+            "dependency_state_file": _resolve_path(
+                config.root_dir,
+                str(item.get("dependency_state_file", "")),
+                config.state_file,
+            ),
             "artifacts_dir": artifacts_dir,
             "heartbeat_file": heartbeat_file,
             "lock_file": lock_file,
@@ -1441,6 +1446,68 @@ def _read_lane_state_counts(state_file: Path) -> dict[str, int]:
     return counts
 
 
+def _read_lane_state_progress(state_file: Path, tasks_file: Path) -> dict[str, Any]:
+    task_ids: list[str] = []
+    try:
+        raw_tasks = json.loads(tasks_file.read_text(encoding="utf-8")) if tasks_file.exists() else []
+    except Exception:
+        raw_tasks = []
+    if isinstance(raw_tasks, list):
+        for item in raw_tasks:
+            if not isinstance(item, dict):
+                continue
+            task_id = str(item.get("id", "")).strip()
+            if task_id:
+                task_ids.append(task_id)
+
+    if not task_ids:
+        counts = _read_lane_state_counts(state_file)
+        known_total = sum(counts.get(key, 0) for key in ("pending", "in_progress", "done", "blocked"))
+        return {
+            "counts": counts,
+            "task_total": known_total,
+            "state_entries": known_total + int(counts.get("unknown", 0)),
+            "missing_state_entries": 0,
+            "extra_state_entries": 0,
+        }
+
+    raw_state: dict[str, Any] = {}
+    if state_file.exists():
+        try:
+            candidate = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                raw_state = candidate
+        except Exception:
+            raw_state = {}
+
+    counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
+    covered = 0
+    for task_id in task_ids:
+        payload = raw_state.get(task_id, {})
+        status = "pending"
+        if isinstance(payload, dict):
+            status = str(payload.get("status", "pending")).strip().lower()
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["unknown"] += 1
+        if task_id in raw_state:
+            covered += 1
+
+    extra = 0
+    for key in raw_state:
+        if str(key) not in task_ids:
+            extra += 1
+
+    return {
+        "counts": counts,
+        "task_total": len(task_ids),
+        "state_entries": len(raw_state),
+        "missing_state_entries": max(0, len(task_ids) - covered),
+        "extra_state_entries": extra,
+    }
+
+
 def _lane_health_state(
     *,
     running: bool,
@@ -1481,7 +1548,8 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
             running = _pid_running(pid)
             meta = _read_json_file(meta_path)
             paused = pause_path.exists()
-            state_counts = _read_lane_state_counts(Path(lane["state_file"]))
+            state_progress = _read_lane_state_progress(Path(lane["state_file"]), Path(lane["tasks_file"]))
+            state_counts = state_progress["counts"]
             last_event = _tail_ndjson(events_path, 1)
             latest = ""
             if log_path.exists():
@@ -1505,6 +1573,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "running": running,
                     "pid": pid,
                     "tasks_file": str(lane["tasks_file"]),
+                    "dependency_state_file": str(lane["dependency_state_file"]),
                     "objective_file": str(lane["objective_file"]),
                     "impl_repo": str(lane["impl_repo"]),
                     "test_repo": str(lane["test_repo"]),
@@ -1520,6 +1589,10 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "heartbeat_stale": heartbeat_stale,
                     "paused": paused,
                     "state_counts": state_counts,
+                    "task_total": int(state_progress.get("task_total", 0)),
+                    "state_entries": int(state_progress.get("state_entries", 0)),
+                    "missing_state_entries": int(state_progress.get("missing_state_entries", 0)),
+                    "extra_state_entries": int(state_progress.get("extra_state_entries", 0)),
                     "last_event": last_event[0] if last_event else {},
                     "health": health,
                     "meta": meta,
@@ -1536,6 +1609,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "running": False,
                     "pid": None,
                     "tasks_file": str(lane["tasks_file"]),
+                    "dependency_state_file": str(lane["dependency_state_file"]),
                     "objective_file": str(lane["objective_file"]),
                     "impl_repo": str(lane["impl_repo"]),
                     "test_repo": str(lane["test_repo"]),
@@ -1551,6 +1625,10 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "heartbeat_stale": False,
                     "paused": False,
                     "state_counts": {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 1},
+                    "task_total": 0,
+                    "state_entries": 0,
+                    "missing_state_entries": 0,
+                    "extra_state_entries": 0,
                     "last_event": {},
                     "health": "error",
                     "error": str(err),
@@ -1601,6 +1679,8 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         str(lane["tasks_file"]),
         "--state-file",
         str(lane["state_file"]),
+        "--dependency-state-file",
+        str(lane["dependency_state_file"]),
         "--objective-file",
         str(lane["objective_file"]),
         "--codex-schema",
@@ -1613,6 +1693,8 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         str(lane["lock_file"]),
         "--conversation-log-file",
         str(lane["conversation_log_file"]),
+        "--handoff-dir",
+        str(Path(lane["artifacts_dir"]) / "handoffs"),
         "--max-cycles",
         str(config.max_cycles),
         "--max-attempts",
@@ -1736,6 +1818,7 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "owner": lane["owner"],
             "command": cmd,
             "tasks_file": str(lane["tasks_file"]),
+            "dependency_state_file": str(lane["dependency_state_file"]),
             "objective_file": str(lane["objective_file"]),
             "conversation_log_file": str(lane["conversation_log_file"]),
             "exclusive_paths": lane["exclusive_paths"],
@@ -1793,8 +1876,10 @@ def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
         running = bool(current.get("running", False))
         stale = bool(current.get("heartbeat_stale", False))
         state_counts = current.get("state_counts", {}) if isinstance(current.get("state_counts", {}), dict) else {}
+        task_total = int(current.get("task_total", 0) or 0)
         completed = (
-            int(state_counts.get("done", 0)) > 0
+            task_total > 0
+            and int(state_counts.get("done", 0)) == task_total
             and int(state_counts.get("pending", 0)) == 0
             and int(state_counts.get("in_progress", 0)) == 0
             and int(state_counts.get("blocked", 0)) == 0

@@ -94,6 +94,8 @@ GIT_LOCK_BASENAMES = ("index.lock", "HEAD.lock", "packed-refs.lock")
 SUPPORTED_OWNERS = {"codex", "gemini", "claude"}
 OWNER_PRIORITY = {"codex": 0, "gemini": 1, "claude": 2}
 MAX_CONVERSATION_SNIPPET_CHARS = 8000
+MAX_HANDOFF_SNIPPET_CHARS = 5000
+HANDOFF_RECENT_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -224,6 +226,82 @@ def append_conversation_event(
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _append_ndjson(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _tail_ndjson(path: Path, limit: int = HANDOFF_RECENT_LIMIT) -> list[dict[str, Any]]:
+    if limit <= 0 or not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out: list[dict[str, Any]] = []
+    for raw in lines[-limit:]:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            out.append(payload)
+    return out
+
+
+def record_handoff_event(
+    *,
+    handoff_dir: Path,
+    task: Task,
+    outcome: dict[str, Any],
+) -> None:
+    status = str(outcome.get("status", "")).strip().lower()
+    summary = str(outcome.get("summary", "")).strip()
+    blocker = str(outcome.get("blocker", "")).strip()
+    next_actions = [str(item) for item in (outcome.get("next_actions", []) or [])]
+    payload = {
+        "timestamp": _now_iso(),
+        "task_id": task.id,
+        "owner": task.owner,
+        "status": status,
+        "summary": summary,
+        "blocker": blocker,
+        "next_actions": next_actions,
+        "commit": str(outcome.get("commit", "")).strip(),
+    }
+    if task.owner in {"codex", "claude"}:
+        _append_ndjson(handoff_dir / "to_gemini.ndjson", payload)
+    if task.owner == "gemini":
+        _append_ndjson(handoff_dir / "to_codex.ndjson", payload)
+
+
+def render_handoff_context(handoff_dir: Path, owner: str) -> str:
+    if owner == "gemini":
+        source = handoff_dir / "to_gemini.ndjson"
+        heading = "Recent implementation handoffs for testing"
+    elif owner in {"codex", "claude"}:
+        source = handoff_dir / "to_codex.ndjson"
+        heading = "Recent testing feedback for implementation"
+    else:
+        return ""
+
+    events = _tail_ndjson(source, HANDOFF_RECENT_LIMIT)
+    if not events:
+        return ""
+    lines = [f"{heading}:"]
+    for item in events:
+        lines.append(
+            "- "
+            f"[{item.get('timestamp', '')}] task={item.get('task_id', '')} "
+            f"status={item.get('status', '')} "
+            f"summary={str(item.get('summary', '')).strip()[:220]} "
+            f"blocker={str(item.get('blocker', '')).strip()[:220]} "
+            f"next_actions={str(item.get('next_actions', []))[:260]}"
+        )
+    return _truncate_text("\n".join(lines), limit=MAX_HANDOFF_SNIPPET_CHARS)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -456,12 +534,51 @@ def save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
     _write_json(path, state)
 
 
-def task_dependencies_done(task: Task, state: dict[str, dict[str, Any]]) -> bool:
+def load_dependency_state(path: Path | None) -> dict[str, dict[str, Any]] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def _dependency_done(
+    dep: str,
+    state: dict[str, dict[str, Any]],
+    dependency_state: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    dep_state = state.get(dep, {})
+    if dep_state:
+        return dep_state.get("status") == STATUS_DONE
+    if dependency_state:
+        ext = dependency_state.get(dep, {})
+        if ext:
+            return ext.get("status") == STATUS_DONE
+    return False
+
+
+def unresolved_dependencies(
+    task: Task,
+    state: dict[str, dict[str, Any]],
+    dependency_state: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    unresolved: list[str] = []
     for dep in task.depends_on:
-        dep_state = state.get(dep, {})
-        if dep_state.get("status") != STATUS_DONE:
-            return False
-    return True
+        if not _dependency_done(dep, state, dependency_state):
+            unresolved.append(dep)
+    return unresolved
+
+
+def task_dependencies_done(
+    task: Task,
+    state: dict[str, dict[str, Any]],
+    dependency_state: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    return len(unresolved_dependencies(task, state, dependency_state)) == 0
 
 
 def _task_ready_now(entry: dict[str, Any], now: dt.datetime) -> bool:
@@ -471,7 +588,12 @@ def _task_ready_now(entry: dict[str, Any], now: dt.datetime) -> bool:
     return now >= not_before
 
 
-def select_next_task(tasks: list[Task], state: dict[str, dict[str, Any]], now: dt.datetime | None = None) -> Task | None:
+def select_next_task(
+    tasks: list[Task],
+    state: dict[str, dict[str, Any]],
+    now: dt.datetime | None = None,
+    dependency_state: dict[str, dict[str, Any]] | None = None,
+) -> Task | None:
     now = now or _now_utc()
     ready: list[Task] = []
     for task in tasks:
@@ -481,7 +603,7 @@ def select_next_task(tasks: list[Task], state: dict[str, dict[str, Any]], now: d
             continue
         if not _task_ready_now(entry, now):
             continue
-        if not task_dependencies_done(task, state):
+        if not task_dependencies_done(task, state, dependency_state):
             continue
         ready.append(task)
     if not ready:
@@ -490,13 +612,17 @@ def select_next_task(tasks: list[Task], state: dict[str, dict[str, Any]], now: d
     return ready[0]
 
 
-def soonest_pending_time(tasks: list[Task], state: dict[str, dict[str, Any]]) -> dt.datetime | None:
+def soonest_pending_time(
+    tasks: list[Task],
+    state: dict[str, dict[str, Any]],
+    dependency_state: dict[str, dict[str, Any]] | None = None,
+) -> dt.datetime | None:
     soonest: dt.datetime | None = None
     for task in tasks:
         entry = state[task.id]
         if entry.get("status") != STATUS_PENDING:
             continue
-        if not task_dependencies_done(task, state):
+        if not task_dependencies_done(task, state, dependency_state):
             continue
         not_before = _parse_iso(str(entry.get("not_before", "")))
         if not_before is None:
@@ -517,6 +643,7 @@ def build_agent_prompt(
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
     startup_instructions: str = "",
+    handoff_context: str = "",
 ) -> str:
     acceptance = "\n".join(f"- {item}" for item in task.acceptance) or "- No explicit acceptance items"
 
@@ -542,6 +669,10 @@ def build_agent_prompt(
     startup_block = ""
     if startup_text:
         startup_block = f"Role startup instructions:\n{startup_text}\n\n"
+    handoff_text = handoff_context.strip()
+    handoff_block = ""
+    if handoff_text:
+        handoff_block = f"{handoff_text}\n\n"
 
     return (
         f"{objective_text.strip()}\n\n"
@@ -552,6 +683,7 @@ def build_agent_prompt(
         f"- Required behaviors:\n{protocol_behaviors}\n"
         f"- File-type policy: {skill_protocol.filetype_policy}\n\n"
         f"{startup_block}"
+        f"{handoff_block}"
         f"{mcp_context_text}"
         "Current autonomous task:\n"
         f"- Task ID: {task.id}\n"
@@ -572,6 +704,8 @@ def build_agent_prompt(
         "- Use non-interactive commands only (never wait for terminal prompts).\n"
         "- Handle new/unknown file types safely: preserve binary formats, avoid destructive rewrites, and add `.gitattributes` entries when needed.\n"
         "- If git locks or in-progress git states are detected, recover safely and continue.\n"
+        "- If you are implementation-owner: provide explicit test requests for Gemini in next_actions.\n"
+        "- If you are test-owner: when you find implementation issues, provide concrete fix feedback and hints for Codex in blocker/next_actions.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
         "- status must be one of: done, partial, blocked.\n"
     )
@@ -691,6 +825,58 @@ def run_validations(
     return True, "ok"
 
 
+def _git_output(repo: Path, args: list[str], timeout_sec: int = 120) -> tuple[bool, str]:
+    result = run_command(["git", *args], cwd=repo, timeout_sec=timeout_sec)
+    merged = (result.stdout + "\n" + result.stderr).strip()
+    if result.returncode != 0:
+        return False, merged
+    return True, result.stdout.strip()
+
+
+def ensure_repo_pushed(repo: Path, timeout_sec: int = 180) -> tuple[bool, str]:
+    ok, inside = _git_output(repo, ["rev-parse", "--is-inside-work-tree"])
+    if not ok:
+        return True, f"push check skipped (not a git repo): {inside}"
+
+    ok, upstream = _git_output(repo, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if not ok:
+        return False, f"no upstream configured for branch: {upstream}"
+
+    ok, counts = _git_output(repo, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+    if not ok:
+        return False, f"unable to compare branch with upstream: {counts}"
+    parts = counts.split()
+    if len(parts) != 2:
+        return False, f"unexpected rev-list output: {counts}"
+    try:
+        behind = int(parts[0])
+        ahead = int(parts[1])
+    except ValueError:
+        return False, f"unable to parse ahead/behind counts: {counts}"
+
+    if ahead <= 0:
+        return True, f"branch synced to {upstream} (behind={behind}, ahead={ahead})"
+
+    push = run_command(["git", "push"], cwd=repo, timeout_sec=timeout_sec)
+    if push.returncode != 0:
+        return False, f"git push failed:\n{(push.stdout + '\n' + push.stderr).strip()}"
+
+    ok, recounted = _git_output(repo, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+    if not ok:
+        return False, f"push verification failed: {recounted}"
+    parts = recounted.split()
+    if len(parts) != 2:
+        return False, f"unexpected post-push rev-list output: {recounted}"
+    try:
+        behind_after = int(parts[0])
+        ahead_after = int(parts[1])
+    except ValueError:
+        return False, f"unable to parse post-push counts: {recounted}"
+    if ahead_after > 0:
+        return False, f"branch still ahead after push (behind={behind_after}, ahead={ahead_after})"
+    return True, f"push verified to {upstream} (behind={behind_after}, ahead={ahead_after})"
+
+
 def _extract_json_object_from_text(raw: str) -> dict[str, Any] | None:
     decoder = json.JSONDecoder()
     for idx, ch in enumerate(raw):
@@ -771,6 +957,7 @@ def run_codex_task(
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
     startup_instructions: str,
+    handoff_context: str,
     conversation_log_file: Path | None,
     cycle: int,
 ) -> tuple[bool, dict[str, Any]]:
@@ -787,6 +974,7 @@ def run_codex_task(
         skill_protocol=skill_protocol,
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
+        handoff_context=handoff_context,
     )
     append_conversation_event(
         conversation_log_file,
@@ -881,6 +1069,7 @@ def run_gemini_task(
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
     startup_instructions: str,
+    handoff_context: str,
     conversation_log_file: Path | None,
     cycle: int,
 ) -> tuple[bool, dict[str, Any]]:
@@ -895,6 +1084,7 @@ def run_gemini_task(
         skill_protocol=skill_protocol,
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
+        handoff_context=handoff_context,
     )
     prompt += (
         "\nTesting-owner constraints:\n"
@@ -979,6 +1169,7 @@ def run_claude_task(
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
     startup_instructions: str,
+    handoff_context: str,
     conversation_log_file: Path | None,
     cycle: int,
 ) -> tuple[bool, dict[str, Any]]:
@@ -993,6 +1184,7 @@ def run_claude_task(
         skill_protocol=skill_protocol,
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
+        handoff_context=handoff_context,
     )
     prompt += (
         "\nReview-owner constraints:\n"
@@ -1172,6 +1364,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gemini-startup-prompt-file", default="")
     parser.add_argument("--claude-startup-prompt-file", default="")
     parser.add_argument("--conversation-log-file", default="artifacts/autonomy/conversations.ndjson")
+    parser.add_argument("--handoff-dir", default="artifacts/autonomy/handoffs")
+    parser.add_argument(
+        "--dependency-state-file",
+        default="",
+        help="Optional state file to resolve dependencies outside the current owner-filtered task set.",
+    )
     parser.add_argument(
         "--owner-filter",
         action="append",
@@ -1199,6 +1397,8 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.claude_startup_prompt_file).resolve() if args.claude_startup_prompt_file else None
     )
     conversation_log_file = Path(args.conversation_log_file).resolve() if args.conversation_log_file else None
+    handoff_dir = Path(args.handoff_dir).resolve()
+    dependency_state_file = Path(args.dependency_state_file).resolve() if args.dependency_state_file else None
 
     if not impl_repo.exists():
         raise FileNotFoundError(f"Implementation repo not found: {impl_repo}")
@@ -1250,6 +1450,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     for cycle in range(1, args.max_cycles + 1):
+        dependency_state = load_dependency_state(dependency_state_file)
+
         if all(state[t.id]["status"] == STATUS_DONE for t in tasks):
             _print("All tasks are marked done.")
             write_heartbeat(
@@ -1262,11 +1464,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         now = _now_utc()
-        task = select_next_task(tasks, state, now=now)
+        task = select_next_task(tasks, state, now=now, dependency_state=dependency_state)
         if task is None:
-            soonest = soonest_pending_time(tasks, state)
+            soonest = soonest_pending_time(tasks, state, dependency_state=dependency_state)
             pending = [t.id for t in tasks if state[t.id]["status"] == STATUS_PENDING]
             blocked = [t.id for t in tasks if state[t.id]["status"] == STATUS_BLOCKED]
+            waiting_on_deps: dict[str, list[str]] = {}
+            for pending_task in tasks:
+                if state[pending_task.id]["status"] != STATUS_PENDING:
+                    continue
+                deps = unresolved_dependencies(pending_task, state, dependency_state)
+                if deps:
+                    waiting_on_deps[pending_task.id] = deps
 
             if soonest is not None and soonest > now:
                 sleep_for = min(args.idle_sleep_sec, max(1, int((soonest - now).total_seconds())))
@@ -1276,7 +1485,7 @@ def main(argv: list[str] | None = None) -> int:
                     cycle=cycle,
                     task_id=None,
                     message=f"waiting {sleep_for}s for retry cooldown",
-                    extra={"pending": pending, "blocked": blocked},
+                    extra={"pending": pending, "blocked": blocked, "waiting_on_deps": waiting_on_deps},
                 )
                 time.sleep(sleep_for)
                 continue
@@ -1288,7 +1497,7 @@ def main(argv: list[str] | None = None) -> int:
                 cycle=cycle,
                 task_id=None,
                 message="no ready tasks remain",
-                extra={"pending": pending, "blocked": blocked},
+                extra={"pending": pending, "blocked": blocked, "waiting_on_deps": waiting_on_deps},
             )
             return 2
 
@@ -1334,6 +1543,7 @@ def main(argv: list[str] | None = None) -> int:
             "last_summary": task_state.get("last_summary", ""),
             "last_error": task_state.get("last_error", ""),
         }
+        handoff_context = render_handoff_context(handoff_dir, task.owner)
 
         if task.owner == "gemini" and not owner_repo.exists():
             outcome = normalize_outcome(
@@ -1379,6 +1589,7 @@ def main(argv: list[str] | None = None) -> int:
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
                 startup_instructions=codex_startup_instructions,
+                handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
             )
@@ -1405,6 +1616,7 @@ def main(argv: list[str] | None = None) -> int:
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
                 startup_instructions=gemini_startup_instructions,
+                handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
             )
@@ -1431,11 +1643,13 @@ def main(argv: list[str] | None = None) -> int:
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
                 startup_instructions=claude_startup_instructions,
+                handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)
+        record_handoff_event(handoff_dir=handoff_dir, task=task, outcome=outcome)
         status = str(outcome.get("status", STATUS_BLOCKED)).lower()
         blocker_text = str(outcome.get("blocker", ""))
         summary_text = str(outcome.get("summary", ""))
@@ -1525,6 +1739,27 @@ def main(argv: list[str] | None = None) -> int:
                     message=f"validation `{cmd}` running for {elapsed}s",
                 ),
             )
+            if valid:
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="task_push_verify",
+                    cycle=cycle,
+                    task_id=task.id,
+                    message="verifying commit push state",
+                )
+                push_ok, push_details = ensure_repo_pushed(owner_repo, timeout_sec=args.validate_timeout_sec)
+                if not push_ok:
+                    valid = False
+                    details = f"Push verification failed:\n{push_details}"
+                else:
+                    append_conversation_event(
+                        conversation_log_file,
+                        cycle=cycle,
+                        task=task,
+                        owner=task.owner,
+                        event_type="task_push_verified",
+                        content=push_details,
+                    )
             if valid:
                 task_state["status"] = STATUS_DONE
                 task_state["last_error"] = ""

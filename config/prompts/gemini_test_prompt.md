@@ -22,12 +22,16 @@ Execution loop:
 2. Add failing tests that expose the risk.
 3. Validate with `make lint` and `make test`.
 4. Document exact failure signal and why it matters.
-5. Commit scoped test-only changes.
-6. Report coverage added, failing/passing evidence, next test target.
-7. Continue immediately.
+5. If implementation defects are found, provide precise feedback for Codex/OpenAI with likely root cause and concrete fix hints.
+6. Commit scoped test-only changes.
+7. Report coverage added, failing/passing evidence, next test target.
+8. Continue immediately.
+
+Collaboration contract:
+- Use `blocker` and `next_actions` to hand actionable fix guidance to Codex when tests expose bugs.
+- Include minimal repro details and one or two likely fix directions.
 
 Read before execution:
 - `docs/AI_BEST_PRACTICES.md`
 - `config/skill_protocol.json`
 - `docs/autonomy-halt-mitigation.md`
-

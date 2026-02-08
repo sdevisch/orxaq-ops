@@ -631,6 +631,38 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--owner-filter", argv)
             self.assertIn("codex", argv)
 
+    def test_build_lane_runner_cmd_includes_dependency_state_and_handoff_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "dependency_state_file": "state/state.json",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane = manager.load_lane_specs(cfg)[0]
+            argv = manager._build_lane_runner_cmd(cfg, lane)
+            self.assertIn("--dependency-state-file", argv)
+            self.assertIn(str(lane["dependency_state_file"]), argv)
+            self.assertIn("--handoff-dir", argv)
+            handoff_value = argv[argv.index("--handoff-dir") + 1]
+            self.assertTrue(handoff_value.endswith("/artifacts/autonomy/lanes/lane-a/handoffs"))
+
     def test_ensure_lanes_background_starts_unexpectedly_stopped_lane(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -667,6 +699,7 @@ class ManagerTests(unittest.TestCase):
                             "running": False,
                             "heartbeat_stale": False,
                             "state_counts": {"done": 0, "pending": 1, "in_progress": 0, "blocked": 0},
+                            "task_total": 1,
                         }
                     ]
                 },
@@ -686,6 +719,7 @@ class ManagerTests(unittest.TestCase):
                             "running": False,
                             "heartbeat_stale": False,
                             "state_counts": {"done": 0, "pending": 1, "in_progress": 0, "blocked": 0},
+                            "task_total": 1,
                         }
                     ]
                 },
@@ -727,6 +761,7 @@ class ManagerTests(unittest.TestCase):
                             "running": False,
                             "heartbeat_stale": False,
                             "state_counts": {"done": 1, "pending": 0, "in_progress": 0, "blocked": 0},
+                            "task_total": 1,
                         }
                     ]
                 },
@@ -790,6 +825,59 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(lane["health"], "stale")
             self.assertTrue(lane["heartbeat_stale"])
             self.assertGreaterEqual(lane["heartbeat_age_sec"], 1)
+
+    def test_lane_status_snapshot_treats_missing_state_entries_as_pending(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "tasks.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "new-task",
+                            "owner": "gemini",
+                            "priority": 1,
+                            "title": "New Task",
+                            "description": "Desc",
+                            "depends_on": [],
+                            "acceptance": [],
+                        }
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane_runtime = root / "artifacts" / "autonomy" / "lanes" / "lane-a"
+            lane_runtime.mkdir(parents=True, exist_ok=True)
+            (lane_runtime / "state.json").write_text(
+                json.dumps({"old-done-task": {"status": "done"}}) + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.lane_status_snapshot(cfg)
+            lane = snapshot["lanes"][0]
+            self.assertEqual(lane["task_total"], 1)
+            self.assertEqual(lane["state_counts"]["pending"], 1)
+            self.assertEqual(lane["missing_state_entries"], 1)
+            self.assertEqual(lane["extra_state_entries"], 1)
 
 
 if __name__ == "__main__":

@@ -21,8 +21,13 @@ Delivery loop for each task:
 3. Run `make lint` and `make test` in the implementation repo.
 4. If failures occur, fix immediately and rerun.
 5. Commit with a scoped message describing behavior change and evidence.
-6. Report: changes made, validation results, next task.
-7. Continue immediately to next task.
+6. Add test handoff instructions for Gemini with exact changed files, risk areas, and requested adversarial tests.
+7. Report: changes made, validation results, next task.
+8. Continue immediately to next task.
+
+Collaboration contract:
+- Write actionable testing requests in `next_actions` so Gemini can convert them into tests.
+- Include reproduction hints for any known weak spots that still need independent validation.
 
 RLN-specific acceptance bar:
 - Prove anti-compaction value versus baseline with measurable tests.
@@ -33,4 +38,3 @@ Read before execution:
 - `docs/AI_BEST_PRACTICES.md`
 - `config/skill_protocol.json`
 - `docs/autonomy-halt-mitigation.md`
-

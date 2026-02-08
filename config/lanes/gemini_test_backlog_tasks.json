@@ -1,0 +1,67 @@
+[
+  {
+    "id": "gemini-rln-adversarial-round-2",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RLN adversarial retention tests (round 2)",
+    "description": "Add additional adversarial tests for detail retention, compaction resistance, contradictory facts, and long-context reconstruction quality.",
+    "depends_on": [],
+    "acceptance": [
+      "Adds multiple RLN adversarial tests beyond existing suite",
+      "Includes baseline-vs-RLN assertions with explicit pass/fail criteria",
+      "Validation commands pass and commit is pushed"
+    ]
+  },
+  {
+    "id": "gemini-causal-edge-case-sweep",
+    "owner": "gemini",
+    "priority": 2,
+    "title": "Expand causal edge-case and property tests",
+    "description": "Add tests targeting weak instruments, ambiguous graph paths, identifiability limits, and SCM counterfactual edge behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "Adds robust causal edge-case tests",
+      "At least one test documents previously uncovered risk or regression guard",
+      "Validation commands pass and commit is pushed"
+    ]
+  },
+  {
+    "id": "gemini-mesh-cli-rpa-regression-suite",
+    "owner": "gemini",
+    "priority": 3,
+    "title": "Add mesh/CLI/RPA regression tests",
+    "description": "Create regression tests for deterministic mesh behavior, CLI argument guards, and RPA safety boundaries.",
+    "depends_on": [],
+    "acceptance": [
+      "Adds mesh/CLI/RPA regression tests for failure-prone paths",
+      "Covers non-admin and non-interactive execution constraints",
+      "Validation commands pass and commit is pushed"
+    ]
+  },
+  {
+    "id": "gemini-security-ethics-abuse-tests",
+    "owner": "gemini",
+    "priority": 4,
+    "title": "Add abuse-case tests for security and ethics controls",
+    "description": "Add tests for prompt-injection, secret exfiltration patterns, and policy-bypass attempts to validate security/ethics guardrails.",
+    "depends_on": [],
+    "acceptance": [
+      "Adds abuse-case tests with explicit expected guardrail outcomes",
+      "Documents failure symptoms with concrete remediation hints if found",
+      "Validation commands pass and commit is pushed"
+    ]
+  },
+  {
+    "id": "gemini-release-quality-test-audit",
+    "owner": "gemini",
+    "priority": 5,
+    "title": "Perform release-quality test gap audit and close top gaps",
+    "description": "Scan existing tests and close the top high-risk missing cases with focused additions.",
+    "depends_on": [],
+    "acceptance": [
+      "Produces a concise missing-test summary in commit notes/summary",
+      "Implements top-priority missing tests",
+      "Validation commands pass and commit is pushed"
+    ]
+  }
+]

@@ -98,6 +98,33 @@ class SchedulingTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected.id, "b")
 
+    def test_select_next_task_uses_external_dependency_state(self):
+        task = runner.Task(
+            id="task-b",
+            owner="gemini",
+            priority=1,
+            title="B",
+            description="Depends on external task",
+            depends_on=["task-a"],
+            acceptance=[],
+        )
+        state = {
+            "task-b": {
+                "status": runner.STATUS_PENDING,
+                "attempts": 0,
+                "retryable_failures": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "",
+                "owner": "gemini",
+            }
+        }
+        dep_state = {"task-a": {"status": runner.STATUS_DONE}}
+        selected = runner.select_next_task([task], state, dependency_state=dep_state)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.id, "task-b")
+
     def test_schedule_retry_sets_not_before_and_pending(self):
         entry = {
             "status": runner.STATUS_IN_PROGRESS,
@@ -211,6 +238,34 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertIn("Role startup instructions", prompt)
         self.assertIn("adversarial tests", prompt)
 
+    def test_record_handoff_event_and_render_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            handoff_dir = pathlib.Path(td)
+            task = runner.Task(
+                id="impl-1",
+                owner="codex",
+                priority=1,
+                title="impl",
+                description="impl",
+                depends_on=[],
+                acceptance=[],
+            )
+            runner.record_handoff_event(
+                handoff_dir=handoff_dir,
+                task=task,
+                outcome={
+                    "status": "done",
+                    "summary": "Implemented retention fix",
+                    "blocker": "",
+                    "next_actions": ["Add adversarial test for contradictory facts."],
+                    "commit": "abc123",
+                },
+            )
+            text = runner.render_handoff_context(handoff_dir, "gemini")
+            self.assertIn("Recent implementation handoffs for testing", text)
+            self.assertIn("impl-1", text)
+            self.assertIn("contradictory facts", text)
+
     def test_run_validations_retries_test_command(self):
         calls = []
 
@@ -247,6 +302,40 @@ class RuntimeSafeguardTests(unittest.TestCase):
             )
         self.assertTrue(ok)
         self.assertEqual(details, "ok")
+
+    def test_ensure_repo_pushed_returns_synced_when_not_ahead(self):
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "true"),
+                (True, "origin/main"),
+                (True, "0 0"),
+            ],
+        ):
+            ok, details = runner.ensure_repo_pushed(pathlib.Path("/tmp/repo"))
+        self.assertTrue(ok)
+        self.assertIn("ahead=0", details)
+
+    def test_ensure_repo_pushed_pushes_when_ahead(self):
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "true"),
+                (True, "origin/main"),
+                (True, "0 2"),
+                (True, "0 0"),
+            ],
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            return_value=runner.subprocess.CompletedProcess(["git", "push"], returncode=0, stdout="", stderr=""),
+        ) as run_command:
+            ok, details = runner.ensure_repo_pushed(pathlib.Path("/tmp/repo"))
+        self.assertTrue(ok)
+        run_command.assert_called_once()
+        self.assertIn("push verified", details)
 
     def test_load_tasks_supports_claude_owner(self):
         with tempfile.TemporaryDirectory() as td:
@@ -323,6 +412,7 @@ class RuntimeSafeguardTests(unittest.TestCase):
                     skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
                     mcp_context=None,
                     startup_instructions="",
+                    handoff_context="",
                     conversation_log_file=None,
                     cycle=1,
                 )
