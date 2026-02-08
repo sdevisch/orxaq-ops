@@ -4,6 +4,7 @@
 This runner coordinates:
 - Codex for implementation tasks in the main repository.
 - Gemini for independent testing/review tasks in a sibling test repository.
+- Claude for additional independent implementation/review lanes.
 
 It advances a task queue until completion criteria are met or a hard blocker is hit.
 """
@@ -90,6 +91,9 @@ VALIDATION_FALLBACKS = {
 
 TEST_COMMAND_HINTS = ("pytest", "make test")
 GIT_LOCK_BASENAMES = ("index.lock", "HEAD.lock", "packed-refs.lock")
+SUPPORTED_OWNERS = {"codex", "gemini", "claude"}
+OWNER_PRIORITY = {"codex": 0, "gemini": 1, "claude": 2}
+MAX_CONVERSATION_SNIPPET_CHARS = 8000
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,41 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 def _write_json(path: Path, payload: Any) -> None:
     _write_text_atomic(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _truncate_text(value: str, limit: int = MAX_CONVERSATION_SNIPPET_CHARS) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def append_conversation_event(
+    path: Path | None,
+    *,
+    cycle: int,
+    task: Task | None,
+    owner: str,
+    event_type: str,
+    content: str,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    if path is None:
+        return
+    payload: dict[str, Any] = {
+        "timestamp": _now_iso(),
+        "cycle": int(cycle),
+        "task_id": task.id if task else "",
+        "task_title": task.title if task else "",
+        "owner": owner,
+        "event_type": event_type,
+        "content": _truncate_text(content),
+    }
+    if meta:
+        payload["meta"] = meta
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -376,7 +415,7 @@ def load_tasks(path: Path) -> list[Task]:
         )
         if task.id in seen:
             raise ValueError(f"Duplicate task id: {task.id}")
-        if task.owner not in {"codex", "gemini"}:
+        if task.owner not in SUPPORTED_OWNERS:
             raise ValueError(f"Unsupported task owner {task.owner!r} for task {task.id}")
         seen.add(task.id)
         tasks.append(task)
@@ -447,8 +486,7 @@ def select_next_task(tasks: list[Task], state: dict[str, dict[str, Any]], now: d
         ready.append(task)
     if not ready:
         return None
-    owner_rank = {"codex": 0, "gemini": 1}
-    ready.sort(key=lambda t: (t.priority, owner_rank[t.owner], t.id))
+    ready.sort(key=lambda t: (t.priority, OWNER_PRIORITY[t.owner], t.id))
     return ready[0]
 
 
@@ -733,6 +771,8 @@ def run_codex_task(
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
     startup_instructions: str,
+    conversation_log_file: Path | None,
+    cycle: int,
 ) -> tuple[bool, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{task.id}_codex_result.json"
@@ -747,6 +787,15 @@ def run_codex_task(
         skill_protocol=skill_protocol,
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="prompt",
+        content=prompt,
+        meta={"agent": "codex"},
     )
 
     cmd = [
@@ -768,6 +817,15 @@ def run_codex_task(
     _print(f"Running Codex task {task.id}")
     result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
     if result.returncode != 0:
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content=(result.stdout + "\n" + result.stderr).strip(),
+            meta={"agent": "codex", "returncode": result.returncode},
+        )
         return False, normalize_outcome(
             {
                 "status": STATUS_BLOCKED,
@@ -779,6 +837,15 @@ def run_codex_task(
 
     parsed = parse_json_text(output_file.read_text(encoding="utf-8")) if output_file.exists() else None
     if parsed is None:
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content="Expected JSON object in output-last-message file.",
+            meta={"agent": "codex"},
+        )
         return False, normalize_outcome(
             {
                 "status": STATUS_BLOCKED,
@@ -787,6 +854,15 @@ def run_codex_task(
                 "next_actions": [],
             }
         )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="agent_output",
+        content=json.dumps(parsed, sort_keys=True),
+        meta={"agent": "codex"},
+    )
     return True, normalize_outcome(parsed)
 
 
@@ -805,6 +881,8 @@ def run_gemini_task(
     skill_protocol: SkillProtocolSpec,
     mcp_context: MCPContextBundle | None,
     startup_instructions: str,
+    conversation_log_file: Path | None,
+    cycle: int,
 ) -> tuple[bool, dict[str, Any]]:
     prompt = build_agent_prompt(
         task,
@@ -823,6 +901,15 @@ def run_gemini_task(
         "- Focus on tests/specs/benchmarks and validation depth.\n"
         "- Avoid production code edits unless strictly required to keep tests executable.\n"
     )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="prompt",
+        content=prompt,
+        meta={"agent": "gemini"},
+    )
 
     cmd = [
         gemini_cmd,
@@ -839,6 +926,15 @@ def run_gemini_task(
     _print(f"Running Gemini task {task.id}")
     result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
     if result.returncode != 0:
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content=(result.stdout + "\n" + result.stderr).strip(),
+            meta={"agent": "gemini", "returncode": result.returncode},
+        )
         return False, normalize_outcome(
             {
                 "status": STATUS_BLOCKED,
@@ -856,6 +952,106 @@ def run_gemini_task(
             "next_actions": [],
             "raw_output": result.stdout.strip(),
         }
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="agent_output",
+        content=result.stdout.strip(),
+        meta={"agent": "gemini"},
+    )
+    return True, normalize_outcome(parsed)
+
+
+def run_claude_task(
+    *,
+    task: Task,
+    repo: Path,
+    objective_text: str,
+    claude_cmd: str,
+    claude_model: str | None,
+    timeout_sec: int,
+    retry_context: dict[str, Any],
+    progress_callback: Callable[[int], None] | None,
+    repo_context: str,
+    repo_hints: list[str],
+    skill_protocol: SkillProtocolSpec,
+    mcp_context: MCPContextBundle | None,
+    startup_instructions: str,
+    conversation_log_file: Path | None,
+    cycle: int,
+) -> tuple[bool, dict[str, Any]]:
+    prompt = build_agent_prompt(
+        task,
+        objective_text,
+        role="review-owner",
+        repo_path=repo,
+        retry_context=retry_context,
+        repo_context=repo_context,
+        repo_hints=repo_hints,
+        skill_protocol=skill_protocol,
+        mcp_context=mcp_context,
+        startup_instructions=startup_instructions,
+    )
+    prompt += (
+        "\nReview-owner constraints:\n"
+        "- Focus on governance, architecture, and collaboration safety constraints.\n"
+        "- Keep changes production-grade and verify with tests where applicable.\n"
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="prompt",
+        content=prompt,
+        meta={"agent": "claude"},
+    )
+
+    cmd = [claude_cmd]
+    if claude_model:
+        cmd.extend(["--model", claude_model])
+    cmd.extend(["-p", prompt])
+
+    _print(f"Running Claude task {task.id}")
+    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
+    if result.returncode != 0:
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content=(result.stdout + "\n" + result.stderr).strip(),
+            meta={"agent": "claude", "returncode": result.returncode},
+        )
+        return False, normalize_outcome(
+            {
+                "status": STATUS_BLOCKED,
+                "summary": "Claude command failed",
+                "blocker": (result.stdout + "\n" + result.stderr).strip(),
+                "next_actions": [],
+            }
+        )
+
+    parsed = parse_json_text(result.stdout)
+    if parsed is None:
+        parsed = {
+            "status": STATUS_PARTIAL,
+            "summary": "Claude output was not strict JSON; treating as partial",
+            "next_actions": [],
+            "raw_output": result.stdout.strip(),
+        }
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="agent_output",
+        content=result.stdout.strip(),
+        meta={"agent": "claude"},
+    )
     return True, normalize_outcome(parsed)
 
 
@@ -964,14 +1160,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--codex-cmd", default="codex")
     parser.add_argument("--gemini-cmd", default="gemini")
+    parser.add_argument("--claude-cmd", default="claude")
     parser.add_argument("--codex-model", default=None)
     parser.add_argument("--gemini-model", default=None)
+    parser.add_argument("--claude-model", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--validation-retries", type=int, default=1)
     parser.add_argument("--skill-protocol-file", default="config/skill_protocol.json")
     parser.add_argument("--mcp-context-file", default="")
     parser.add_argument("--codex-startup-prompt-file", default="")
     parser.add_argument("--gemini-startup-prompt-file", default="")
+    parser.add_argument("--claude-startup-prompt-file", default="")
+    parser.add_argument("--conversation-log-file", default="artifacts/autonomy/conversations.ndjson")
+    parser.add_argument(
+        "--owner-filter",
+        action="append",
+        default=[],
+        help="Restrict execution to specific task owners (repeatable).",
+    )
     args = parser.parse_args(argv)
 
     impl_repo = Path(args.impl_repo).resolve()
@@ -989,6 +1195,10 @@ def main(argv: list[str] | None = None) -> int:
     gemini_startup_prompt_file = (
         Path(args.gemini_startup_prompt_file).resolve() if args.gemini_startup_prompt_file else None
     )
+    claude_startup_prompt_file = (
+        Path(args.claude_startup_prompt_file).resolve() if args.claude_startup_prompt_file else None
+    )
+    conversation_log_file = Path(args.conversation_log_file).resolve() if args.conversation_log_file else None
 
     if not impl_repo.exists():
         raise FileNotFoundError(f"Implementation repo not found: {impl_repo}")
@@ -999,20 +1209,34 @@ def main(argv: list[str] | None = None) -> int:
     if not schema_file.exists():
         raise FileNotFoundError(f"Codex schema file not found: {schema_file}")
 
-    ensure_cli_exists(args.codex_cmd, "Codex")
-    ensure_cli_exists(args.gemini_cmd, "Gemini")
-
     lock = RunnerLock(lock_file)
     lock.acquire()
     atexit.register(lock.release)
 
     tasks = load_tasks(tasks_file)
+    owner_filter = {str(item).strip().lower() for item in args.owner_filter if str(item).strip()}
+    if owner_filter:
+        unknown = owner_filter - SUPPORTED_OWNERS
+        if unknown:
+            raise RuntimeError(f"Unknown owner filter(s): {sorted(unknown)}")
+        tasks = [task for task in tasks if task.owner in owner_filter]
+        if not tasks:
+            raise RuntimeError(f"No tasks left after applying owner filter: {sorted(owner_filter)}")
+    owners = {task.owner for task in tasks}
+    if "codex" in owners:
+        ensure_cli_exists(args.codex_cmd, "Codex")
+    if "gemini" in owners:
+        ensure_cli_exists(args.gemini_cmd, "Gemini")
+    if "claude" in owners:
+        ensure_cli_exists(args.claude_cmd, "Claude")
+
     state = load_state(state_file, tasks)
     objective_text = _read_text(objective_file)
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
     codex_startup_instructions = _read_optional_text(codex_startup_prompt_file)
     gemini_startup_instructions = _read_optional_text(gemini_startup_prompt_file)
+    claude_startup_instructions = _read_optional_text(claude_startup_prompt_file)
     save_state(state_file, state)
 
     _print(f"Starting autonomy runner with {len(tasks)} tasks")
@@ -1069,6 +1293,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         _print(f"Cycle {cycle}: selected task {task.id} ({task.owner})")
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="task_selected",
+            content=f"Selected task `{task.id}` for owner `{task.owner}`.",
+            meta={"priority": task.priority},
+        )
         task_state = state[task.id]
         task_state["status"] = STATUS_IN_PROGRESS
         task_state["last_update"] = _now_iso()
@@ -1090,7 +1323,7 @@ def main(argv: list[str] | None = None) -> int:
             save_state(state_file, state)
             continue
 
-        owner_repo = impl_repo if task.owner == "codex" else test_repo
+        owner_repo = impl_repo if task.owner in {"codex", "claude"} else test_repo
         healed = heal_stale_git_locks(owner_repo, stale_after_sec=args.git_lock_stale_sec)
         if healed:
             _print(f"Removed stale git locks in {owner_repo}: {', '.join(str(x) for x in healed)}")
@@ -1110,6 +1343,15 @@ def main(argv: list[str] | None = None) -> int:
                     "blocker": f"Test repo does not exist: {owner_repo}",
                     "next_actions": [],
                 }
+            )
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="agent_error",
+                content=outcome["blocker"],
+                meta={"agent": "gemini"},
             )
             ok = False
         elif task.owner == "codex":
@@ -1137,8 +1379,10 @@ def main(argv: list[str] | None = None) -> int:
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
                 startup_instructions=codex_startup_instructions,
+                conversation_log_file=conversation_log_file,
+                cycle=cycle,
             )
-        else:
+        elif task.owner == "gemini":
             task_progress = lambda elapsed: write_heartbeat(
                 heartbeat_file,
                 phase="task_running",
@@ -1161,6 +1405,34 @@ def main(argv: list[str] | None = None) -> int:
                 skill_protocol=skill_protocol,
                 mcp_context=mcp_context,
                 startup_instructions=gemini_startup_instructions,
+                conversation_log_file=conversation_log_file,
+                cycle=cycle,
+            )
+        else:
+            task_progress = lambda elapsed: write_heartbeat(
+                heartbeat_file,
+                phase="task_running",
+                cycle=cycle,
+                task_id=task.id,
+                message=f"task running for {elapsed}s",
+                extra={"owner": task.owner},
+            )
+            ok, outcome = run_claude_task(
+                task=task,
+                repo=owner_repo,
+                objective_text=objective_text,
+                claude_cmd=args.claude_cmd,
+                claude_model=args.claude_model,
+                timeout_sec=args.agent_timeout_sec,
+                retry_context=retry_context,
+                progress_callback=task_progress,
+                repo_context=repo_context,
+                repo_hints=repo_hints,
+                skill_protocol=skill_protocol,
+                mcp_context=mcp_context,
+                startup_instructions=claude_startup_instructions,
+                conversation_log_file=conversation_log_file,
+                cycle=cycle,
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)
@@ -1169,6 +1441,15 @@ def main(argv: list[str] | None = None) -> int:
         summary_text = str(outcome.get("summary", ""))
 
         if not ok or status == STATUS_BLOCKED:
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="task_blocked",
+                content=blocker_text or summary_text or "Task blocked",
+                meta={"status": status},
+            )
             if "lock" in blocker_text.lower() or "another git process" in blocker_text.lower():
                 healed_on_failure = heal_stale_git_locks(owner_repo, stale_after_sec=args.git_lock_stale_sec)
                 if healed_on_failure:
@@ -1259,6 +1540,14 @@ def main(argv: list[str] | None = None) -> int:
                     task_id=task.id,
                     message="task completed and validated",
                 )
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=task,
+                    owner=task.owner,
+                    event_type="task_done",
+                    content=summary_text or "Task completed and validated.",
+                )
             else:
                 retryable = is_retryable_error(details)
                 attempts = _safe_int(task_state.get("attempts", 0), 0)
@@ -1296,6 +1585,14 @@ def main(argv: list[str] | None = None) -> int:
                     message="validation processed",
                     extra={"validation_ok": valid},
                 )
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=task,
+                    owner=task.owner,
+                    event_type="task_validation_failed",
+                    content=details,
+                )
             save_state(state_file, state)
             continue
 
@@ -1317,6 +1614,15 @@ def main(argv: list[str] | None = None) -> int:
                 cycle=cycle,
                 task_id=task.id,
                 message=f"partial; retry in {delay}s",
+            )
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="task_partial",
+                content=summary_text or "Partial progress; retry queued.",
+                meta={"retry_delay_sec": delay},
             )
         else:
             mark_blocked(

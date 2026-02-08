@@ -142,6 +142,48 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "dashboard-status"])
             self.assertEqual(rc, 0)
 
+    def test_conversations_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value={"total_events": 0, "events": [], "owner_counts": {}},
+            ) as snap:
+                rc = cli.main(["--root", str(root), "conversations", "--lines", "50"])
+            self.assertEqual(rc, 0)
+            kwargs = snap.call_args.kwargs
+            self.assertEqual(kwargs["lines"], 50)
+            self.assertTrue(kwargs["include_lanes"])
+
+    def test_lanes_start_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.start_lanes_background",
+                return_value={"started_count": 1, "started": [{"id": "codex-governance"}], "ok": True},
+            ) as start:
+                rc = cli.main(["--root", str(root), "lanes-start", "--lane", "codex-governance"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(start.call_args.kwargs["lane_id"], "codex-governance")
+
+    def test_lanes_status_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "running_count": 0,
+                    "total_count": 1,
+                    "lanes": [{"id": "lane-a", "owner": "codex", "running": False, "pid": None}],
+                },
+            ):
+                rc = cli.main(["--root", str(root), "lanes-status"])
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

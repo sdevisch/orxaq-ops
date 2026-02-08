@@ -10,7 +10,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from .manager import ManagerConfig, health_snapshot, monitor_snapshot, status_snapshot, tail_logs
+from .manager import (
+    ManagerConfig,
+    conversations_snapshot,
+    health_snapshot,
+    lane_status_snapshot,
+    monitor_snapshot,
+    status_snapshot,
+    tail_logs,
+)
 
 
 def _dashboard_html(refresh_sec: int) -> str:
@@ -154,6 +162,32 @@ def _dashboard_html(refresh_sec: int) -> str:
       word-break: break-word;
       min-height: 56px;
     }}
+    .feed {{
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b1324;
+      color: #ddf0ff;
+      padding: 10px;
+      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      font-size: .8rem;
+      max-height: 320px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }}
+    .feed-item {{
+      border: 1px solid rgba(221, 240, 255, 0.18);
+      border-radius: 8px;
+      padding: 8px;
+      background: rgba(8, 20, 38, 0.85);
+    }}
+    .feed-head {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: #a3d4ff;
+      margin-bottom: 4px;
+    }}
     .repo {{
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -237,6 +271,18 @@ def _dashboard_html(refresh_sec: int) -> str:
         <h2>Latest Log Line</h2>
         <div id="latestLog" class="logline"></div>
       </article>
+
+      <article class="card span-6">
+        <h2>Parallel Lanes</h2>
+        <div id="laneSummary" class="mono">lanes: loading...</div>
+        <div id="laneList" class="repo"></div>
+      </article>
+
+      <article class="card span-6">
+        <h2>Conversations</h2>
+        <div id="conversationSummary" class="mono">events: loading...</div>
+        <div id="conversationFeed" class="feed"></div>
+      </article>
     </section>
   </main>
 
@@ -295,6 +341,16 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("latestLog").textContent = snapshot.latest_log_line || "(no log line yet)";
       byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
 
+       const lanes = snapshot.lanes || {{}};
+       const laneItems = lanes.lanes || [];
+       byId("laneSummary").textContent = `running lanes: ${{lanes.running_count ?? 0}}/${{lanes.total_count ?? 0}}`;
+       byId("laneList").innerHTML = laneItems.length
+         ? laneItems.map((lane) => {{
+             const state = lane.running ? "running" : "stopped";
+             return `<div class="line"><span class="mono">${{lane.id}}</span> [${{lane.owner}}] ${{state}}</div>`;
+           }}).join("")
+         : '<div class="line">No lanes configured.</div>';
+
       byId("meta").innerHTML = [
         `<span class="pill">runner pid: ${{status.runner_pid ?? "-"}}</span>`,
         `<span class="pill">supervisor pid: ${{status.supervisor_pid ?? "-"}}</span>`,
@@ -302,11 +358,40 @@ def _dashboard_html(refresh_sec: int) -> str:
       ].join("");
     }}
 
+    function renderConversations(payload) {{
+      const events = payload.events || [];
+      const ownerCounts = payload.owner_counts || {{}};
+      byId("conversationSummary").textContent = `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}}`;
+      if (!events.length) {{
+        byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
+        return;
+      }}
+      const rows = events.slice(-80).map((event) => {{
+        const ts = event.timestamp || '';
+        const owner = event.owner || 'unknown';
+        const task = event.task_id || '-';
+        const type = event.event_type || '-';
+        const content = String(event.content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return [
+          '<div class="feed-item">',
+          `<div class="feed-head"><span>${{ts}}</span><span>${{owner}}</span><span>${{task}}</span><span>${{type}}</span></div>`,
+          `<div>${{content}}</div>`,
+          '</div>',
+        ].join('');
+      }});
+      byId("conversationFeed").innerHTML = rows.join('');
+    }}
+
     async function refresh() {{
       try {{
-        const r = await fetch('/api/monitor', {{ cache: 'no-store' }});
-        const payload = await r.json();
-        render(payload);
+        const [monitorResp, convResp] = await Promise.all([
+          fetch('/api/monitor', {{ cache: 'no-store' }}),
+          fetch('/api/conversations?lines=200', {{ cache: 'no-store' }}),
+        ]);
+        const monitorPayload = await monitorResp.json();
+        const convPayload = await convResp.json();
+        render(monitorPayload);
+        renderConversations(convPayload);
       }} catch (err) {{
         byId("latestLog").textContent = `monitor fetch failed: ${{err}}`;
       }}
@@ -382,6 +467,18 @@ def start_dashboard(
                 if parsed.path == "/api/monitor":
                     self._send_json(snapshot_provider())
                     return
+                if parsed.path == "/api/lanes":
+                    self._send_json(lane_status_snapshot(config))
+                    return
+                if parsed.path == "/api/conversations":
+                    query = parse_qs(parsed.query)
+                    raw_lines = query.get("lines", ["200"])[0]
+                    try:
+                        lines = max(1, min(2000, int(raw_lines)))
+                    except ValueError:
+                        lines = 200
+                    self._send_json(conversations_snapshot(config, lines=lines, include_lanes=True))
+                    return
                 if parsed.path == "/api/status":
                     self._send_json(status_snapshot(config))
                     return
@@ -444,6 +541,8 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "active_tasks": [],
                 "blocked_tasks": [],
             },
+            "lanes": {"running_count": 0, "total_count": 0, "lanes": []},
+            "conversations": {"total_events": 0, "owner_counts": {}, "latest": {}},
             "repos": {
                 "implementation": {"ok": False, "error": str(err)},
                 "tests": {"ok": False, "error": str(err)},

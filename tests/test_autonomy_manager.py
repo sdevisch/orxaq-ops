@@ -79,8 +79,11 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--validate-command", argv)
             self.assertIn("--codex-startup-prompt-file", argv)
             self.assertIn("--gemini-startup-prompt-file", argv)
+            self.assertIn("--claude-startup-prompt-file", argv)
             self.assertIn("--codex-cmd", argv)
             self.assertIn("--gemini-cmd", argv)
+            self.assertIn("--claude-cmd", argv)
+            self.assertIn("--conversation-log-file", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -495,6 +498,84 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(payload["ok"])
             self.assertEqual(payload["reason"], "start_failed")
             self.assertIn("codex CLI not found", payload["error"])
+
+    def test_conversations_snapshot_reads_main_and_lane_sources(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
+                encoding="utf-8",
+            )
+            lane_conv = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "conversations.ndjson"
+            lane_conv.parent.mkdir(parents=True, exist_ok=True)
+            lane_conv.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:01+00:00", "owner": "gemini", "content": "lane"}) + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 2)
+            self.assertIn("codex", snapshot["owner_counts"])
+            self.assertIn("gemini", snapshot["owner_counts"])
+
+    def test_start_lanes_background_starts_selected_lane(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager._resolve_binary", return_value="/usr/bin/codex"), mock.patch(
+                "orxaq_autonomy.manager._repo_basic_check",
+                return_value=(True, "ok"),
+            ), mock.patch(
+                "orxaq_autonomy.manager.subprocess.Popen"
+            ) as popen, mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                side_effect=lambda pid: bool(pid == 888),
+            ), mock.patch("orxaq_autonomy.manager.time.sleep", return_value=None):
+                popen.return_value = mock.Mock(pid=888)
+                payload = manager.start_lanes_background(cfg, lane_id="lane-a")
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["started"][0]["id"], "lane-a")
+            argv = popen.call_args[0][0]
+            self.assertIn("--owner-filter", argv)
+            self.assertIn("codex", argv)
 
 
 if __name__ == "__main__":

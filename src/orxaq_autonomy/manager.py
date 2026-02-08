@@ -142,6 +142,23 @@ def _runtime_env(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _tasks_require_owner(tasks_file: Path, owner: str) -> bool:
+    if not tasks_file.exists():
+        return False
+    try:
+        raw = json.loads(tasks_file.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(raw, list):
+        return False
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("owner", "")).strip().lower() == owner:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class ManagerConfig:
     root_dir: Path
@@ -155,12 +172,15 @@ class ManagerConfig:
     artifacts_dir: Path
     heartbeat_file: Path
     lock_file: Path
+    conversation_log_file: Path
     runner_pid_file: Path
     supervisor_pid_file: Path
     dashboard_pid_file: Path
     dashboard_meta_file: Path
     log_file: Path
     dashboard_log_file: Path
+    lanes_file: Path
+    lanes_runtime_dir: Path
     max_cycles: int
     max_attempts: int
     max_retryable_blocked_retries: int
@@ -181,10 +201,13 @@ class ManagerConfig:
     mcp_context_file: Path | None
     codex_startup_prompt_file: Path | None
     gemini_startup_prompt_file: Path | None
+    claude_startup_prompt_file: Path | None
     codex_cmd: str
     gemini_cmd: str
+    claude_cmd: str
     codex_model: str | None
     gemini_model: str | None
+    claude_model: str | None
 
     @classmethod
     def from_root(cls, root: Path, env_file_override: Path | None = None) -> "ManagerConfig":
@@ -219,12 +242,19 @@ class ManagerConfig:
             "ORXAQ_AUTONOMY_GEMINI_PROMPT_FILE",
             str(root / "config" / "prompts" / "gemini_test_prompt.md"),
         ).strip()
+        claude_prompt_raw = merged.get(
+            "ORXAQ_AUTONOMY_CLAUDE_PROMPT_FILE",
+            str(root / "config" / "prompts" / "claude_review_prompt.md"),
+        ).strip()
         codex_prompt_file = Path(codex_prompt_raw).resolve() if codex_prompt_raw else None
         gemini_prompt_file = Path(gemini_prompt_raw).resolve() if gemini_prompt_raw else None
+        claude_prompt_file = Path(claude_prompt_raw).resolve() if claude_prompt_raw else None
         codex_cmd = merged.get("ORXAQ_AUTONOMY_CODEX_CMD", "codex").strip() or "codex"
         gemini_cmd = merged.get("ORXAQ_AUTONOMY_GEMINI_CMD", "gemini").strip() or "gemini"
+        claude_cmd = merged.get("ORXAQ_AUTONOMY_CLAUDE_CMD", "claude").strip() or "claude"
         codex_model = merged.get("ORXAQ_AUTONOMY_CODEX_MODEL", "").strip() or None
         gemini_model = merged.get("ORXAQ_AUTONOMY_GEMINI_MODEL", "").strip() or None
+        claude_model = merged.get("ORXAQ_AUTONOMY_CLAUDE_MODEL", "").strip() or None
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
         validate_commands = [chunk.strip() for chunk in validate_raw.split(";") if chunk.strip()]
@@ -241,12 +271,18 @@ class ManagerConfig:
             artifacts_dir=artifacts,
             heartbeat_file=_path("ORXAQ_AUTONOMY_HEARTBEAT_FILE", artifacts / "heartbeat.json"),
             lock_file=_path("ORXAQ_AUTONOMY_LOCK_FILE", artifacts / "runner.lock"),
+            conversation_log_file=_path(
+                "ORXAQ_AUTONOMY_CONVERSATION_LOG_FILE",
+                artifacts / "conversations.ndjson",
+            ),
             runner_pid_file=_path("ORXAQ_AUTONOMY_RUNNER_PID_FILE", artifacts / "runner.pid"),
             supervisor_pid_file=_path("ORXAQ_AUTONOMY_SUPERVISOR_PID_FILE", artifacts / "supervisor.pid"),
             log_file=_path("ORXAQ_AUTONOMY_LOG_FILE", artifacts / "runner.log"),
             dashboard_pid_file=_path("ORXAQ_AUTONOMY_DASHBOARD_PID_FILE", artifacts / "dashboard.pid"),
             dashboard_meta_file=_path("ORXAQ_AUTONOMY_DASHBOARD_META_FILE", artifacts / "dashboard.json"),
             dashboard_log_file=_path("ORXAQ_AUTONOMY_DASHBOARD_LOG_FILE", artifacts / "dashboard.log"),
+            lanes_file=_path("ORXAQ_AUTONOMY_LANES_FILE", root / "config" / "lanes.json"),
+            lanes_runtime_dir=_path("ORXAQ_AUTONOMY_LANES_RUNTIME_DIR", artifacts / "lanes"),
             max_cycles=_int("ORXAQ_AUTONOMY_MAX_CYCLES", 10000),
             max_attempts=_int("ORXAQ_AUTONOMY_MAX_ATTEMPTS", 8),
             max_retryable_blocked_retries=_int("ORXAQ_AUTONOMY_MAX_RETRYABLE_BLOCKED_RETRIES", 20),
@@ -267,10 +303,13 @@ class ManagerConfig:
             mcp_context_file=mcp_context,
             codex_startup_prompt_file=codex_prompt_file,
             gemini_startup_prompt_file=gemini_prompt_file,
+            claude_startup_prompt_file=claude_prompt_file,
             codex_cmd=codex_cmd,
             gemini_cmd=gemini_cmd,
+            claude_cmd=claude_cmd,
             codex_model=codex_model,
             gemini_model=gemini_model,
+            claude_model=claude_model,
         )
 
 
@@ -311,6 +350,31 @@ def runtime_diagnostics(config: ManagerConfig) -> dict[str, Any]:
         errors.append(msg)
         recommendations.append("Install Gemini CLI and ensure it is available in PATH.")
         recommendations.append(f"Or set ORXAQ_AUTONOMY_GEMINI_CMD in {config.env_file} to an absolute binary path.")
+
+    claude_required = _tasks_require_owner(config.tasks_file, "claude")
+    claude_path = _resolve_binary(config.claude_cmd)
+    if claude_path:
+        checks.append(
+            {
+                "name": "claude_cli",
+                "ok": True,
+                "message": f"resolved {config.claude_cmd!r} to {claude_path}",
+            }
+        )
+    elif claude_required:
+        msg = f"Claude CLI not found for command '{config.claude_cmd}', but claude-owned tasks exist."
+        checks.append({"name": "claude_cli", "ok": False, "message": msg})
+        errors.append(msg)
+        recommendations.append("Install Claude CLI and ensure it is available in PATH.")
+        recommendations.append(f"Or set ORXAQ_AUTONOMY_CLAUDE_CMD in {config.env_file} to an absolute binary path.")
+    else:
+        checks.append(
+            {
+                "name": "claude_cli",
+                "ok": True,
+                "message": "Claude CLI not required for current tasks.",
+            }
+        )
 
     codex_auth_ok = _has_codex_auth(env, config.codex_cmd)
     checks.append(
@@ -454,15 +518,30 @@ def runner_argv(config: ManagerConfig) -> list[str]:
     ]
     if config.mcp_context_file is not None:
         args.extend(["--mcp-context-file", str(config.mcp_context_file)])
-    args.extend(["--codex-cmd", config.codex_cmd, "--gemini-cmd", config.gemini_cmd])
+    args.extend(
+        [
+            "--codex-cmd",
+            config.codex_cmd,
+            "--gemini-cmd",
+            config.gemini_cmd,
+            "--claude-cmd",
+            config.claude_cmd,
+            "--conversation-log-file",
+            str(config.conversation_log_file),
+        ]
+    )
     if config.codex_model:
         args.extend(["--codex-model", config.codex_model])
     if config.gemini_model:
         args.extend(["--gemini-model", config.gemini_model])
+    if config.claude_model:
+        args.extend(["--claude-model", config.claude_model])
     if config.codex_startup_prompt_file is not None:
         args.extend(["--codex-startup-prompt-file", str(config.codex_startup_prompt_file)])
     if config.gemini_startup_prompt_file is not None:
         args.extend(["--gemini-startup-prompt-file", str(config.gemini_startup_prompt_file)])
+    if config.claude_startup_prompt_file is not None:
+        args.extend(["--claude-startup-prompt-file", str(config.claude_startup_prompt_file)])
     for cmd in config.validate_commands:
         args.extend(["--validate-command", cmd])
     return args
@@ -853,11 +932,19 @@ def _state_progress_snapshot(config: ManagerConfig) -> dict[str, Any]:
 def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     status = status_snapshot(config)
     progress = _state_progress_snapshot(config)
+    lanes = lane_status_snapshot(config)
+    conv = conversations_snapshot(config, lines=60, include_lanes=True)
     latest_log_line = tail_logs(config, lines=1, latest_run_only=True).strip()
     snapshot = {
         "timestamp": _now_iso(),
         "status": status,
         "progress": progress,
+        "lanes": lanes,
+        "conversations": {
+            "total_events": conv.get("total_events", 0),
+            "owner_counts": conv.get("owner_counts", {}),
+            "latest": (conv.get("events", [])[-1] if conv.get("events") else {}),
+        },
         "repos": {
             "implementation": _repo_monitor_snapshot(config.impl_repo),
             "tests": _repo_monitor_snapshot(config.test_repo),
@@ -877,6 +964,8 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     counts = progress.get("counts", {})
     active = progress.get("active_tasks", [])
     repos = snapshot.get("repos", {})
+    lanes = snapshot.get("lanes", {})
+    conversations = snapshot.get("conversations", {})
     impl = repos.get("implementation", {})
     tests = repos.get("tests", {})
     latest_log_line = str(snapshot.get("latest_log_line", "")).strip()
@@ -903,6 +992,14 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
         f"blocked={counts.get('blocked', 0)} "
         f"unknown={counts.get('unknown', 0)}",
         f"active_tasks: {', '.join(active) if active else 'none'}",
+        (
+            f"lanes: running={lanes.get('running_count', 0)}/"
+            f"{lanes.get('total_count', 0)}"
+        ),
+        (
+            f"conversations: events={conversations.get('total_events', 0)} "
+            f"owners={conversations.get('owner_counts', {})}"
+        ),
         _repo_line("impl_repo", impl),
         _repo_line("test_repo", tests),
     ]
@@ -1079,6 +1176,409 @@ def tail_logs(config: ManagerConfig, lines: int = 40, latest_run_only: bool = Fa
     return "\n".join(content[-lines:])
 
 
+def _resolve_path(root: Path, raw: str, default: Path) -> Path:
+    value = raw.strip()
+    if not value:
+        return default.resolve()
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (root / path).resolve()
+    return path.resolve()
+
+
+def _tail_ndjson(path: Path, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0 or not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out: list[dict[str, Any]] = []
+    for raw in lines[-limit:]:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def load_lane_specs(config: ManagerConfig) -> list[dict[str, Any]]:
+    if not config.lanes_file.exists():
+        return []
+    raw = json.loads(config.lanes_file.read_text(encoding="utf-8"))
+    lane_items = raw.get("lanes", []) if isinstance(raw, dict) else raw
+    if not isinstance(lane_items, list):
+        raise RuntimeError(f"Lane file must contain a list of lanes: {config.lanes_file}")
+
+    lanes: list[dict[str, Any]] = []
+    for item in lane_items:
+        if not isinstance(item, dict):
+            continue
+        lane_id = str(item.get("id", "")).strip()
+        owner = str(item.get("owner", "")).strip().lower()
+        if not lane_id:
+            continue
+        if owner not in {"codex", "gemini", "claude"}:
+            raise RuntimeError(f"Unsupported lane owner {owner!r} for lane {lane_id!r}")
+        runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
+        artifacts_dir = _resolve_path(config.root_dir, str(item.get("artifacts_dir", "")), runtime_dir)
+        state_file = _resolve_path(
+            config.root_dir,
+            str(item.get("state_file", "")),
+            artifacts_dir / "state.json",
+        )
+        heartbeat_file = _resolve_path(
+            config.root_dir,
+            str(item.get("heartbeat_file", "")),
+            artifacts_dir / "heartbeat.json",
+        )
+        lock_file = _resolve_path(config.root_dir, str(item.get("lock_file", "")), artifacts_dir / "runner.lock")
+        conversation_log_file = _resolve_path(
+            config.root_dir,
+            str(item.get("conversation_log_file", "")),
+            artifacts_dir / "conversations.ndjson",
+        )
+        mcp_raw = str(item.get("mcp_context_file", "")).strip()
+        mcp_default = config.mcp_context_file or (config.root_dir / "config" / "mcp_context.example.json")
+        if mcp_raw or config.mcp_context_file is not None:
+            mcp_context_file: Path | None = _resolve_path(config.root_dir, mcp_raw, mcp_default)
+        else:
+            mcp_context_file = None
+
+        lane = {
+            "id": lane_id,
+            "enabled": bool(item.get("enabled", True)),
+            "owner": owner,
+            "description": str(item.get("description", "")).strip(),
+            "impl_repo": _resolve_path(config.root_dir, str(item.get("impl_repo", "")), config.impl_repo),
+            "test_repo": _resolve_path(config.root_dir, str(item.get("test_repo", "")), config.test_repo),
+            "tasks_file": _resolve_path(config.root_dir, str(item.get("tasks_file", "")), config.tasks_file),
+            "objective_file": _resolve_path(config.root_dir, str(item.get("objective_file", "")), config.objective_file),
+            "schema_file": _resolve_path(config.root_dir, str(item.get("schema_file", "")), config.schema_file),
+            "skill_protocol_file": _resolve_path(
+                config.root_dir,
+                str(item.get("skill_protocol_file", "")),
+                config.skill_protocol_file,
+            ),
+            "mcp_context_file": mcp_context_file,
+            "state_file": state_file,
+            "artifacts_dir": artifacts_dir,
+            "heartbeat_file": heartbeat_file,
+            "lock_file": lock_file,
+            "conversation_log_file": conversation_log_file,
+            "owner_filter": [owner],
+            "validate_commands": [
+                str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
+            ],
+            "exclusive_paths": [str(path).strip() for path in item.get("exclusive_paths", []) if str(path).strip()],
+            "runtime_dir": runtime_dir,
+        }
+        lanes.append(lane)
+    return lanes
+
+
+def _lane_pid_file(config: ManagerConfig, lane_id: str) -> Path:
+    return (config.lanes_runtime_dir / lane_id / "lane.pid").resolve()
+
+
+def _lane_meta_file(config: ManagerConfig, lane_id: str) -> Path:
+    return (config.lanes_runtime_dir / lane_id / "lane.json").resolve()
+
+
+def _lane_log_file(config: ManagerConfig, lane_id: str) -> Path:
+    return (config.lanes_runtime_dir / lane_id / "runner.log").resolve()
+
+
+def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
+    lanes = load_lane_specs(config)
+    snapshots: list[dict[str, Any]] = []
+    for lane in lanes:
+        lane_id = lane["id"]
+        pid_path = _lane_pid_file(config, lane_id)
+        log_path = _lane_log_file(config, lane_id)
+        meta_path = _lane_meta_file(config, lane_id)
+        pid = _read_pid(pid_path)
+        running = _pid_running(pid)
+        meta = _read_json_file(meta_path)
+        latest = ""
+        if log_path.exists():
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            latest = lines[-1] if lines else ""
+        snapshots.append(
+            {
+                "id": lane_id,
+                "enabled": lane["enabled"],
+                "owner": lane["owner"],
+                "description": lane["description"],
+                "running": running,
+                "pid": pid,
+                "tasks_file": str(lane["tasks_file"]),
+                "objective_file": str(lane["objective_file"]),
+                "impl_repo": str(lane["impl_repo"]),
+                "test_repo": str(lane["test_repo"]),
+                "exclusive_paths": lane["exclusive_paths"],
+                "latest_log_line": latest,
+                "log_file": str(log_path),
+                "pid_file": str(pid_path),
+                "meta": meta,
+            }
+        )
+    return {
+        "timestamp": _now_iso(),
+        "lanes_file": str(config.lanes_file),
+        "running_count": sum(1 for lane in snapshots if lane["running"]),
+        "total_count": len(snapshots),
+        "lanes": snapshots,
+    }
+
+
+def _lane_command_for_owner(config: ManagerConfig, owner: str) -> str:
+    if owner == "codex":
+        return config.codex_cmd
+    if owner == "gemini":
+        return config.gemini_cmd
+    if owner == "claude":
+        return config.claude_cmd
+    raise RuntimeError(f"Unsupported lane owner {owner!r}")
+
+
+def _lane_startup_prompt(config: ManagerConfig, owner: str) -> Path | None:
+    if owner == "codex":
+        return config.codex_startup_prompt_file
+    if owner == "gemini":
+        return config.gemini_startup_prompt_file
+    if owner == "claude":
+        return config.claude_startup_prompt_file
+    return None
+
+
+def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[str]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "orxaq_autonomy.runner",
+        "--impl-repo",
+        str(lane["impl_repo"]),
+        "--test-repo",
+        str(lane["test_repo"]),
+        "--tasks-file",
+        str(lane["tasks_file"]),
+        "--state-file",
+        str(lane["state_file"]),
+        "--objective-file",
+        str(lane["objective_file"]),
+        "--codex-schema",
+        str(lane["schema_file"]),
+        "--artifacts-dir",
+        str(lane["artifacts_dir"]),
+        "--heartbeat-file",
+        str(lane["heartbeat_file"]),
+        "--lock-file",
+        str(lane["lock_file"]),
+        "--conversation-log-file",
+        str(lane["conversation_log_file"]),
+        "--max-cycles",
+        str(config.max_cycles),
+        "--max-attempts",
+        str(config.max_attempts),
+        "--max-retryable-blocked-retries",
+        str(config.max_retryable_blocked_retries),
+        "--retry-backoff-base-sec",
+        str(config.retry_backoff_base_sec),
+        "--retry-backoff-max-sec",
+        str(config.retry_backoff_max_sec),
+        "--git-lock-stale-sec",
+        str(config.git_lock_stale_sec),
+        "--validation-retries",
+        str(config.validation_retries),
+        "--idle-sleep-sec",
+        str(config.idle_sleep_sec),
+        "--agent-timeout-sec",
+        str(config.agent_timeout_sec),
+        "--validate-timeout-sec",
+        str(config.validate_timeout_sec),
+        "--skill-protocol-file",
+        str(lane["skill_protocol_file"]),
+        "--codex-cmd",
+        config.codex_cmd,
+        "--gemini-cmd",
+        config.gemini_cmd,
+        "--claude-cmd",
+        config.claude_cmd,
+        "--owner-filter",
+        lane["owner"],
+    ]
+    if lane["mcp_context_file"] is not None:
+        cmd.extend(["--mcp-context-file", str(lane["mcp_context_file"])])
+    if config.codex_model:
+        cmd.extend(["--codex-model", config.codex_model])
+    if config.gemini_model:
+        cmd.extend(["--gemini-model", config.gemini_model])
+    if config.claude_model:
+        cmd.extend(["--claude-model", config.claude_model])
+
+    codex_prompt = _lane_startup_prompt(config, "codex")
+    gemini_prompt = _lane_startup_prompt(config, "gemini")
+    claude_prompt = _lane_startup_prompt(config, "claude")
+    if codex_prompt is not None:
+        cmd.extend(["--codex-startup-prompt-file", str(codex_prompt)])
+    if gemini_prompt is not None:
+        cmd.extend(["--gemini-startup-prompt-file", str(gemini_prompt)])
+    if claude_prompt is not None:
+        cmd.extend(["--claude-startup-prompt-file", str(claude_prompt)])
+
+    for validate in lane["validate_commands"]:
+        cmd.extend(["--validate-command", validate])
+    return cmd
+
+
+def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]:
+    lanes = load_lane_specs(config)
+    lane = next((item for item in lanes if item["id"] == lane_id), None)
+    if lane is None:
+        raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
+
+    cmd_name = _lane_command_for_owner(config, lane["owner"])
+    if _resolve_binary(cmd_name) is None:
+        raise RuntimeError(f"{lane['owner']} CLI not found in PATH: {cmd_name}")
+
+    for repo in {lane["impl_repo"], lane["test_repo"]}:
+        ok, message = _repo_basic_check(repo)
+        if not ok:
+            raise RuntimeError(f"Lane {lane_id}: {message}")
+    for required_file_key in ("tasks_file", "objective_file", "schema_file", "skill_protocol_file"):
+        path = lane[required_file_key]
+        if not path.exists():
+            raise RuntimeError(f"Lane {lane_id}: missing {required_file_key} at {path}")
+
+    pid_path = _lane_pid_file(config, lane_id)
+    log_path = _lane_log_file(config, lane_id)
+    meta_path = _lane_meta_file(config, lane_id)
+    existing_pid = _read_pid(pid_path)
+    if _pid_running(existing_pid):
+        status = lane_status_snapshot(config)
+        existing = next((item for item in status["lanes"] if item["id"] == lane_id), None)
+        return existing or {"id": lane_id, "running": True, "pid": existing_pid}
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = log_path.open("a", encoding="utf-8")
+    cmd = _build_lane_runner_cmd(config, lane)
+    kwargs: dict[str, Any] = {
+        "cwd": str(config.root_dir),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": log_handle,
+        "env": _runtime_env(_load_env_file(config.env_file)),
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+    finally:
+        log_handle.close()
+
+    _write_pid(pid_path, proc.pid)
+    _write_json_file(
+        meta_path,
+        {
+            "started_at": _now_iso(),
+            "lane_id": lane_id,
+            "owner": lane["owner"],
+            "command": cmd,
+            "tasks_file": str(lane["tasks_file"]),
+            "objective_file": str(lane["objective_file"]),
+            "conversation_log_file": str(lane["conversation_log_file"]),
+            "exclusive_paths": lane["exclusive_paths"],
+        },
+    )
+    time.sleep(0.4)
+    return next((item for item in lane_status_snapshot(config)["lanes"] if item["id"] == lane_id), {"id": lane_id})
+
+
+def stop_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]:
+    pid_path = _lane_pid_file(config, lane_id)
+    pid = _read_pid(pid_path)
+    if pid:
+        _terminate_pid(pid)
+    pid_path.unlink(missing_ok=True)
+    status = lane_status_snapshot(config)
+    return next((item for item in status["lanes"] if item["id"] == lane_id), {"id": lane_id, "running": False})
+
+
+def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
+    lanes = load_lane_specs(config)
+    selected = [lane for lane in lanes if lane["enabled"]] if lane_id is None else [lane for lane in lanes if lane["id"] == lane_id]
+    if lane_id is not None and not selected:
+        raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
+    started: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for lane in selected:
+        try:
+            started.append(start_lane_background(config, lane["id"]))
+        except Exception as err:
+            failed.append({"id": lane["id"], "owner": lane["owner"], "error": str(err)})
+    return {
+        "timestamp": _now_iso(),
+        "requested_lane": lane_id or "all_enabled",
+        "started_count": len(started),
+        "started": started,
+        "failed_count": len(failed),
+        "failed": failed,
+        "ok": len(started) > 0 or len(failed) == 0,
+    }
+
+
+def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
+    status = lane_status_snapshot(config)
+    selected = status["lanes"] if lane_id is None else [lane for lane in status["lanes"] if lane["id"] == lane_id]
+    if lane_id is not None and not selected:
+        raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
+    stopped: list[dict[str, Any]] = []
+    for lane in selected:
+        stopped.append(stop_lane_background(config, lane["id"]))
+    return {
+        "timestamp": _now_iso(),
+        "requested_lane": lane_id or "all",
+        "stopped_count": len(stopped),
+        "stopped": stopped,
+    }
+
+
+def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
+    line_limit = max(1, min(2000, int(lines)))
+    sources: list[Path] = [config.conversation_log_file]
+    if include_lanes:
+        for lane in load_lane_specs(config):
+            lane_file = Path(lane["conversation_log_file"])
+            if lane_file not in sources:
+                sources.append(lane_file)
+
+    events: list[dict[str, Any]] = []
+    for source in sources:
+        for item in _tail_ndjson(source, line_limit):
+            item["source"] = str(source)
+            events.append(item)
+    events = sorted(events, key=lambda item: str(item.get("timestamp", "")))[-line_limit:]
+
+    owners: dict[str, int] = {}
+    for event in events:
+        owner = str(event.get("owner", "unknown")).strip() or "unknown"
+        owners[owner] = owners.get(owner, 0) + 1
+
+    return {
+        "timestamp": _now_iso(),
+        "conversation_files": [str(path) for path in sources],
+        "total_events": len(events),
+        "events": events,
+        "owner_counts": owners,
+    }
+
+
 def _read_optional_text(path: Path | None) -> str:
     if path is None:
         return ""
@@ -1090,6 +1590,7 @@ def _read_optional_text(path: Path | None) -> str:
 def write_startup_packet(config: ManagerConfig, workspace_file: Path) -> Path:
     codex_prompt_text = _read_optional_text(config.codex_startup_prompt_file)
     gemini_prompt_text = _read_optional_text(config.gemini_startup_prompt_file)
+    claude_prompt_text = _read_optional_text(config.claude_startup_prompt_file)
     output = config.artifacts_dir / "startup_packet.md"
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1102,6 +1603,8 @@ def write_startup_packet(config: ManagerConfig, workspace_file: Path) -> Path:
         f"- Skill protocol: `{config.skill_protocol_file}`",
         f"- Workspace: `{workspace_file}`",
         f"- Supervisor log: `{config.log_file}`",
+        f"- Conversations log: `{config.conversation_log_file}`",
+        f"- Lane plan: `{config.lanes_file}`",
         "",
         "## AI Startup Prompts",
     ]
@@ -1109,6 +1612,8 @@ def write_startup_packet(config: ManagerConfig, workspace_file: Path) -> Path:
         lines.append(f"- Codex prompt source: `{config.codex_startup_prompt_file}`")
     if config.gemini_startup_prompt_file is not None:
         lines.append(f"- Gemini prompt source: `{config.gemini_startup_prompt_file}`")
+    if config.claude_startup_prompt_file is not None:
+        lines.append(f"- Claude prompt source: `{config.claude_startup_prompt_file}`")
 
     if codex_prompt_text:
         lines.extend(
@@ -1149,6 +1654,27 @@ def write_startup_packet(config: ManagerConfig, workspace_file: Path) -> Path:
                 "### Gemini",
                 "",
                 "_No Gemini startup prompt file found._",
+            ]
+        )
+
+    if claude_prompt_text:
+        lines.extend(
+            [
+                "",
+                "### Claude",
+                "",
+                "```text",
+                claude_prompt_text,
+                "```",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "### Claude",
+                "",
+                "_No Claude startup prompt file found._",
             ]
         )
 
@@ -1226,5 +1752,6 @@ def bootstrap_background(
         "prompts": {
             "codex": str(config.codex_startup_prompt_file) if config.codex_startup_prompt_file else "",
             "gemini": str(config.gemini_startup_prompt_file) if config.gemini_startup_prompt_file else "",
+            "claude": str(config.claude_startup_prompt_file) if config.claude_startup_prompt_file else "",
         },
     }

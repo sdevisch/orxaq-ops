@@ -18,6 +18,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Orxaq Autonomy Monitor", html)
         self.assertIn("const REFRESH_MS = 7000", html)
         self.assertIn("/api/monitor", html)
+        self.assertIn("/api/conversations", html)
+        self.assertIn("Parallel Lanes", html)
+        self.assertIn("Conversations", html)
 
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):

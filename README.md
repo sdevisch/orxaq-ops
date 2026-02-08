@@ -25,6 +25,8 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `config/mcp_context.example.json` - sample MCP-style context payload.
 - `config/prompts/codex_impl_prompt.md` - baseline implementation prompt for Codex.
 - `config/prompts/gemini_test_prompt.md` - baseline independent-test prompt for Gemini.
+- `config/prompts/claude_review_prompt.md` - baseline governance/review prompt for Claude.
+- `config/lanes.json` - parallel lane plan for Codex/Gemini/Claude with non-overlapping scopes.
 - `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
 - `docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md` - end-to-end VS Code + multi-agent operating guide.
 - `docs/release-pypi.md` - trusted-publishing release runbook.
@@ -61,6 +63,9 @@ Optional reusable context controls:
 - `ORXAQ_AUTONOMY_GEMINI_PROMPT_FILE` (default `config/prompts/gemini_test_prompt.md`)
 - `ORXAQ_AUTONOMY_CODEX_CMD` (default `codex`; can be absolute path)
 - `ORXAQ_AUTONOMY_GEMINI_CMD` (default `gemini`; can be absolute path)
+- `ORXAQ_AUTONOMY_CLAUDE_CMD` (default `claude`; can be absolute path)
+- `ORXAQ_AUTONOMY_CONVERSATION_LOG_FILE` (default `artifacts/autonomy/conversations.ndjson`)
+- `ORXAQ_AUTONOMY_LANES_FILE` (default `config/lanes.json`)
 
 ## Commands
 
@@ -77,6 +82,11 @@ make dashboard
 make dashboard-status
 make dashboard-logs
 make dashboard-stop
+make conversations
+make lanes-plan
+make lanes-status
+make lanes-start
+make lanes-stop
 make stop
 make install-keepalive
 make keepalive-status
@@ -148,7 +158,21 @@ make dashboard
 
 `make dashboard` starts a resilient background dashboard service and returns immediately.
 Use `make dashboard-status` to confirm, `make dashboard-logs` for troubleshooting, and `make dashboard-stop` to stop it.
-The dashboard provides live runner/supervisor state, task progress, repo drift, and latest log signals.
+The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, repo drift, and latest log signals.
+
+Inspect conversation events directly:
+
+```bash
+make conversations
+```
+
+Run lane plan (Codex/Gemini/Claude) in parallel:
+
+```bash
+make lanes-plan
+make lanes-start
+make lanes-status
+```
 
 Manual startup flow (if you want finer control):
 

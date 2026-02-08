@@ -248,6 +248,87 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(details, "ok")
 
+    def test_load_tasks_supports_claude_owner(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "tasks.json"
+            path.write_text(
+                '[{"id":"t1","owner":"claude","priority":1,"title":"t","description":"d","depends_on":[],"acceptance":[]}]',
+                encoding="utf-8",
+            )
+            tasks = runner.load_tasks(path)
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].owner, "claude")
+
+    def test_append_conversation_event_writes_ndjson(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "conversations.ndjson"
+            task = runner.Task(
+                id="t",
+                owner="codex",
+                priority=1,
+                title="Title",
+                description="Desc",
+                depends_on=[],
+                acceptance=[],
+            )
+            runner.append_conversation_event(
+                path,
+                cycle=3,
+                task=task,
+                owner="codex",
+                event_type="agent_output",
+                content="hello world",
+                meta={"agent": "codex"},
+            )
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            payload = runner.json.loads(lines[0])
+            self.assertEqual(payload["task_id"], "t")
+            self.assertEqual(payload["owner"], "codex")
+            self.assertEqual(payload["event_type"], "agent_output")
+
+    def test_run_claude_task_parses_json_stdout(self):
+        task = runner.Task(
+            id="task-c",
+            owner="claude",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch.object(
+                runner,
+                "run_command",
+                return_value=runner.subprocess.CompletedProcess(
+                    ["claude"],
+                    returncode=0,
+                    stdout='{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                    stderr="",
+                ),
+            ):
+                ok, outcome = runner.run_claude_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    claude_cmd="claude",
+                    claude_model=None,
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+
 
 if __name__ == "__main__":
     unittest.main()

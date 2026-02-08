@@ -13,19 +13,24 @@ from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
     bootstrap_background,
+    conversations_snapshot,
     dashboard_status_snapshot,
     ensure_background,
     ensure_dashboard_background,
     health_snapshot,
     install_keepalive,
+    lane_status_snapshot,
     keepalive_status,
+    load_lane_specs,
     preflight,
     reset_state,
     render_monitor_text,
     run_foreground,
+    start_lanes_background,
     start_dashboard_background,
     start_background,
     status_snapshot,
+    stop_lanes_background,
     stop_dashboard_background,
     stop_background,
     supervise_foreground,
@@ -104,6 +109,22 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("dashboard-status")
     dashboard_logs = sub.add_parser("dashboard-logs")
     dashboard_logs.add_argument("--lines", type=int, default=120)
+
+    conversations = sub.add_parser("conversations")
+    conversations.add_argument("--lines", type=int, default=200)
+    conversations.add_argument("--no-lanes", action="store_true")
+
+    lanes_plan = sub.add_parser("lanes-plan")
+    lanes_plan.add_argument("--json", action="store_true")
+
+    lanes_status = sub.add_parser("lanes-status")
+    lanes_status.add_argument("--json", action="store_true")
+
+    lanes_start = sub.add_parser("lanes-start")
+    lanes_start.add_argument("--lane", default="")
+
+    lanes_stop = sub.add_parser("lanes-stop")
+    lanes_stop.add_argument("--lane", default="")
 
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
@@ -228,6 +249,63 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "dashboard-logs":
             print(tail_dashboard_logs(cfg, lines=args.lines))
+            return 0
+        if args.command == "conversations":
+            payload = conversations_snapshot(
+                cfg,
+                lines=args.lines,
+                include_lanes=not args.no_lanes,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.command == "lanes-plan":
+            lanes = load_lane_specs(cfg)
+            if args.json:
+                print(json.dumps({"lanes_file": str(cfg.lanes_file), "lanes": lanes}, indent=2, sort_keys=True))
+                return 0
+            print(f"lanes_file: {cfg.lanes_file}")
+            if not lanes:
+                print("No lanes configured.")
+                return 0
+            for lane in lanes:
+                status = "enabled" if lane["enabled"] else "disabled"
+                print(f"- {lane['id']} ({lane['owner']}, {status})")
+                print(f"  description: {lane['description']}")
+                print(f"  impl_repo: {lane['impl_repo']}")
+                print(f"  test_repo: {lane['test_repo']}")
+                print(f"  tasks_file: {lane['tasks_file']}")
+                print(f"  objective_file: {lane['objective_file']}")
+                print(f"  exclusive_paths: {', '.join(lane['exclusive_paths']) if lane['exclusive_paths'] else '(none)'}")
+            return 0
+        if args.command == "lanes-status":
+            snapshot = lane_status_snapshot(cfg)
+            if args.json:
+                print(json.dumps(snapshot, indent=2, sort_keys=True))
+                return 0
+            print(
+                json.dumps(
+                    {
+                        "lanes_file": snapshot["lanes_file"],
+                        "running_count": snapshot["running_count"],
+                        "total_count": snapshot["total_count"],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            for lane in snapshot["lanes"]:
+                state = "running" if lane["running"] else "stopped"
+                print(f"- {lane['id']} [{lane['owner']}] {state} pid={lane['pid']}")
+            return 0
+        if args.command == "lanes-start":
+            lane_id = args.lane.strip() or None
+            payload = start_lanes_background(cfg, lane_id=lane_id)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "lanes-stop":
+            lane_id = args.lane.strip() or None
+            payload = stop_lanes_background(cfg, lane_id=lane_id)
+            print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
     except (FileNotFoundError, RuntimeError) as err:
         print(

@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "lanes": [
+    {
+      "id": "codex-governance",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Governance dashboard + autonomy control-plane implementation in orxaq-ops.",
+      "impl_repo": ".",
+      "test_repo": ".",
+      "tasks_file": "config/lanes/codex_governance_tasks.json",
+      "objective_file": "config/objectives/codex_governance.md",
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "src/orxaq_autonomy",
+        "tests/test_autonomy_*",
+        "docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md",
+        "config/lanes.json"
+      ]
+    },
+    {
+      "id": "gemini-rln-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Independent RLN/RLM adversarial tests and benchmark expansion in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rln_tests_tasks.json",
+      "objective_file": "config/objectives/gemini_rln_tests.md",
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/",
+        "benchmarks/",
+        "docs/testing/"
+      ]
+    },
+    {
+      "id": "claude-architecture-review",
+      "enabled": true,
+      "owner": "claude",
+      "description": "Architecture/security/ethics review lane for Orxaq standards and release readiness.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq",
+      "tasks_file": "config/lanes/claude_architecture_review_tasks.json",
+      "objective_file": "config/objectives/claude_architecture_review.md",
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "docs/",
+        ".github/",
+        "SECURITY.md",
+        "GOVERNANCE.md"
+      ]
+    }
+  ]
+}
