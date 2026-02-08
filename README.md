@@ -50,6 +50,8 @@ make workspace
 make open-vscode
 ```
 
+`make open-vscode` launches `Visual Studio Code.app` explicitly (not Cursor).
+
 Run foreground (for debugging):
 
 ```bash

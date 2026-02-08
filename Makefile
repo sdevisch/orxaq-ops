@@ -25,4 +25,4 @@ workspace:
 	./scripts/generate_workspace.sh
 
 open-vscode: workspace
-	code ./orxaq-dual-agent.code-workspace
+	./scripts/open_vscode.sh
