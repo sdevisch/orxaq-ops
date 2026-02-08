@@ -825,6 +825,80 @@ class ManagerTests(unittest.TestCase):
             pause_file = root / "artifacts" / "autonomy" / "lanes" / lane_id / "paused.flag"
             self.assertTrue(pause_file.exists())
 
+    def test_lane_status_snapshot_adopts_running_lock_pid(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane_runtime = root / "artifacts" / "autonomy" / "lanes" / "lane-a"
+            lane_runtime.mkdir(parents=True, exist_ok=True)
+            (lane_runtime / "runner.lock").write_text(json.dumps({"pid": 4242}) + "\n", encoding="utf-8")
+            with mock.patch("orxaq_autonomy.manager._pid_running", side_effect=lambda pid: pid == 4242):
+                snapshot = manager.lane_status_snapshot(cfg)
+            lane = snapshot["lanes"][0]
+            self.assertTrue(lane["running"])
+            self.assertEqual(lane["pid"], 4242)
+            pid_file = lane_runtime / "lane.pid"
+            self.assertTrue(pid_file.exists())
+            self.assertEqual(pid_file.read_text(encoding="utf-8").strip(), "4242")
+
+    def test_start_lane_background_skips_spawn_when_lock_pid_running(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane_runtime = root / "artifacts" / "autonomy" / "lanes" / "lane-a"
+            lane_runtime.mkdir(parents=True, exist_ok=True)
+            (lane_runtime / "runner.lock").write_text(json.dumps({"pid": 555}) + "\n", encoding="utf-8")
+
+            with mock.patch("orxaq_autonomy.manager._resolve_binary", return_value="/usr/bin/codex"), mock.patch(
+                "orxaq_autonomy.manager._repo_basic_check",
+                return_value=(True, "ok"),
+            ), mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                side_effect=lambda pid: pid == 555,
+            ), mock.patch("orxaq_autonomy.manager.subprocess.Popen") as popen:
+                payload = manager.start_lanes_background(cfg, lane_id="lane-a")
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["started"][0]["pid"], 555)
+            popen.assert_not_called()
+
     def test_lane_status_snapshot_includes_lane_health_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

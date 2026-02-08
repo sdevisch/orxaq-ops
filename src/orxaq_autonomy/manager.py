@@ -38,6 +38,22 @@ def _read_pid(path: Path) -> int | None:
     return int(raw)
 
 
+def _read_runner_lock_pid(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    if isinstance(raw, dict):
+        value = raw.get("pid")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
 def _write_pid(path: Path, pid: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{pid}\n", encoding="utf-8")
@@ -1551,6 +1567,12 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         try:
             pid = _read_pid(pid_path)
             running = _pid_running(pid)
+            if not running:
+                lock_pid = _read_runner_lock_pid(Path(lane["lock_file"]))
+                if lock_pid and _pid_running(lock_pid):
+                    pid = lock_pid
+                    running = True
+                    _write_pid(pid_path, lock_pid)
             meta = _read_json_file(meta_path)
             paused = pause_path.exists()
             state_progress = _read_lane_state_progress(Path(lane["state_file"]), Path(lane["tasks_file"]))
@@ -1794,6 +1816,13 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
         status = lane_status_snapshot(config)
         existing = next((item for item in status["lanes"] if item["id"] == lane_id), None)
         return existing or {"id": lane_id, "running": True, "pid": existing_pid}
+    lock_pid = _read_runner_lock_pid(Path(lane["lock_file"]))
+    if lock_pid and _pid_running(lock_pid):
+        _write_pid(pid_path, lock_pid)
+        _append_lane_event(config, lane_id, "start_skipped", {"reason": "lock_pid_running", "pid": lock_pid})
+        status = lane_status_snapshot(config)
+        existing = next((item for item in status["lanes"] if item["id"] == lane_id), None)
+        return existing or {"id": lane_id, "running": True, "pid": lock_pid}
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("a", encoding="utf-8")
@@ -1867,9 +1896,16 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
 def stop_lane_background(config: ManagerConfig, lane_id: str, *, reason: str = "manual") -> dict[str, Any]:
     pid_path = _lane_pid_file(config, lane_id)
     pid = _read_pid(pid_path)
-    _append_lane_event(config, lane_id, "stop_requested", {"pid": pid, "reason": reason})
-    if pid:
-        _terminate_pid(pid)
+    lanes = load_lane_specs(config)
+    lane = next((item for item in lanes if item["id"] == lane_id), None)
+    lock_pid = _read_runner_lock_pid(Path(lane["lock_file"])) if lane else None
+    _append_lane_event(config, lane_id, "stop_requested", {"pid": pid, "lock_pid": lock_pid, "reason": reason})
+    targets: list[int] = []
+    for candidate in (pid, lock_pid):
+        if candidate and candidate not in targets:
+            targets.append(candidate)
+    for target in targets:
+        _terminate_pid(target)
     pid_path.unlink(missing_ok=True)
     if reason == "manual":
         _lane_pause_file(config, lane_id).write_text("manual\n", encoding="utf-8")
