@@ -447,10 +447,12 @@ def _dashboard_html(refresh_sec: int) -> str:
     function renderConversations(payload) {{
       const events = payload.events || [];
       const ownerCounts = payload.owner_counts || {{}};
+      const sourceReports = payload.sources || [];
+      const failedSources = sourceReports.filter((source) => !source.ok).length;
       const partial = payload.partial ? " · partial=true" : "";
       const errors = (payload.errors || []).length ? ` · errors=${{(payload.errors || []).length}}` : "";
       byId("conversationSummary").textContent =
-        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}}${{partial}}${{errors}}`;
+        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{sourceReports.length}}/${{Math.max(sourceReports.length - failedSources, 0)}} healthy${{partial}}${{errors}}`;
       if (!events.length) {{
         byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
         return;
@@ -458,12 +460,15 @@ def _dashboard_html(refresh_sec: int) -> str:
       const rows = events.slice(-80).map((event) => {{
         const ts = event.timestamp || '';
         const owner = event.owner || 'unknown';
+        const laneId = event.lane_id || '-';
         const task = event.task_id || '-';
         const type = event.event_type || '-';
+        const source = event.source || '';
         const content = escapeHtml(event.content || '');
         return [
           '<div class="feed-item">',
-          `<div class="feed-head"><span>${{escapeHtml(ts)}}</span><span>${{escapeHtml(owner)}}</span><span>${{escapeHtml(task)}}</span><span>${{escapeHtml(type)}}</span></div>`,
+          `<div class="feed-head"><span>${{escapeHtml(ts)}}</span><span>owner=${{escapeHtml(owner)}}</span><span>lane=${{escapeHtml(laneId)}}</span><span>task=${{escapeHtml(task)}}</span><span>type=${{escapeHtml(type)}}</span></div>`,
+          source ? `<div class="mono">source=${{escapeHtml(source)}}</div>` : '',
           `<div>${{content}}</div>`,
           '</div>',
         ].join('');

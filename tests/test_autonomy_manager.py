@@ -663,12 +663,62 @@ class ManagerTests(unittest.TestCase):
                 json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
                 encoding="utf-8",
             )
-            with mock.patch("orxaq_autonomy.manager.load_lane_specs", side_effect=RuntimeError("bad lanes config")):
+            with mock.patch(
+                "orxaq_autonomy.manager._load_lane_specs_resilient",
+                return_value=([], ["bad lanes config"]),
+            ):
                 snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
             self.assertEqual(snapshot["total_events"], 1)
             self.assertFalse(snapshot["ok"])
             self.assertTrue(snapshot["partial"])
             self.assertIn("lane_specs: bad lanes config", snapshot["errors"][0])
+
+    def test_conversations_snapshot_keeps_valid_sources_with_invalid_lane_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            },
+                            {
+                                "id": "lane-b",
+                                "owner": "bad-owner",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
+                encoding="utf-8",
+            )
+            lane_conv = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "conversations.ndjson"
+            lane_conv.parent.mkdir(parents=True, exist_ok=True)
+            lane_conv.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:01+00:00", "owner": "gemini", "content": "lane"}) + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 2)
+            self.assertFalse(snapshot["ok"])
+            self.assertTrue(snapshot["partial"])
+            self.assertIn("lane_specs: lane-b", snapshot["errors"][0])
 
     def test_start_lanes_background_starts_selected_lane(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1095,6 +1145,44 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(lane["health"], "stale")
             self.assertTrue(lane["heartbeat_stale"])
             self.assertGreaterEqual(lane["heartbeat_age_sec"], 1)
+
+    def test_lane_status_snapshot_keeps_valid_lane_when_another_lane_is_invalid(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "unsupported-owner",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            snapshot = manager.lane_status_snapshot(cfg)
+            self.assertEqual(snapshot["total_count"], 1)
+            self.assertEqual(snapshot["lanes"][0]["id"], "lane-a")
+            self.assertFalse(snapshot["ok"])
+            self.assertIn("lane-b", snapshot["errors"][0])
 
     def test_lane_status_snapshot_treats_missing_state_entries_as_pending(self):
         with tempfile.TemporaryDirectory() as td:

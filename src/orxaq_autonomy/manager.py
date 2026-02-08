@@ -1413,88 +1413,118 @@ def _tail_ndjson(path: Path, limit: int) -> list[dict[str, Any]]:
     return out
 
 
-def load_lane_specs(config: ManagerConfig) -> list[dict[str, Any]]:
+def _read_lane_items(config: ManagerConfig) -> tuple[list[dict[str, Any]], list[str]]:
     if not config.lanes_file.exists():
-        return []
-    raw = json.loads(config.lanes_file.read_text(encoding="utf-8"))
+        return [], []
+    try:
+        raw = json.loads(config.lanes_file.read_text(encoding="utf-8"))
+    except Exception as err:
+        return [], [f"lanes_file: {err}"]
     lane_items = raw.get("lanes", []) if isinstance(raw, dict) else raw
     if not isinstance(lane_items, list):
-        raise RuntimeError(f"Lane file must contain a list of lanes: {config.lanes_file}")
+        return [], [f"Lane file must contain a list of lanes: {config.lanes_file}"]
 
-    lanes: list[dict[str, Any]] = []
-    for item in lane_items:
+    out: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for index, item in enumerate(lane_items):
         if not isinstance(item, dict):
+            errors.append(f"lane[{index}]: entry must be an object")
             continue
-        lane_id = str(item.get("id", "")).strip()
-        owner = str(item.get("owner", "")).strip().lower()
-        if not lane_id:
-            continue
-        if owner not in {"codex", "gemini", "claude"}:
-            raise RuntimeError(f"Unsupported lane owner {owner!r} for lane {lane_id!r}")
-        runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
-        artifacts_dir = _resolve_path(config.root_dir, str(item.get("artifacts_dir", "")), runtime_dir)
-        state_file = _resolve_path(
-            config.root_dir,
-            str(item.get("state_file", "")),
-            artifacts_dir / "state.json",
-        )
-        heartbeat_file = _resolve_path(
-            config.root_dir,
-            str(item.get("heartbeat_file", "")),
-            artifacts_dir / "heartbeat.json",
-        )
-        lock_file = _resolve_path(config.root_dir, str(item.get("lock_file", "")), artifacts_dir / "runner.lock")
-        conversation_log_file = _resolve_path(
-            config.root_dir,
-            str(item.get("conversation_log_file", "")),
-            artifacts_dir / "conversations.ndjson",
-        )
-        mcp_raw = str(item.get("mcp_context_file", "")).strip()
-        mcp_default = config.mcp_context_file or (config.root_dir / "config" / "mcp_context.example.json")
-        if mcp_raw or config.mcp_context_file is not None:
-            mcp_context_file: Path | None = _resolve_path(config.root_dir, mcp_raw, mcp_default)
-        else:
-            mcp_context_file = None
+        out.append(item)
+    return out, errors
 
-        lane = {
-            "id": lane_id,
-            "enabled": bool(item.get("enabled", True)),
-            "owner": owner,
-            "description": str(item.get("description", "")).strip(),
-            "impl_repo": _resolve_path(config.root_dir, str(item.get("impl_repo", "")), config.impl_repo),
-            "test_repo": _resolve_path(config.root_dir, str(item.get("test_repo", "")), config.test_repo),
-            "tasks_file": _resolve_path(config.root_dir, str(item.get("tasks_file", "")), config.tasks_file),
-            "objective_file": _resolve_path(config.root_dir, str(item.get("objective_file", "")), config.objective_file),
-            "schema_file": _resolve_path(config.root_dir, str(item.get("schema_file", "")), config.schema_file),
-            "skill_protocol_file": _resolve_path(
-                config.root_dir,
-                str(item.get("skill_protocol_file", "")),
-                config.skill_protocol_file,
-            ),
-            "mcp_context_file": mcp_context_file,
-            "state_file": state_file,
-            "dependency_state_file": _resolve_path(
-                config.root_dir,
-                str(item.get("dependency_state_file", "")),
-                config.state_file,
-            ),
-            "handoff_dir": _resolve_path(
-                config.root_dir,
-                str(item.get("handoff_dir", "")),
-                config.artifacts_dir / "handoffs",
-            ),
-            "artifacts_dir": artifacts_dir,
-            "heartbeat_file": heartbeat_file,
-            "lock_file": lock_file,
-            "conversation_log_file": conversation_log_file,
-            "owner_filter": [owner],
-            "validate_commands": [
-                str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
-            ],
-            "exclusive_paths": [str(path).strip() for path in item.get("exclusive_paths", []) if str(path).strip()],
-            "runtime_dir": runtime_dir,
-        }
-        lanes.append(lane)
+
+def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, Any] | None:
+    lane_id = str(item.get("id", "")).strip()
+    owner = str(item.get("owner", "")).strip().lower()
+    if not lane_id:
+        return None
+    if owner not in {"codex", "gemini", "claude"}:
+        raise RuntimeError(f"Unsupported lane owner {owner!r} for lane {lane_id!r}")
+    runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
+    artifacts_dir = _resolve_path(config.root_dir, str(item.get("artifacts_dir", "")), runtime_dir)
+    state_file = _resolve_path(
+        config.root_dir,
+        str(item.get("state_file", "")),
+        artifacts_dir / "state.json",
+    )
+    heartbeat_file = _resolve_path(
+        config.root_dir,
+        str(item.get("heartbeat_file", "")),
+        artifacts_dir / "heartbeat.json",
+    )
+    lock_file = _resolve_path(config.root_dir, str(item.get("lock_file", "")), artifacts_dir / "runner.lock")
+    conversation_log_file = _resolve_path(
+        config.root_dir,
+        str(item.get("conversation_log_file", "")),
+        artifacts_dir / "conversations.ndjson",
+    )
+    mcp_raw = str(item.get("mcp_context_file", "")).strip()
+    mcp_default = config.mcp_context_file or (config.root_dir / "config" / "mcp_context.example.json")
+    if mcp_raw or config.mcp_context_file is not None:
+        mcp_context_file: Path | None = _resolve_path(config.root_dir, mcp_raw, mcp_default)
+    else:
+        mcp_context_file = None
+
+    return {
+        "id": lane_id,
+        "enabled": bool(item.get("enabled", True)),
+        "owner": owner,
+        "description": str(item.get("description", "")).strip(),
+        "impl_repo": _resolve_path(config.root_dir, str(item.get("impl_repo", "")), config.impl_repo),
+        "test_repo": _resolve_path(config.root_dir, str(item.get("test_repo", "")), config.test_repo),
+        "tasks_file": _resolve_path(config.root_dir, str(item.get("tasks_file", "")), config.tasks_file),
+        "objective_file": _resolve_path(config.root_dir, str(item.get("objective_file", "")), config.objective_file),
+        "schema_file": _resolve_path(config.root_dir, str(item.get("schema_file", "")), config.schema_file),
+        "skill_protocol_file": _resolve_path(
+            config.root_dir,
+            str(item.get("skill_protocol_file", "")),
+            config.skill_protocol_file,
+        ),
+        "mcp_context_file": mcp_context_file,
+        "state_file": state_file,
+        "dependency_state_file": _resolve_path(
+            config.root_dir,
+            str(item.get("dependency_state_file", "")),
+            config.state_file,
+        ),
+        "handoff_dir": _resolve_path(
+            config.root_dir,
+            str(item.get("handoff_dir", "")),
+            config.artifacts_dir / "handoffs",
+        ),
+        "artifacts_dir": artifacts_dir,
+        "heartbeat_file": heartbeat_file,
+        "lock_file": lock_file,
+        "conversation_log_file": conversation_log_file,
+        "owner_filter": [owner],
+        "validate_commands": [
+            str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
+        ],
+        "exclusive_paths": [str(path).strip() for path in item.get("exclusive_paths", []) if str(path).strip()],
+        "runtime_dir": runtime_dir,
+    }
+
+
+def _load_lane_specs_resilient(config: ManagerConfig) -> tuple[list[dict[str, Any]], list[str]]:
+    lane_items, errors = _read_lane_items(config)
+    lanes: list[dict[str, Any]] = []
+    for index, item in enumerate(lane_items):
+        lane_label = str(item.get("id", "")).strip() or f"lane[{index}]"
+        try:
+            lane = _build_lane_spec(config, item)
+        except Exception as err:
+            errors.append(f"{lane_label}: {err}")
+            continue
+        if lane is not None:
+            lanes.append(lane)
+    return lanes, errors
+
+
+def load_lane_specs(config: ManagerConfig) -> list[dict[str, Any]]:
+    lanes, errors = _load_lane_specs_resilient(config)
+    if errors:
+        raise RuntimeError("; ".join(errors))
     return lanes
 
 
@@ -1644,9 +1674,9 @@ def _lane_health_state(
 
 
 def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
-    lanes = load_lane_specs(config)
+    lanes, load_errors = _load_lane_specs_resilient(config)
     snapshots: list[dict[str, Any]] = []
-    errors: list[str] = []
+    errors: list[str] = list(load_errors)
     for lane in lanes:
         lane_id = lane["id"]
         pid_path = _lane_pid_file(config, lane_id)
@@ -2117,11 +2147,8 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
     ]
     errors: list[str] = []
     if include_lanes:
-        try:
-            lanes = load_lane_specs(config)
-        except Exception as err:
-            lanes = []
-            errors.append(f"lane_specs: {err}")
+        lanes, lane_errors = _load_lane_specs_resilient(config)
+        errors.extend(f"lane_specs: {err}" for err in lane_errors)
         for lane in lanes:
             lane_file = Path(lane["conversation_log_file"])
             lane_path = str(lane_file)

@@ -141,6 +141,28 @@ make stop
 make reset
 ```
 
+- Inspect lane-level runtime health and ownership:
+
+```bash
+make lanes-status
+make lanes-plan
+```
+
+- Operate lanes directly:
+
+```bash
+make lanes-start
+make lanes-stop
+make lanes-ensure
+```
+
+- Inspect recent collaboration conversations (primary + lane logs):
+
+```bash
+make conversations
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --lines 400
+```
+
 ## Collaboration Contract
 
 - Codex owns implementation and production changes in `orxaq`.
