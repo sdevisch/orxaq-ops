@@ -106,6 +106,14 @@ make logs
 make dashboard
 ```
 
+Dashboard lifecycle controls:
+
+```bash
+make dashboard-status
+make dashboard-logs
+make dashboard-stop
+```
+
 4. Enable host keepalive for restart resilience.
 
 ```bash

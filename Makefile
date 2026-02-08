@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status monitor health logs reset preflight bootstrap dashboard workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test version-check repo-hygiene hosted-controls-check readiness-check bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status monitor health logs reset preflight bootstrap dashboard dashboard-start dashboard-ensure dashboard-status dashboard-stop dashboard-logs workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test version-check repo-hygiene hosted-controls-check readiness-check bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -42,7 +42,22 @@ bootstrap:
 	$(AUTONOMY) bootstrap
 
 dashboard:
-	$(AUTONOMY) dashboard
+	$(AUTONOMY) dashboard-start
+
+dashboard-start:
+	$(AUTONOMY) dashboard-start
+
+dashboard-ensure:
+	$(AUTONOMY) dashboard-ensure
+
+dashboard-status:
+	$(AUTONOMY) dashboard-status
+
+dashboard-stop:
+	$(AUTONOMY) dashboard-stop
+
+dashboard-logs:
+	$(AUTONOMY) dashboard-logs
 
 workspace:
 	$(AUTONOMY) workspace

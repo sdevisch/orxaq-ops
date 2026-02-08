@@ -273,6 +273,44 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(pathlib.Path(snapshot["monitor_file"]).exists())
             self.assertIn("repos", snapshot)
 
+    def test_dashboard_status_snapshot_defaults(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            snapshot = manager.dashboard_status_snapshot(cfg)
+            self.assertFalse(snapshot["running"])
+            self.assertEqual(snapshot["pid"], None)
+
+    def test_start_dashboard_background_writes_pid_and_meta(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.subprocess.Popen") as popen, mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                side_effect=lambda pid: bool(pid == 4321),
+            ), mock.patch("orxaq_autonomy.manager.time.sleep", return_value=None):
+                popen.return_value = mock.Mock(pid=4321)
+                snapshot = manager.start_dashboard_background(
+                    cfg,
+                    host="127.0.0.1",
+                    port=8765,
+                    refresh_sec=3,
+                    open_browser=False,
+                )
+            self.assertTrue(snapshot["running"])
+            self.assertEqual(snapshot["pid"], 4321)
+            self.assertTrue(cfg.dashboard_meta_file.exists())
+
+    def test_stop_dashboard_background_terminates_pid(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.dashboard_pid_file.write_text("777\n", encoding="utf-8")
+            with mock.patch("orxaq_autonomy.manager._terminate_pid") as terminate:
+                snapshot = manager.stop_dashboard_background(cfg)
+            terminate.assert_called_once_with(777)
+            self.assertFalse(snapshot["running"])
+
     def test_render_monitor_text_contains_key_fields(self):
         text = manager.render_monitor_text(
             {

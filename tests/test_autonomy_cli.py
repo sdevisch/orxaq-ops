@@ -121,6 +121,27 @@ class CliTests(unittest.TestCase):
             self.assertEqual(kwargs["refresh_sec"], 2)
             self.assertFalse(kwargs["open_browser"])
 
+    def test_dashboard_start_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.start_dashboard_background",
+                return_value={"running": True, "url": "http://127.0.0.1:8765/"},
+            ) as start:
+                rc = cli.main(["--root", str(root), "dashboard-start", "--no-browser"])
+            self.assertEqual(rc, 0)
+            kwargs = start.call_args.kwargs
+            self.assertFalse(kwargs["open_browser"])
+
+    def test_dashboard_status_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.dashboard_status_snapshot", return_value={"running": True}):
+                rc = cli.main(["--root", str(root), "dashboard-status"])
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,9 @@ from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
     bootstrap_background,
+    dashboard_status_snapshot,
     ensure_background,
+    ensure_dashboard_background,
     health_snapshot,
     install_keepalive,
     keepalive_status,
@@ -21,11 +23,14 @@ from .manager import (
     reset_state,
     render_monitor_text,
     run_foreground,
+    start_dashboard_background,
     start_background,
     status_snapshot,
+    stop_dashboard_background,
     stop_background,
     supervise_foreground,
     tail_logs,
+    tail_dashboard_logs,
     monitor_snapshot,
     uninstall_keepalive,
 )
@@ -81,6 +86,24 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--refresh-sec", type=int, default=5)
     dashboard.add_argument("--no-browser", action="store_true")
+    dashboard.add_argument("--port-scan", type=int, default=20)
+
+    dashboard_start = sub.add_parser("dashboard-start")
+    dashboard_start.add_argument("--host", default="127.0.0.1")
+    dashboard_start.add_argument("--port", type=int, default=8765)
+    dashboard_start.add_argument("--refresh-sec", type=int, default=5)
+    dashboard_start.add_argument("--no-browser", action="store_true")
+
+    dashboard_ensure = sub.add_parser("dashboard-ensure")
+    dashboard_ensure.add_argument("--host", default="127.0.0.1")
+    dashboard_ensure.add_argument("--port", type=int, default=8765)
+    dashboard_ensure.add_argument("--refresh-sec", type=int, default=5)
+    dashboard_ensure.add_argument("--no-browser", action="store_true")
+
+    sub.add_parser("dashboard-stop")
+    sub.add_parser("dashboard-status")
+    dashboard_logs = sub.add_parser("dashboard-logs")
+    dashboard_logs.add_argument("--lines", type=int, default=120)
 
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
@@ -174,7 +197,38 @@ def main(argv: list[str] | None = None) -> int:
                 port=args.port,
                 refresh_sec=args.refresh_sec,
                 open_browser=not args.no_browser,
+                port_scan=args.port_scan,
             )
+        if args.command == "dashboard-start":
+            snapshot = start_dashboard_background(
+                cfg,
+                host=args.host,
+                port=args.port,
+                refresh_sec=args.refresh_sec,
+                open_browser=not args.no_browser,
+            )
+            print(json.dumps(snapshot, indent=2, sort_keys=True))
+            return 0 if snapshot.get("running") else 1
+        if args.command == "dashboard-ensure":
+            snapshot = ensure_dashboard_background(
+                cfg,
+                host=args.host,
+                port=args.port,
+                refresh_sec=args.refresh_sec,
+                open_browser=not args.no_browser,
+            )
+            print(json.dumps(snapshot, indent=2, sort_keys=True))
+            return 0 if snapshot.get("running") else 1
+        if args.command == "dashboard-stop":
+            snapshot = stop_dashboard_background(cfg)
+            print(json.dumps(snapshot, indent=2, sort_keys=True))
+            return 0
+        if args.command == "dashboard-status":
+            print(json.dumps(dashboard_status_snapshot(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "dashboard-logs":
+            print(tail_dashboard_logs(cfg, lines=args.lines))
+            return 0
     except (FileNotFoundError, RuntimeError) as err:
         print(
             json.dumps(

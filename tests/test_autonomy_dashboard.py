@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -17,6 +18,11 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Orxaq Autonomy Monitor", html)
         self.assertIn("const REFRESH_MS = 7000", html)
         self.assertIn("/api/monitor", html)
+
+    def test_safe_monitor_snapshot_degrades_on_failure(self):
+        with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):
+            payload = dashboard._safe_monitor_snapshot(mock.Mock())
+        self.assertIn("monitor snapshot error", payload["latest_log_line"])
 
 
 if __name__ == "__main__":

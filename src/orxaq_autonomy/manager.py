@@ -157,7 +157,10 @@ class ManagerConfig:
     lock_file: Path
     runner_pid_file: Path
     supervisor_pid_file: Path
+    dashboard_pid_file: Path
+    dashboard_meta_file: Path
     log_file: Path
+    dashboard_log_file: Path
     max_cycles: int
     max_attempts: int
     max_retryable_blocked_retries: int
@@ -241,6 +244,9 @@ class ManagerConfig:
             runner_pid_file=_path("ORXAQ_AUTONOMY_RUNNER_PID_FILE", artifacts / "runner.pid"),
             supervisor_pid_file=_path("ORXAQ_AUTONOMY_SUPERVISOR_PID_FILE", artifacts / "supervisor.pid"),
             log_file=_path("ORXAQ_AUTONOMY_LOG_FILE", artifacts / "runner.log"),
+            dashboard_pid_file=_path("ORXAQ_AUTONOMY_DASHBOARD_PID_FILE", artifacts / "dashboard.pid"),
+            dashboard_meta_file=_path("ORXAQ_AUTONOMY_DASHBOARD_META_FILE", artifacts / "dashboard.json"),
+            dashboard_log_file=_path("ORXAQ_AUTONOMY_DASHBOARD_LOG_FILE", artifacts / "dashboard.log"),
             max_cycles=_int("ORXAQ_AUTONOMY_MAX_CYCLES", 10000),
             max_attempts=_int("ORXAQ_AUTONOMY_MAX_ATTEMPTS", 8),
             max_retryable_blocked_retries=_int("ORXAQ_AUTONOMY_MAX_RETRYABLE_BLOCKED_RETRIES", 20),
@@ -616,14 +622,160 @@ def status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     }
 
 
-def _git_command(repo: Path, args: list[str], timeout_sec: int = 10) -> tuple[bool, str]:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_sec,
+def _read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def dashboard_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
+    pid = _read_pid(config.dashboard_pid_file)
+    running = _pid_running(pid)
+    meta = _read_json_file(config.dashboard_meta_file)
+    url = str(meta.get("url", "")).strip()
+
+    # Best-effort: update URL from log banner if available.
+    if config.dashboard_log_file.exists():
+        for line in config.dashboard_log_file.read_text(encoding="utf-8").splitlines()[-20:]:
+            if line.startswith("dashboard_url="):
+                url = line.split("=", 1)[1].strip()
+                break
+
+    return {
+        "running": running,
+        "pid": pid,
+        "url": url,
+        "host": str(meta.get("host", "")),
+        "port": int(meta.get("port", 0) or 0),
+        "refresh_sec": int(meta.get("refresh_sec", 0) or 0),
+        "log_file": str(config.dashboard_log_file),
+        "pid_file": str(config.dashboard_pid_file),
+        "meta_file": str(config.dashboard_meta_file),
+    }
+
+
+def start_dashboard_background(
+    config: ManagerConfig,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    refresh_sec: int = 5,
+    open_browser: bool = True,
+) -> dict[str, Any]:
+    existing = dashboard_status_snapshot(config)
+    if existing["running"]:
+        return existing
+
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    log_handle = config.dashboard_log_file.open("a", encoding="utf-8")
+    cmd = [
+        sys.executable,
+        "-m",
+        "orxaq_autonomy.cli",
+        "--root",
+        str(config.root_dir),
+        "dashboard",
+        "--host",
+        host,
+        "--port",
+        str(int(port)),
+        "--refresh-sec",
+        str(int(refresh_sec)),
+    ]
+    if not open_browser:
+        cmd.append("--no-browser")
+
+    kwargs: dict[str, Any] = {
+        "cwd": str(config.root_dir),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": log_handle,
+        "env": _runtime_env(_load_env_file(config.env_file)),
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+    finally:
+        log_handle.close()
+
+    _write_pid(config.dashboard_pid_file, proc.pid)
+    _write_json_file(
+        config.dashboard_meta_file,
+        {
+            "started_at": _now_iso(),
+            "host": host,
+            "port": int(port),
+            "refresh_sec": int(refresh_sec),
+            "url": f"http://{host}:{int(port)}/",
+        },
     )
+    time.sleep(0.7)
+    if not _pid_running(proc.pid):
+        details = tail_dashboard_logs(config, lines=40)
+        raise RuntimeError(f"Dashboard failed to stay running.\n{details}")
+    return dashboard_status_snapshot(config)
+
+
+def stop_dashboard_background(config: ManagerConfig) -> dict[str, Any]:
+    pid = _read_pid(config.dashboard_pid_file)
+    if pid:
+        _terminate_pid(pid)
+    config.dashboard_pid_file.unlink(missing_ok=True)
+    return dashboard_status_snapshot(config)
+
+
+def ensure_dashboard_background(
+    config: ManagerConfig,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    refresh_sec: int = 5,
+    open_browser: bool = False,
+) -> dict[str, Any]:
+    snapshot = dashboard_status_snapshot(config)
+    if snapshot["running"]:
+        return snapshot
+    return start_dashboard_background(
+        config,
+        host=host,
+        port=port,
+        refresh_sec=refresh_sec,
+        open_browser=open_browser,
+    )
+
+
+def tail_dashboard_logs(config: ManagerConfig, lines: int = 80) -> str:
+    if not config.dashboard_log_file.exists():
+        return ""
+    content = config.dashboard_log_file.read_text(encoding="utf-8").splitlines()
+    return "\n".join(content[-max(1, int(lines)) :])
+
+
+def _git_command(repo: Path, args: list[str], timeout_sec: int = 10) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except Exception as err:
+        return False, str(err)
     if result.returncode == 0:
         return True, result.stdout.strip()
     message = (result.stderr.strip() or result.stdout.strip() or f"git {' '.join(args)} failed").strip()

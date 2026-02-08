@@ -337,9 +337,10 @@ def start_dashboard(
     port: int = 8765,
     refresh_sec: int = 5,
     open_browser: bool = True,
+    port_scan: int = 20,
 ) -> int:
     html = _dashboard_html(refresh_sec)
-    snapshot_provider: Callable[[], dict] = lambda: monitor_snapshot(config)
+    snapshot_provider: Callable[[], dict] = lambda: _safe_monitor_snapshot(config)
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:  # noqa: A003
@@ -374,32 +375,35 @@ def start_dashboard(
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path in {"/", "/index.html"}:
-                self._send_html(html)
-                return
-            if parsed.path == "/api/monitor":
-                self._send_json(snapshot_provider())
-                return
-            if parsed.path == "/api/status":
-                self._send_json(status_snapshot(config))
-                return
-            if parsed.path == "/api/health":
-                self._send_json(health_snapshot(config))
-                return
-            if parsed.path == "/api/logs":
-                query = parse_qs(parsed.query)
-                raw_lines = query.get("lines", ["80"])[0]
-                try:
-                    lines = max(1, min(500, int(raw_lines)))
-                except ValueError:
-                    lines = 80
-                self._send_text(tail_logs(config, lines=lines, latest_run_only=True))
-                return
-            self._send_text("Not found\n", status=HTTPStatus.NOT_FOUND)
+            try:
+                if parsed.path in {"/", "/index.html"}:
+                    self._send_html(html)
+                    return
+                if parsed.path == "/api/monitor":
+                    self._send_json(snapshot_provider())
+                    return
+                if parsed.path == "/api/status":
+                    self._send_json(status_snapshot(config))
+                    return
+                if parsed.path == "/api/health":
+                    self._send_json(health_snapshot(config))
+                    return
+                if parsed.path == "/api/logs":
+                    query = parse_qs(parsed.query)
+                    raw_lines = query.get("lines", ["80"])[0]
+                    try:
+                        lines = max(1, min(500, int(raw_lines)))
+                    except ValueError:
+                        lines = 80
+                    self._send_text(tail_logs(config, lines=lines, latest_run_only=True))
+                    return
+                self._send_text("Not found\n", status=HTTPStatus.NOT_FOUND)
+            except Exception as err:  # pragma: no cover - defensive server guard
+                self._send_json({"ok": False, "error": str(err)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    server = ThreadingHTTPServer((host, port), DashboardHandler)
+    server, bound_port = _bind_server_with_port_scan(host, int(port), max(1, int(port_scan)), DashboardHandler)
     server.daemon_threads = True
-    url = f"http://{host}:{port}/"
+    url = f"http://{host}:{bound_port}/"
     print(f"dashboard_url={url}", flush=True)
 
     browser_thread: threading.Thread | None = None
@@ -418,3 +422,48 @@ def start_dashboard(
             browser_thread.join(timeout=0.5)
 
     return 0
+
+
+def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
+    try:
+        return monitor_snapshot(config)
+    except Exception as err:
+        return {
+            "timestamp": "",
+            "latest_log_line": f"monitor snapshot error: {err}",
+            "status": {
+                "supervisor_running": False,
+                "runner_running": False,
+                "heartbeat_age_sec": -1,
+                "heartbeat_stale_threshold_sec": 0,
+                "runner_pid": None,
+                "supervisor_pid": None,
+            },
+            "progress": {
+                "counts": {"done": 0, "in_progress": 0, "pending": 0, "blocked": 0, "unknown": 1},
+                "active_tasks": [],
+                "blocked_tasks": [],
+            },
+            "repos": {
+                "implementation": {"ok": False, "error": str(err)},
+                "tests": {"ok": False, "error": str(err)},
+            },
+            "monitor_file": "",
+        }
+
+
+def _bind_server_with_port_scan(
+    host: str,
+    base_port: int,
+    max_scan: int,
+    handler_cls: type[BaseHTTPRequestHandler],
+) -> tuple[ThreadingHTTPServer, int]:
+    last_error: Exception | None = None
+    for offset in range(max_scan):
+        port = base_port + offset
+        try:
+            return ThreadingHTTPServer((host, port), handler_cls), port
+        except OSError as err:
+            last_error = err
+            continue
+    raise RuntimeError(f"Unable to bind dashboard server on {host}:{base_port}-{base_port + max_scan - 1}: {last_error}")

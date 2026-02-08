@@ -74,6 +74,9 @@ make monitor
 make health
 make logs
 make dashboard
+make dashboard-status
+make dashboard-logs
+make dashboard-stop
 make stop
 make install-keepalive
 make keepalive-status
@@ -143,6 +146,8 @@ Live GUI dashboard:
 make dashboard
 ```
 
+`make dashboard` starts a resilient background dashboard service and returns immediately.
+Use `make dashboard-status` to confirm, `make dashboard-logs` for troubleshooting, and `make dashboard-stop` to stop it.
 The dashboard provides live runner/supervisor state, task progress, repo drift, and latest log signals.
 
 Manual startup flow (if you want finer control):
