@@ -189,6 +189,9 @@ class ManagerConfig:
     heartbeat_file: Path
     lock_file: Path
     conversation_log_file: Path
+    metrics_file: Path
+    metrics_summary_file: Path
+    pricing_file: Path
     runner_pid_file: Path
     supervisor_pid_file: Path
     dashboard_pid_file: Path
@@ -291,6 +294,12 @@ class ManagerConfig:
                 "ORXAQ_AUTONOMY_CONVERSATION_LOG_FILE",
                 artifacts / "conversations.ndjson",
             ),
+            metrics_file=_path("ORXAQ_AUTONOMY_METRICS_FILE", artifacts / "response_metrics.ndjson"),
+            metrics_summary_file=_path(
+                "ORXAQ_AUTONOMY_METRICS_SUMMARY_FILE",
+                artifacts / "response_metrics_summary.json",
+            ),
+            pricing_file=_path("ORXAQ_AUTONOMY_PRICING_FILE", root / "config" / "pricing.json"),
             runner_pid_file=_path("ORXAQ_AUTONOMY_RUNNER_PID_FILE", artifacts / "runner.pid"),
             supervisor_pid_file=_path("ORXAQ_AUTONOMY_SUPERVISOR_PID_FILE", artifacts / "supervisor.pid"),
             log_file=_path("ORXAQ_AUTONOMY_LOG_FILE", artifacts / "runner.log"),
@@ -544,6 +553,12 @@ def runner_argv(config: ManagerConfig) -> list[str]:
             config.claude_cmd,
             "--conversation-log-file",
             str(config.conversation_log_file),
+            "--metrics-file",
+            str(config.metrics_file),
+            "--metrics-summary-file",
+            str(config.metrics_summary_file),
+            "--pricing-file",
+            str(config.pricing_file),
         ]
     )
     if config.codex_model:
@@ -1006,6 +1021,203 @@ def _state_progress_snapshot(config: ManagerConfig) -> dict[str, Any]:
     }
 
 
+def _int_value(raw: Any, default: int = 0) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str, Any]]) -> dict[str, Any]:
+    candidate_paths: list[Path] = [config.metrics_summary_file]
+    for lane in lane_items:
+        raw = str(lane.get("metrics_summary_file", "")).strip()
+        if not raw:
+            continue
+        candidate_paths.append(Path(raw))
+
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for path in candidate_paths:
+        normalized = str(path.resolve())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(path.resolve())
+
+    reports: list[dict[str, Any]] = []
+    errors: list[str] = []
+    recommendations: list[str] = []
+    by_owner: dict[str, dict[str, Any]] = {}
+    latest_metric: dict[str, Any] = {}
+    latest_timestamp = ""
+
+    responses_total = 0
+    quality_sum = 0.0
+    latency_sum = 0.0
+    prompt_difficulty_sum = 0.0
+    first_time_pass_count = 0
+    acceptance_pass_count = 0
+    exact_cost_count = 0
+    cost_usd_total = 0.0
+    currency = "USD"
+
+    for path in paths:
+        report: dict[str, Any] = {
+            "path": str(path),
+            "ok": True,
+            "missing": False,
+            "responses_total": 0,
+            "cost_usd_total": 0.0,
+            "error": "",
+        }
+        if not path.exists():
+            report["missing"] = True
+            report["note"] = "metrics summary not created yet"
+            reports.append(report)
+            continue
+
+        summary = _read_json_file(path)
+        if not summary:
+            report["note"] = "metrics summary is empty"
+            reports.append(report)
+            continue
+
+        if not isinstance(summary, dict):
+            report["ok"] = False
+            report["error"] = "metrics summary must be a JSON object"
+            errors.append(f"{path}: {report['error']}")
+            reports.append(report)
+            continue
+
+        source_responses = _int_value(summary.get("responses_total", 0), 0)
+        source_quality_sum = _float_value(
+            summary.get("quality_score_sum", _float_value(summary.get("quality_score_avg", 0.0), 0.0) * source_responses),
+            0.0,
+        )
+        source_latency_sum = _float_value(
+            summary.get("latency_sec_sum", _float_value(summary.get("latency_sec_avg", 0.0), 0.0) * source_responses),
+            0.0,
+        )
+        source_prompt_difficulty_sum = _float_value(
+            summary.get(
+                "prompt_difficulty_score_sum",
+                _float_value(summary.get("prompt_difficulty_score_avg", 0.0), 0.0) * source_responses,
+            ),
+            0.0,
+        )
+        source_first_time_pass = _int_value(
+            summary.get("first_time_pass_count", round(_float_value(summary.get("first_time_pass_rate", 0.0), 0.0) * source_responses)),
+            0,
+        )
+        source_acceptance_pass = _int_value(
+            summary.get("acceptance_pass_count", round(_float_value(summary.get("acceptance_pass_rate", 0.0), 0.0) * source_responses)),
+            0,
+        )
+        source_exact_cost = _int_value(
+            summary.get("exact_cost_count", round(_float_value(summary.get("exact_cost_coverage", 0.0), 0.0) * source_responses)),
+            0,
+        )
+        source_cost = _float_value(summary.get("cost_usd_total", 0.0), 0.0)
+
+        responses_total += source_responses
+        quality_sum += source_quality_sum
+        latency_sum += source_latency_sum
+        prompt_difficulty_sum += source_prompt_difficulty_sum
+        first_time_pass_count += source_first_time_pass
+        acceptance_pass_count += source_acceptance_pass
+        exact_cost_count += source_exact_cost
+        cost_usd_total += source_cost
+
+        report["responses_total"] = source_responses
+        report["cost_usd_total"] = round(source_cost, 8)
+        reports.append(report)
+
+        owner_map = summary.get("by_owner", {})
+        if isinstance(owner_map, dict):
+            for owner_name, owner_payload in owner_map.items():
+                if not isinstance(owner_payload, dict):
+                    continue
+                owner = str(owner_name)
+                aggregate_owner = by_owner.get(owner, {"responses": 0, "first_time_pass": 0, "validation_passed": 0, "cost_usd_total": 0.0})
+                aggregate_owner["responses"] = _int_value(aggregate_owner.get("responses", 0), 0) + _int_value(
+                    owner_payload.get("responses", 0),
+                    0,
+                )
+                aggregate_owner["first_time_pass"] = _int_value(
+                    aggregate_owner.get("first_time_pass", 0),
+                    0,
+                ) + _int_value(owner_payload.get("first_time_pass", 0), 0)
+                aggregate_owner["validation_passed"] = _int_value(
+                    aggregate_owner.get("validation_passed", 0),
+                    0,
+                ) + _int_value(owner_payload.get("validation_passed", 0), 0)
+                aggregate_owner["cost_usd_total"] = _float_value(aggregate_owner.get("cost_usd_total", 0.0), 0.0) + _float_value(
+                    owner_payload.get("cost_usd_total", 0.0),
+                    0.0,
+                )
+                by_owner[owner] = aggregate_owner
+
+        latest = summary.get("latest_metric", {})
+        if isinstance(latest, dict):
+            ts = str(latest.get("timestamp", "")).strip()
+            if ts and ts >= latest_timestamp:
+                latest_timestamp = ts
+                latest_metric = latest
+
+        for item in summary.get("optimization_recommendations", []):
+            text = str(item).strip()
+            if text and text not in recommendations:
+                recommendations.append(text)
+        currency = str(summary.get("currency", currency)).strip() or currency
+
+    for owner_payload in by_owner.values():
+        owner_responses = max(1, _int_value(owner_payload.get("responses", 0), 0))
+        owner_payload["first_time_pass_rate"] = round(
+            _int_value(owner_payload.get("first_time_pass", 0), 0) / owner_responses,
+            6,
+        )
+        owner_payload["validation_pass_rate"] = round(
+            _int_value(owner_payload.get("validation_passed", 0), 0) / owner_responses,
+            6,
+        )
+        owner_payload["cost_usd_total"] = round(_float_value(owner_payload.get("cost_usd_total", 0.0), 0.0), 8)
+
+    coverage = round(exact_cost_count / max(1, responses_total), 6)
+    snapshot = {
+        "timestamp": _now_iso(),
+        "summary_file": str(config.metrics_summary_file),
+        "sources": reports,
+        "ok": len(errors) == 0,
+        "partial": len(errors) > 0,
+        "errors": errors,
+        "responses_total": responses_total,
+        "quality_score_avg": round(quality_sum / max(1, responses_total), 6),
+        "latency_sec_avg": round(latency_sum / max(1, responses_total), 6),
+        "prompt_difficulty_score_avg": round(prompt_difficulty_sum / max(1, responses_total), 6),
+        "first_time_pass_count": first_time_pass_count,
+        "first_time_pass_rate": round(first_time_pass_count / max(1, responses_total), 6),
+        "acceptance_pass_count": acceptance_pass_count,
+        "acceptance_pass_rate": round(acceptance_pass_count / max(1, responses_total), 6),
+        "exact_cost_count": exact_cost_count,
+        "exact_cost_coverage": coverage,
+        "cost_usd_total": round(cost_usd_total, 8),
+        "cost_usd_avg": round(cost_usd_total / max(1, responses_total), 8),
+        "currency": currency,
+        "by_owner": by_owner,
+        "latest_metric": latest_metric,
+        "optimization_recommendations": recommendations,
+    }
+    return snapshot
+
+
 def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     status = status_snapshot(config)
     progress = _state_progress_snapshot(config)
@@ -1052,6 +1264,8 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         conv["partial"] = True
     _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
+    response_metrics = _response_metrics_snapshot(config, lane_items)
+    _mark_source("response_metrics", bool(response_metrics.get("ok", False)), "; ".join(response_metrics.get("errors", [])))
     lane_operational_states = {"ok", "paused"}
     operational_lanes = [
         lane
@@ -1118,6 +1332,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         },
         "progress": progress,
         "lanes": lanes,
+        "response_metrics": response_metrics,
         "conversations": {
             "total_events": conv.get("total_events", 0),
             "owner_counts": conv.get("owner_counts", {}),
@@ -1159,6 +1374,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     repos = snapshot.get("repos", {})
     handoffs = snapshot.get("handoffs", {})
     lanes = snapshot.get("lanes", {})
+    response_metrics = snapshot.get("response_metrics", {})
     conversations = snapshot.get("conversations", {})
     diagnostics = snapshot.get("diagnostics", {})
     impl = repos.get("implementation", {})
@@ -1206,6 +1422,12 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
         (
             f"diagnostics: ok={diagnostics.get('ok', True)} "
             f"errors={len(diagnostics.get('errors', []))}"
+        ),
+        (
+            f"response_metrics: responses={response_metrics.get('responses_total', 0)} "
+            f"first_time_pass_rate={response_metrics.get('first_time_pass_rate', 0.0)} "
+            f"latency_avg={response_metrics.get('latency_sec_avg', 0.0)}s "
+            f"cost_total=${response_metrics.get('cost_usd_total', 0.0)}"
         ),
         _repo_line("impl_repo", impl),
         _repo_line("test_repo", tests),
@@ -1459,6 +1681,21 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         str(item.get("conversation_log_file", "")),
         artifacts_dir / "conversations.ndjson",
     )
+    metrics_file = _resolve_path(
+        config.root_dir,
+        str(item.get("metrics_file", "")),
+        artifacts_dir / "response_metrics.ndjson",
+    )
+    metrics_summary_file = _resolve_path(
+        config.root_dir,
+        str(item.get("metrics_summary_file", "")),
+        artifacts_dir / "response_metrics_summary.json",
+    )
+    pricing_file = _resolve_path(
+        config.root_dir,
+        str(item.get("pricing_file", "")),
+        config.pricing_file,
+    )
     mcp_raw = str(item.get("mcp_context_file", "")).strip()
     mcp_default = config.mcp_context_file or (config.root_dir / "config" / "mcp_context.example.json")
     if mcp_raw or config.mcp_context_file is not None:
@@ -1497,6 +1734,9 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         "heartbeat_file": heartbeat_file,
         "lock_file": lock_file,
         "conversation_log_file": conversation_log_file,
+        "metrics_file": metrics_file,
+        "metrics_summary_file": metrics_summary_file,
+        "pricing_file": pricing_file,
         "owner_filter": [owner],
         "validate_commands": [
             str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
@@ -1726,6 +1966,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "objective_file": str(lane["objective_file"]),
                     "impl_repo": str(lane["impl_repo"]),
                     "test_repo": str(lane["test_repo"]),
+                    "metrics_file": str(lane["metrics_file"]),
+                    "metrics_summary_file": str(lane["metrics_summary_file"]),
+                    "pricing_file": str(lane["pricing_file"]),
                     "exclusive_paths": lane["exclusive_paths"],
                     "latest_log_line": latest,
                     "log_file": str(log_path),
@@ -1763,6 +2006,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "objective_file": str(lane["objective_file"]),
                     "impl_repo": str(lane["impl_repo"]),
                     "test_repo": str(lane["test_repo"]),
+                    "metrics_file": str(lane["metrics_file"]),
+                    "metrics_summary_file": str(lane["metrics_summary_file"]),
+                    "pricing_file": str(lane["pricing_file"]),
                     "exclusive_paths": lane["exclusive_paths"],
                     "latest_log_line": "",
                     "log_file": str(log_path),
@@ -1845,6 +2091,12 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         str(lane["conversation_log_file"]),
         "--handoff-dir",
         str(lane["handoff_dir"]),
+        "--metrics-file",
+        str(lane["metrics_file"]),
+        "--metrics-summary-file",
+        str(lane["metrics_summary_file"]),
+        "--pricing-file",
+        str(lane["pricing_file"]),
         "--max-cycles",
         str(config.max_cycles),
         "--max-attempts",
@@ -1982,6 +2234,9 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "handoff_dir": str(lane["handoff_dir"]),
             "objective_file": str(lane["objective_file"]),
             "conversation_log_file": str(lane["conversation_log_file"]),
+            "metrics_file": str(lane["metrics_file"]),
+            "metrics_summary_file": str(lane["metrics_summary_file"]),
+            "pricing_file": str(lane["pricing_file"]),
             "exclusive_paths": lane["exclusive_paths"],
         },
     )
@@ -2135,6 +2390,19 @@ def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> 
     }
 
 
+def _conversation_content_from_lane_event(event: dict[str, Any]) -> str:
+    event_type = str(event.get("event_type", "")).strip()
+    if not event_type:
+        return ""
+    payload = event.get("payload")
+    if isinstance(payload, dict) and payload:
+        parts = [f"{key}={payload[key]}" for key in sorted(payload)]
+        return f"{event_type}: {', '.join(parts)}"
+    if payload not in (None, "", {}):
+        return f"{event_type}: {payload}"
+    return event_type
+
+
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
     line_limit = max(1, min(2000, int(lines)))
     source_specs: list[dict[str, str]] = [
@@ -2143,6 +2411,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
             "kind": "primary",
             "lane_id": "",
             "owner": "",
+            "fallback_path": "",
         }
     ]
     errors: list[str] = []
@@ -2154,12 +2423,14 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
             lane_path = str(lane_file)
             exists = any(item["path"] == lane_path for item in source_specs)
             if not exists:
+                lane_id = str(lane["id"])
                 source_specs.append(
                     {
                         "path": lane_path,
                         "kind": "lane",
-                        "lane_id": str(lane["id"]),
+                        "lane_id": lane_id,
                         "owner": str(lane["owner"]),
+                        "fallback_path": str(_lane_events_file(config, lane_id)),
                     }
                 )
 
@@ -2170,14 +2441,36 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         source_events: list[dict[str, Any]] = []
         source_error = ""
         source_ok = True
+        source_kind = source["kind"]
+        resolved_path = source_path
+        fallback_used = False
+        missing = False
         try:
-            source_events = _tail_ndjson(source_path, line_limit)
+            if source_path.exists():
+                source_events = _tail_ndjson(source_path, line_limit)
+            else:
+                missing = True
+                fallback_path_raw = str(source.get("fallback_path", "")).strip()
+                fallback_path = Path(fallback_path_raw) if fallback_path_raw else None
+                if fallback_path and fallback_path.exists():
+                    source_events = _tail_ndjson(fallback_path, line_limit)
+                    resolved_path = fallback_path
+                    source_kind = "lane_events"
+                    fallback_used = True
+                elif source["kind"] == "lane":
+                    source_ok = False
+                    source_error = f"missing lane conversation and event sources at {source_path}"
+                    lane_label = source.get("lane_id", "").strip() or source["path"]
+                    errors.append(f"{lane_label}: {source_error}")
             for item in source_events:
-                item["source"] = str(source_path)
+                item["source"] = str(resolved_path)
+                item["source_kind"] = source_kind
                 if source["lane_id"] and "lane_id" not in item:
                     item["lane_id"] = source["lane_id"]
                 if source["owner"] and "owner" not in item:
                     item["owner"] = source["owner"]
+                if source_kind == "lane_events" and not str(item.get("content", "")).strip():
+                    item["content"] = _conversation_content_from_lane_event(item)
                 events.append(item)
         except Exception as err:
             source_ok = False
@@ -2186,10 +2479,14 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         source_reports.append(
             {
                 "path": source["path"],
+                "resolved_path": str(resolved_path),
                 "kind": source["kind"],
+                "resolved_kind": source_kind,
                 "lane_id": source["lane_id"],
                 "owner": source["owner"],
                 "ok": source_ok,
+                "missing": missing,
+                "fallback_used": fallback_used,
                 "error": source_error,
                 "event_count": len(source_events),
             }

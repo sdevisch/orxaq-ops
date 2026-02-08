@@ -65,7 +65,12 @@ Optional reusable context controls:
 - `ORXAQ_AUTONOMY_GEMINI_CMD` (default `gemini`; can be absolute path)
 - `ORXAQ_AUTONOMY_CLAUDE_CMD` (default `claude`; can be absolute path)
 - `ORXAQ_AUTONOMY_CONVERSATION_LOG_FILE` (default `artifacts/autonomy/conversations.ndjson`)
+- `ORXAQ_AUTONOMY_METRICS_FILE` (default `artifacts/autonomy/response_metrics.ndjson`)
+- `ORXAQ_AUTONOMY_METRICS_SUMMARY_FILE` (default `artifacts/autonomy/response_metrics_summary.json`)
+- `ORXAQ_AUTONOMY_PRICING_FILE` (default `config/pricing.json`)
 - `ORXAQ_AUTONOMY_LANES_FILE` (default `config/lanes.json`)
+
+Configure per-model rates in `/Users/sdevisch/dev/orxaq-ops/config/pricing.json` to enable exact response cost tracking.
 
 ## Commands
 
@@ -159,7 +164,7 @@ make dashboard
 
 `make dashboard` starts a resilient background dashboard service and returns immediately.
 Use `make dashboard-status` to confirm, `make dashboard-logs` for troubleshooting, and `make dashboard-stop` to stop it.
-The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, repo drift, and latest log signals.
+The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, response cost/quality metrics, repo drift, and latest log signals.
 
 Inspect conversation events directly:
 

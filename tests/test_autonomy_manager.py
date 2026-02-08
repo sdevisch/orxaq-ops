@@ -24,6 +24,7 @@ class ManagerTests(unittest.TestCase):
         (tmp / "config" / "tasks.json").write_text("[]\n", encoding="utf-8")
         (tmp / "config" / "objective.md").write_text("objective\n", encoding="utf-8")
         (tmp / "config" / "codex_result.schema.json").write_text("{}\n", encoding="utf-8")
+        (tmp / "config" / "pricing.json").write_text('{"version":1,"currency":"USD","models":{}}\n', encoding="utf-8")
         (tmp / "config" / "skill_protocol.json").write_text("{}\n", encoding="utf-8")
         (tmp / "config" / "prompts" / "codex_impl_prompt.md").write_text("codex prompt\n", encoding="utf-8")
         (tmp / "config" / "prompts" / "gemini_test_prompt.md").write_text("gemini prompt\n", encoding="utf-8")
@@ -84,6 +85,9 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--gemini-cmd", argv)
             self.assertIn("--claude-cmd", argv)
             self.assertIn("--conversation-log-file", argv)
+            self.assertIn("--metrics-file", argv)
+            self.assertIn("--metrics-summary-file", argv)
+            self.assertIn("--pricing-file", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -305,6 +309,44 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["handoffs"]["to_gemini_events"], 1)
             self.assertEqual(snapshot["handoffs"]["latest_to_codex"]["task_id"], "b")
             self.assertEqual(snapshot["handoffs"]["latest_to_gemini"]["task_id"], "c")
+
+    def test_monitor_snapshot_reports_response_metrics_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.metrics_summary_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.metrics_summary_file.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 4,
+                        "quality_score_sum": 3.0,
+                        "latency_sec_sum": 20.0,
+                        "prompt_difficulty_score_sum": 120.0,
+                        "first_time_pass_count": 3,
+                        "acceptance_pass_count": 3,
+                        "exact_cost_count": 2,
+                        "cost_usd_total": 1.25,
+                        "by_owner": {
+                            "codex": {
+                                "responses": 4,
+                                "first_time_pass": 3,
+                                "validation_passed": 3,
+                                "cost_usd_total": 1.25,
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.monitor_snapshot(cfg)
+            metrics = snapshot["response_metrics"]
+            self.assertEqual(metrics["responses_total"], 4)
+            self.assertAlmostEqual(metrics["quality_score_avg"], 0.75, places=6)
+            self.assertAlmostEqual(metrics["latency_sec_avg"], 5.0, places=6)
+            self.assertAlmostEqual(metrics["prompt_difficulty_score_avg"], 30.0, places=6)
+            self.assertAlmostEqual(metrics["cost_usd_total"], 1.25, places=8)
+            self.assertIn("codex", metrics["by_owner"])
 
     def test_monitor_snapshot_retains_output_when_lane_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
@@ -720,6 +762,53 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(snapshot["partial"])
             self.assertIn("lane_specs: lane-b", snapshot["errors"][0])
 
+    def test_conversations_snapshot_falls_back_to_lane_events_when_conversation_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
+                encoding="utf-8",
+            )
+            lane_events = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "events.ndjson"
+            lane_events.parent.mkdir(parents=True, exist_ok=True)
+            lane_events.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "lane_id": "lane-a",
+                        "event_type": "task_done",
+                        "payload": {"task_id": "t1", "status": "done"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 2)
+            lane_events_seen = [item for item in snapshot["events"] if item.get("source_kind") == "lane_events"]
+            self.assertEqual(len(lane_events_seen), 1)
+            self.assertIn("task_done", lane_events_seen[0].get("content", ""))
+
     def test_start_lanes_background_starts_selected_lane(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -759,6 +848,9 @@ class ManagerTests(unittest.TestCase):
             argv = popen.call_args[0][0]
             self.assertIn("--owner-filter", argv)
             self.assertIn("codex", argv)
+            self.assertIn("--metrics-file", argv)
+            self.assertIn("--metrics-summary-file", argv)
+            self.assertIn("--pricing-file", argv)
 
     def test_build_lane_runner_cmd_includes_dependency_state_and_handoff_dir(self):
         with tempfile.TemporaryDirectory() as td:

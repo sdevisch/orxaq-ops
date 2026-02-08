@@ -22,19 +22,23 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("/api/conversations", html)
         self.assertIn("Parallel Lanes", html)
         self.assertIn("Conversations", html)
+        self.assertIn("Cost &amp; Quality", html)
+        self.assertIn("metricsSummary", html)
         self.assertIn("Resilience Diagnostics", html)
-        self.assertIn("renderLanes", html)
         self.assertIn("renderDiagnostics", html)
         self.assertIn("lane_agents", html)
         self.assertIn("idle (lane mode)", html)
         self.assertIn("operational", html)
         self.assertIn("fabric", html)
+        self.assertIn("optimization_recommendations", html)
 
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):
             payload = dashboard._safe_monitor_snapshot(mock.Mock())
         self.assertIn("monitor snapshot error", payload["latest_log_line"])
         self.assertFalse(payload["diagnostics"]["ok"])
+        self.assertIn("response_metrics", payload)
+        self.assertFalse(payload["response_metrics"]["ok"])
 
     def test_safe_lane_status_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()

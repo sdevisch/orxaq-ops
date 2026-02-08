@@ -274,6 +274,12 @@ def _dashboard_html(refresh_sec: int) -> str:
         <div id="heartbeatState" class="mono"></div>
       </article>
 
+      <article class="card span-4">
+        <h2>Cost &amp; Quality</h2>
+        <div id="metricsSummary" class="mono">metrics: loading...</div>
+        <div id="metricsList" class="repo"></div>
+      </article>
+
       <article class="card span-6">
         <h2>Repository: Implementation</h2>
         <div id="repoImpl" class="repo"></div>
@@ -369,6 +375,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       const progress = snapshot.progress || {{}};
       const counts = progress.counts || {{}};
       const diagnostics = snapshot.diagnostics || {{}};
+      const responseMetrics = snapshot.response_metrics || {{}};
       const done = counts.done || 0;
       const inProgress = counts.in_progress || 0;
       const pending = counts.pending || 0;
@@ -406,6 +413,34 @@ def _dashboard_html(refresh_sec: int) -> str:
         : '';
       byId("heartbeatState").innerHTML =
         `heartbeat_age: <span class="mono">${{status.heartbeat_age_sec ?? -1}}s</span> · stale_threshold: <span class="mono">${{status.heartbeat_stale_threshold_sec ?? -1}}s</span>${{hbNote}}`;
+
+      const responseCount = Number(responseMetrics.responses_total || 0);
+      const firstPassRate = Number(responseMetrics.first_time_pass_rate || 0);
+      const acceptanceRate = Number(responseMetrics.acceptance_pass_rate || 0);
+      const latencyAvg = Number(responseMetrics.latency_sec_avg || 0);
+      const difficultyAvg = Number(responseMetrics.prompt_difficulty_score_avg || 0);
+      const costTotal = Number(responseMetrics.cost_usd_total || 0);
+      const costCoverage = Number(responseMetrics.exact_cost_coverage || 0);
+      byId("metricsSummary").textContent =
+        `responses: ${{responseCount}} · first-pass: ${{Math.round(firstPassRate * 100)}}% · acceptance: ${{Math.round(acceptanceRate * 100)}}% · avg latency: ${{latencyAvg.toFixed(2)}}s · avg difficulty: ${{difficultyAvg.toFixed(1)}} · total cost: $${{costTotal.toFixed(4)}} · exact cost: ${{Math.round(costCoverage * 100)}}%`;
+      const ownerRows = Object.entries(responseMetrics.by_owner || {{}}).map(([owner, payload]) => {{
+        const item = payload || {{}};
+        const ownerResponses = Number(item.responses || 0);
+        const ownerCost = Number(item.cost_usd_total || 0);
+        const ownerFirstPass = Number(item.first_time_pass_rate || 0);
+        const ownerValidation = Number(item.validation_pass_rate || 0);
+        return `<div class="line"><span class="mono">${{escapeHtml(owner)}}</span> responses=${{ownerResponses}} · first-pass=${{Math.round(ownerFirstPass * 100)}}% · validation=${{Math.round(ownerValidation * 100)}}% · cost=$${{ownerCost.toFixed(4)}}</div>`;
+      }});
+      const recommendations = Array.isArray(responseMetrics.optimization_recommendations)
+        ? responseMetrics.optimization_recommendations
+        : [];
+      if (!ownerRows.length) {{
+        ownerRows.push('<div class="line">No response metrics yet.</div>');
+      }}
+      for (const recommendation of recommendations.slice(0, 3)) {{
+        ownerRows.push(`<div class="line warn">${{escapeHtml(recommendation)}}</div>`);
+      }}
+      byId("metricsList").innerHTML = ownerRows.join("");
 
       byId("repoImpl").innerHTML = repoMarkup((snapshot.repos || {{}}).implementation);
       byId("repoTest").innerHTML = repoMarkup((snapshot.repos || {{}}).tests);
@@ -706,6 +741,19 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             "repos": {
                 "implementation": {"ok": False, "error": message},
                 "tests": {"ok": False, "error": message},
+            },
+            "response_metrics": {
+                "responses_total": 0,
+                "first_time_pass_rate": 0.0,
+                "acceptance_pass_rate": 0.0,
+                "latency_sec_avg": 0.0,
+                "prompt_difficulty_score_avg": 0.0,
+                "cost_usd_total": 0.0,
+                "exact_cost_coverage": 0.0,
+                "by_owner": {},
+                "optimization_recommendations": [],
+                "ok": False,
+                "errors": [message],
             },
             "diagnostics": {
                 "ok": False,

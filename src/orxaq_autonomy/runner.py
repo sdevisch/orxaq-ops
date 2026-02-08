@@ -96,6 +96,35 @@ OWNER_PRIORITY = {"codex": 0, "gemini": 1, "claude": 2}
 MAX_CONVERSATION_SNIPPET_CHARS = 8000
 MAX_HANDOFF_SNIPPET_CHARS = 5000
 HANDOFF_RECENT_LIMIT = 5
+AMBIGUOUS_PROMPT_TERMS = (
+    "maybe",
+    "somehow",
+    "etc",
+    "whatever",
+    "something",
+    "anything",
+    "as needed",
+    "if possible",
+    "best effort",
+    "quickly",
+)
+USAGE_TOKEN_KEYS = (
+    "input_tokens",
+    "prompt_tokens",
+    "output_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+)
+DEFAULT_PRICING_PAYLOAD = {
+    "version": 1,
+    "currency": "USD",
+    "models": {
+        "codex": {"input_per_million": 0.0, "output_per_million": 0.0},
+        "gemini": {"input_per_million": 0.0, "output_per_million": 0.0},
+        "claude": {"input_per_million": 0.0, "output_per_million": 0.0},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -192,6 +221,308 @@ def _write_text_atomic(path: Path, text: str) -> None:
 def _write_json(path: Path, payload: Any) -> None:
     _write_text_atomic(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
+
+def estimate_token_count(text: str) -> int:
+    normalized = text.strip()
+    if not normalized:
+        return 0
+    return max(1, int(round(len(normalized) / 4)))
+
+
+def prompt_difficulty_score(prompt: str) -> int:
+    text = prompt.strip()
+    if not text:
+        return 0
+    lowered = text.lower()
+    words = re.findall(r"[a-z0-9_]+", lowered)
+    word_count = len(words)
+    unique_ratio = (len(set(words)) / max(1, word_count)) if words else 0.0
+    question_count = text.count("?")
+    bullet_count = sum(1 for line in text.splitlines() if line.strip().startswith("-"))
+    ambiguity_hits = sum(lowered.count(term) for term in AMBIGUOUS_PROMPT_TERMS)
+
+    length_component = min(35.0, word_count / 10.0)
+    structure_component = min(20.0, float(bullet_count) * 1.5)
+    ambiguity_component = min(25.0, float(ambiguity_hits) * 4.0 + float(question_count) * 1.5)
+    lexical_component = min(20.0, unique_ratio * 20.0)
+    score = int(round(min(100.0, length_component + structure_component + ambiguity_component + lexical_component)))
+    return max(0, score)
+
+
+def _coerce_token_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        ivalue = int(value)
+        return ivalue if ivalue >= 0 else None
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
+
+def _extract_usage_from_dict(payload: dict[str, Any]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for key in USAGE_TOKEN_KEYS:
+        value = _coerce_token_int(payload.get(key))
+        if value is not None:
+            out[key] = value
+    if "usage" in payload and isinstance(payload["usage"], dict):
+        nested = _extract_usage_from_dict(payload["usage"])
+        for key, value in nested.items():
+            out.setdefault(key, value)
+    if "metrics" in payload and isinstance(payload["metrics"], dict):
+        nested = _extract_usage_from_dict(payload["metrics"])
+        for key, value in nested.items():
+            out.setdefault(key, value)
+    if "token_usage" in payload and isinstance(payload["token_usage"], dict):
+        nested = _extract_usage_from_dict(payload["token_usage"])
+        for key, value in nested.items():
+            out.setdefault(key, value)
+    return out
+
+
+def _extract_usage_from_text(raw_text: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    if not raw_text.strip():
+        return out
+    for key in USAGE_TOKEN_KEYS:
+        pattern = rf"(?:\"|'){re.escape(key)}(?:\"|')\s*:\s*(\d+)"
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE)
+        if match:
+            out[key] = int(match.group(1))
+    return out
+
+
+def extract_usage_metrics(
+    payload: dict[str, Any] | None = None,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+) -> dict[str, Any]:
+    usage: dict[str, int] = {}
+    source = "none"
+    if payload:
+        usage = _extract_usage_from_dict(payload)
+        if usage:
+            source = "payload"
+    if not usage:
+        usage = _extract_usage_from_text((stdout or "") + "\n" + (stderr or ""))
+        if usage:
+            source = "command_output"
+
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+        usage["total_tokens"] = total_tokens
+
+    return {
+        "source": source,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "raw": usage,
+    }
+
+
+def load_pricing(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return DEFAULT_PRICING_PAYLOAD
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(path, DEFAULT_PRICING_PAYLOAD)
+        return DEFAULT_PRICING_PAYLOAD
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return DEFAULT_PRICING_PAYLOAD
+    if not isinstance(raw, dict):
+        return DEFAULT_PRICING_PAYLOAD
+    return raw
+
+
+def _resolve_pricing_entry(pricing: dict[str, Any], *, owner: str, model: str) -> dict[str, float]:
+    models = pricing.get("models", {}) if isinstance(pricing.get("models", {}), dict) else {}
+    candidates = [
+        model.strip(),
+        model.strip().lower(),
+        owner.strip().lower(),
+    ]
+    entry: dict[str, Any] = {}
+    for key in candidates:
+        if key and isinstance(models.get(key), dict):
+            entry = models[key]
+            break
+    input_rate = float(entry.get("input_per_million", 0.0) or 0.0)
+    output_rate = float(entry.get("output_per_million", 0.0) or 0.0)
+    return {"input_per_million": input_rate, "output_per_million": output_rate}
+
+
+def compute_response_cost(
+    *,
+    pricing: dict[str, Any],
+    owner: str,
+    model: str,
+    usage: dict[str, Any],
+    prompt_tokens_est: int,
+    response_tokens_est: int,
+) -> dict[str, Any]:
+    rates = _resolve_pricing_entry(pricing, owner=owner, model=model)
+    input_rate = float(rates.get("input_per_million", 0.0) or 0.0)
+    output_rate = float(rates.get("output_per_million", 0.0) or 0.0)
+    if input_rate <= 0.0 and output_rate <= 0.0:
+        return {
+            "cost_usd": None,
+            "cost_exact": False,
+            "cost_source": "unpriced_model",
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "input_rate_per_million": input_rate,
+            "output_rate_per_million": output_rate,
+        }
+
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    cost_exact = input_tokens is not None and output_tokens is not None
+    source = "exact_usage"
+    if input_tokens is None:
+        input_tokens = prompt_tokens_est
+        source = "estimated_tokens"
+    if output_tokens is None:
+        output_tokens = response_tokens_est
+        source = "estimated_tokens"
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = int(input_tokens) + int(output_tokens)
+    cost = ((float(input_tokens) * input_rate) + (float(output_tokens) * output_rate)) / 1_000_000.0
+    return {
+        "cost_usd": round(cost, 8),
+        "cost_exact": bool(cost_exact),
+        "cost_source": source,
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "total_tokens": int(total_tokens) if total_tokens is not None else None,
+        "input_rate_per_million": input_rate,
+        "output_rate_per_million": output_rate,
+    }
+
+
+def append_response_metric(path: Path, metric: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(metric, sort_keys=True) + "\n")
+
+
+def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[str, Any]:
+    if path.exists():
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            summary = {}
+    else:
+        summary = {}
+    if not isinstance(summary, dict):
+        summary = {}
+
+    total = int(summary.get("responses_total", 0) or 0) + 1
+    quality_sum = float(summary.get("quality_score_sum", 0.0) or 0.0) + float(metric.get("quality_score", 0.0) or 0.0)
+    latency_sum = float(summary.get("latency_sec_sum", 0.0) or 0.0) + float(metric.get("latency_sec", 0.0) or 0.0)
+    prompt_difficulty_sum = float(summary.get("prompt_difficulty_score_sum", 0.0) or 0.0) + float(
+        metric.get("prompt_difficulty_score", 0.0) or 0.0
+    )
+    first_time_pass = int(summary.get("first_time_pass_count", 0) or 0) + (
+        1 if metric.get("first_time_pass", False) else 0
+    )
+    acceptance_pass = int(summary.get("acceptance_pass_count", 0) or 0) + (
+        1 if metric.get("validation_passed", False) else 0
+    )
+    exact_cost_count = int(summary.get("exact_cost_count", 0) or 0) + (1 if metric.get("cost_exact", False) else 0)
+    total_cost = float(summary.get("cost_usd_total", 0.0) or 0.0) + float(metric.get("cost_usd", 0.0) or 0.0)
+
+    by_owner = summary.get("by_owner", {})
+    if not isinstance(by_owner, dict):
+        by_owner = {}
+    owner = str(metric.get("owner", "unknown"))
+    owner_counts = by_owner.get(owner, {})
+    if not isinstance(owner_counts, dict):
+        owner_counts = {}
+    owner_counts["responses"] = int(owner_counts.get("responses", 0) or 0) + 1
+    owner_counts["quality_score_sum"] = float(owner_counts.get("quality_score_sum", 0.0) or 0.0) + float(
+        metric.get("quality_score", 0.0) or 0.0
+    )
+    owner_counts["latency_sec_sum"] = float(owner_counts.get("latency_sec_sum", 0.0) or 0.0) + float(
+        metric.get("latency_sec", 0.0) or 0.0
+    )
+    owner_counts["prompt_difficulty_score_sum"] = float(
+        owner_counts.get("prompt_difficulty_score_sum", 0.0) or 0.0
+    ) + float(metric.get("prompt_difficulty_score", 0.0) or 0.0)
+    owner_counts["first_time_pass"] = int(owner_counts.get("first_time_pass", 0) or 0) + (
+        1 if metric.get("first_time_pass", False) else 0
+    )
+    owner_counts["validation_passed"] = int(owner_counts.get("validation_passed", 0) or 0) + (
+        1 if metric.get("validation_passed", False) else 0
+    )
+    owner_counts["cost_usd_total"] = float(owner_counts.get("cost_usd_total", 0.0) or 0.0) + float(
+        metric.get("cost_usd", 0.0) or 0.0
+    )
+    owner_responses = int(owner_counts.get("responses", 0) or 0)
+    owner_counts["quality_score_avg"] = round(
+        float(owner_counts.get("quality_score_sum", 0.0) or 0.0) / max(1, owner_responses),
+        6,
+    )
+    owner_counts["latency_sec_avg"] = round(
+        float(owner_counts.get("latency_sec_sum", 0.0) or 0.0) / max(1, owner_responses),
+        6,
+    )
+    owner_counts["prompt_difficulty_score_avg"] = round(
+        float(owner_counts.get("prompt_difficulty_score_sum", 0.0) or 0.0) / max(1, owner_responses),
+        6,
+    )
+    by_owner[owner] = owner_counts
+
+    summary.update(
+        {
+            "timestamp": _now_iso(),
+            "responses_total": total,
+            "quality_score_sum": round(quality_sum, 6),
+            "quality_score_avg": round(quality_sum / max(1, total), 6),
+            "latency_sec_sum": round(latency_sum, 6),
+            "latency_sec_avg": round(latency_sum / max(1, total), 6),
+            "prompt_difficulty_score_sum": round(prompt_difficulty_sum, 6),
+            "prompt_difficulty_score_avg": round(prompt_difficulty_sum / max(1, total), 6),
+            "first_time_pass_count": first_time_pass,
+            "first_time_pass_rate": round(first_time_pass / max(1, total), 6),
+            "acceptance_pass_count": acceptance_pass,
+            "acceptance_pass_rate": round(acceptance_pass / max(1, total), 6),
+            "exact_cost_count": exact_cost_count,
+            "exact_cost_coverage": round(exact_cost_count / max(1, total), 6),
+            "cost_usd_total": round(total_cost, 8),
+            "cost_usd_avg": round(total_cost / max(1, total), 8),
+            "by_owner": by_owner,
+            "latest_metric": metric,
+        }
+    )
+
+    recommendations: list[str] = []
+    if float(summary.get("first_time_pass_rate", 0.0)) < 0.6:
+        recommendations.append(
+            "First-time pass rate is low. Reduce ambiguity in prompts and tighten acceptance criteria."
+        )
+    if float(summary.get("latency_sec_avg", 0.0)) > 180.0:
+        recommendations.append("Average latency is high. Prefer smaller models for test/review lanes where possible.")
+    if float(summary.get("exact_cost_coverage", 0.0)) < 0.8:
+        recommendations.append(
+            "Exact cost coverage is low. Enable provider token usage in agent outputs to avoid estimated costs."
+        )
+    summary["optimization_recommendations"] = recommendations
+    _write_json(path, summary)
+    return summary
 
 def _truncate_text(value: str, limit: int = MAX_CONVERSATION_SNIPPET_CHARS) -> str:
     text = value.strip()
@@ -727,6 +1058,7 @@ def build_agent_prompt(
         "- If you are implementation-owner: provide explicit test requests for Gemini in next_actions.\n"
         "- If you are test-owner: when you find implementation issues, provide concrete fix feedback and hints for Codex in blocker/next_actions.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
+        "- Include optional `usage` object when available: input_tokens, output_tokens, total_tokens, model.\n"
         "- status must be one of: done, partial, blocked.\n"
     )
 
@@ -959,7 +1291,7 @@ def normalize_outcome(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(next_actions, list):
         next_actions = [str(next_actions)]
 
-    return {
+    out = {
         "status": status,
         "summary": str(raw.get("summary", "")).strip(),
         "commit": str(raw.get("commit", "")).strip(),
@@ -967,6 +1299,35 @@ def normalize_outcome(raw: dict[str, Any]) -> dict[str, Any]:
         "next_actions": [str(x) for x in next_actions],
         "blocker": str(raw.get("blocker", "")).strip(),
         "raw_output": str(raw.get("raw_output", "")).strip(),
+    }
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        out["usage"] = usage
+    telemetry = raw.get("_telemetry")
+    if isinstance(telemetry, dict):
+        out["_telemetry"] = telemetry
+    return out
+
+
+def build_attempt_telemetry(
+    *,
+    owner: str,
+    model: str,
+    prompt: str,
+    latency_sec: float,
+    response_text: str,
+    usage: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "owner": owner,
+        "model": model,
+        "latency_sec": round(max(0.0, float(latency_sec)), 6),
+        "prompt_chars": len(prompt),
+        "response_chars": len(response_text),
+        "prompt_tokens_est": estimate_token_count(prompt),
+        "response_tokens_est": estimate_token_count(response_text),
+        "prompt_difficulty_score": prompt_difficulty_score(prompt),
+        "usage": usage,
     }
 
 
@@ -1033,8 +1394,20 @@ def run_codex_task(
         cmd[2:2] = ["--model", codex_model]
 
     _print(f"Running Codex task {task.id}")
+    started = time.monotonic()
     result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
+    latency = time.monotonic() - started
+    model_name = codex_model or codex_cmd
     if result.returncode != 0:
+        usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
+        telemetry = build_attempt_telemetry(
+            owner=task.owner,
+            model=model_name,
+            prompt=prompt,
+            latency_sec=latency,
+            response_text=(result.stdout + "\n" + result.stderr).strip(),
+            usage=usage,
+        )
         append_conversation_event(
             conversation_log_file,
             cycle=cycle,
@@ -1050,11 +1423,21 @@ def run_codex_task(
                 "summary": "Codex command failed",
                 "blocker": (result.stdout + "\n" + result.stderr).strip(),
                 "next_actions": [],
+                "_telemetry": telemetry,
             }
         )
 
     parsed = parse_json_text(output_file.read_text(encoding="utf-8")) if output_file.exists() else None
     if parsed is None:
+        usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
+        telemetry = build_attempt_telemetry(
+            owner=task.owner,
+            model=model_name,
+            prompt=prompt,
+            latency_sec=latency,
+            response_text=(result.stdout + "\n" + result.stderr).strip(),
+            usage=usage,
+        )
         append_conversation_event(
             conversation_log_file,
             cycle=cycle,
@@ -1070,8 +1453,19 @@ def run_codex_task(
                 "summary": "Codex produced non-JSON final output",
                 "blocker": "Expected JSON object in output-last-message file.",
                 "next_actions": [],
+                "_telemetry": telemetry,
             }
         )
+    usage = extract_usage_metrics(parsed, stdout=result.stdout, stderr=result.stderr)
+    parsed["_telemetry"] = build_attempt_telemetry(
+        owner=task.owner,
+        model=model_name,
+        prompt=prompt,
+        latency_sec=latency,
+        response_text=json.dumps(parsed, sort_keys=True),
+        usage=usage,
+    )
+    parsed["usage"] = usage
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -1144,8 +1538,20 @@ def run_gemini_task(
         cmd[1:1] = ["--model", gemini_model]
 
     _print(f"Running Gemini task {task.id}")
+    started = time.monotonic()
     result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
+    latency = time.monotonic() - started
+    model_name = gemini_model or gemini_cmd
     if result.returncode != 0:
+        usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
+        telemetry = build_attempt_telemetry(
+            owner=task.owner,
+            model=model_name,
+            prompt=prompt,
+            latency_sec=latency,
+            response_text=(result.stdout + "\n" + result.stderr).strip(),
+            usage=usage,
+        )
         append_conversation_event(
             conversation_log_file,
             cycle=cycle,
@@ -1161,6 +1567,7 @@ def run_gemini_task(
                 "summary": "Gemini command failed",
                 "blocker": (result.stdout + "\n" + result.stderr).strip(),
                 "next_actions": [],
+                "_telemetry": telemetry,
             }
         )
 
@@ -1172,6 +1579,16 @@ def run_gemini_task(
             "next_actions": [],
             "raw_output": result.stdout.strip(),
         }
+    usage = extract_usage_metrics(parsed, stdout=result.stdout, stderr=result.stderr)
+    parsed["_telemetry"] = build_attempt_telemetry(
+        owner=task.owner,
+        model=model_name,
+        prompt=prompt,
+        latency_sec=latency,
+        response_text=result.stdout.strip(),
+        usage=usage,
+    )
+    parsed["usage"] = usage
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -1237,8 +1654,20 @@ def run_claude_task(
     cmd.extend(["-p", prompt])
 
     _print(f"Running Claude task {task.id}")
+    started = time.monotonic()
     result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
+    latency = time.monotonic() - started
+    model_name = claude_model or claude_cmd
     if result.returncode != 0:
+        usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
+        telemetry = build_attempt_telemetry(
+            owner=task.owner,
+            model=model_name,
+            prompt=prompt,
+            latency_sec=latency,
+            response_text=(result.stdout + "\n" + result.stderr).strip(),
+            usage=usage,
+        )
         append_conversation_event(
             conversation_log_file,
             cycle=cycle,
@@ -1254,6 +1683,7 @@ def run_claude_task(
                 "summary": "Claude command failed",
                 "blocker": (result.stdout + "\n" + result.stderr).strip(),
                 "next_actions": [],
+                "_telemetry": telemetry,
             }
         )
 
@@ -1265,6 +1695,16 @@ def run_claude_task(
             "next_actions": [],
             "raw_output": result.stdout.strip(),
         }
+    usage = extract_usage_metrics(parsed, stdout=result.stdout, stderr=result.stderr)
+    parsed["_telemetry"] = build_attempt_telemetry(
+        owner=task.owner,
+        model=model_name,
+        prompt=prompt,
+        latency_sec=latency,
+        response_text=result.stdout.strip(),
+        usage=usage,
+    )
+    parsed["usage"] = usage
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -1395,6 +1835,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--claude-startup-prompt-file", default="")
     parser.add_argument("--conversation-log-file", default="artifacts/autonomy/conversations.ndjson")
     parser.add_argument("--handoff-dir", default="artifacts/autonomy/handoffs")
+    parser.add_argument("--metrics-file", default="artifacts/autonomy/response_metrics.ndjson")
+    parser.add_argument("--metrics-summary-file", default="artifacts/autonomy/response_metrics_summary.json")
+    parser.add_argument("--pricing-file", default="config/pricing.json")
     parser.add_argument(
         "--continuous",
         action="store_true",
@@ -1439,6 +1882,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     conversation_log_file = Path(args.conversation_log_file).resolve() if args.conversation_log_file else None
     handoff_dir = Path(args.handoff_dir).resolve()
+    metrics_file = Path(args.metrics_file).resolve()
+    metrics_summary_file = Path(args.metrics_summary_file).resolve()
+    pricing_file = Path(args.pricing_file).resolve() if args.pricing_file else None
     dependency_state_file = Path(args.dependency_state_file).resolve() if args.dependency_state_file else None
 
     if not impl_repo.exists():
@@ -1473,6 +1919,7 @@ def main(argv: list[str] | None = None) -> int:
 
     state = load_state(state_file, tasks)
     objective_text = _read_text(objective_file)
+    pricing = load_pricing(pricing_file)
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
     codex_startup_instructions = _read_optional_text(codex_startup_prompt_file)
@@ -1722,6 +2169,58 @@ def main(argv: list[str] | None = None) -> int:
         status = str(outcome.get("status", STATUS_BLOCKED)).lower()
         blocker_text = str(outcome.get("blocker", ""))
         summary_text = str(outcome.get("summary", ""))
+        telemetry = outcome.get("_telemetry", {}) if isinstance(outcome.get("_telemetry", {}), dict) else {}
+        attempt_number = _safe_int(task_state.get("attempts", 0), 0)
+
+        def emit_response_metric(
+            *,
+            validation_passed: bool,
+            quality_score: float,
+            final_status: str,
+            notes: str = "",
+        ) -> None:
+            if not telemetry:
+                return
+            usage_payload = telemetry.get("usage", {}) if isinstance(telemetry.get("usage", {}), dict) else {}
+            cost_fields = compute_response_cost(
+                pricing=pricing,
+                owner=str(task.owner),
+                model=str(telemetry.get("model", task.owner)),
+                usage=usage_payload,
+                prompt_tokens_est=_safe_int(telemetry.get("prompt_tokens_est", 0), 0),
+                response_tokens_est=_safe_int(telemetry.get("response_tokens_est", 0), 0),
+            )
+            metric = {
+                "timestamp": _now_iso(),
+                "cycle": cycle,
+                "task_id": task.id,
+                "owner": task.owner,
+                "attempt": attempt_number,
+                "reported_status": status,
+                "final_status": final_status,
+                "validation_passed": bool(validation_passed),
+                "first_time_pass": bool(validation_passed and attempt_number == 1),
+                "quality_score": round(float(quality_score), 6),
+                "prompt_difficulty_score": _safe_int(telemetry.get("prompt_difficulty_score", 0), 0),
+                "latency_sec": float(telemetry.get("latency_sec", 0.0) or 0.0),
+                "model": str(telemetry.get("model", task.owner)),
+                "prompt_tokens_est": _safe_int(telemetry.get("prompt_tokens_est", 0), 0),
+                "response_tokens_est": _safe_int(telemetry.get("response_tokens_est", 0), 0),
+                "usage_source": str(usage_payload.get("source", "none")),
+                "input_tokens": cost_fields.get("input_tokens"),
+                "output_tokens": cost_fields.get("output_tokens"),
+                "total_tokens": cost_fields.get("total_tokens"),
+                "cost_usd": cost_fields.get("cost_usd"),
+                "cost_exact": bool(cost_fields.get("cost_exact", False)),
+                "cost_source": str(cost_fields.get("cost_source", "none")),
+                "input_rate_per_million": cost_fields.get("input_rate_per_million"),
+                "output_rate_per_million": cost_fields.get("output_rate_per_million"),
+                "summary": summary_text[:800],
+                "blocker": blocker_text[:800],
+                "notes": notes[:800],
+            }
+            append_response_metric(metrics_file, metric)
+            update_response_metrics_summary(metrics_summary_file, metric)
 
         if not ok or status == STATUS_BLOCKED:
             append_conversation_event(
@@ -1790,6 +2289,12 @@ def main(argv: list[str] | None = None) -> int:
                     message="task marked blocked",
                     extra={"attempts": attempts, "error": task_state["last_error"][:300]},
                 )
+            emit_response_metric(
+                validation_passed=False,
+                quality_score=0.0,
+                final_status=str(task_state.get("status", STATUS_PENDING)),
+                notes="agent_blocked_or_failed",
+            )
             save_state(state_file, state)
             continue
 
@@ -1852,6 +2357,12 @@ def main(argv: list[str] | None = None) -> int:
                     event_type="task_done",
                     content=summary_text or "Task completed and validated.",
                 )
+                emit_response_metric(
+                    validation_passed=True,
+                    quality_score=1.0,
+                    final_status=STATUS_DONE,
+                    notes="done_validated",
+                )
             else:
                 retryable = is_retryable_error(details)
                 attempts = _safe_int(task_state.get("attempts", 0), 0)
@@ -1896,6 +2407,12 @@ def main(argv: list[str] | None = None) -> int:
                     owner=task.owner,
                     event_type="task_validation_failed",
                     content=details,
+                )
+                emit_response_metric(
+                    validation_passed=False,
+                    quality_score=0.35,
+                    final_status=str(task_state.get("status", STATUS_PENDING)),
+                    notes="reported_done_but_validation_failed",
                 )
             save_state(state_file, state)
             continue
@@ -1942,6 +2459,12 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=task.id,
                 message="partial retries exhausted",
             )
+        emit_response_metric(
+            validation_passed=False,
+            quality_score=0.5 if task_state.get("status") == STATUS_PENDING else 0.2,
+            final_status=str(task_state.get("status", STATUS_PENDING)),
+            notes="partial_progress",
+        )
         save_state(state_file, state)
 
     _print(f"Reached max cycles: {args.max_cycles}")

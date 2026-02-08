@@ -448,6 +448,103 @@ class RuntimeSafeguardTests(unittest.TestCase):
         run_command.assert_called_once()
         self.assertIn("push verified", details)
 
+    def test_prompt_difficulty_score_increases_with_complexity(self):
+        simple = "Implement one helper."
+        complex_prompt = (
+            "Maybe add recursive merge support, maybe keep details, and include tests?\n"
+            "- Support retries\n"
+            "- Add validation\n"
+            "- Document assumptions\n"
+            "If possible, include benchmarks and edge cases."
+        )
+        self.assertLess(runner.prompt_difficulty_score(simple), runner.prompt_difficulty_score(complex_prompt))
+
+    def test_extract_usage_metrics_reads_payload_and_output(self):
+        payload_usage = runner.extract_usage_metrics(
+            payload={"usage": {"input_tokens": 101, "output_tokens": 52, "total_tokens": 153}}
+        )
+        self.assertEqual(payload_usage["source"], "payload")
+        self.assertEqual(payload_usage["input_tokens"], 101)
+        self.assertEqual(payload_usage["output_tokens"], 52)
+        self.assertEqual(payload_usage["total_tokens"], 153)
+
+        output_usage = runner.extract_usage_metrics(
+            payload={},
+            stdout='{"input_tokens": 11, "output_tokens": 5}',
+        )
+        self.assertEqual(output_usage["source"], "command_output")
+        self.assertEqual(output_usage["total_tokens"], 16)
+
+    def test_compute_response_cost_exact_and_estimated(self):
+        pricing = {
+            "models": {
+                "codex": {"input_per_million": 10.0, "output_per_million": 20.0},
+            }
+        }
+        exact = runner.compute_response_cost(
+            pricing=pricing,
+            owner="codex",
+            model="codex",
+            usage={"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500},
+            prompt_tokens_est=0,
+            response_tokens_est=0,
+        )
+        self.assertAlmostEqual(exact["cost_usd"], 0.02, places=8)
+        self.assertTrue(exact["cost_exact"])
+        self.assertEqual(exact["cost_source"], "exact_usage")
+
+        estimated = runner.compute_response_cost(
+            pricing=pricing,
+            owner="codex",
+            model="codex",
+            usage={"source": "none"},
+            prompt_tokens_est=1000,
+            response_tokens_est=500,
+        )
+        self.assertAlmostEqual(estimated["cost_usd"], 0.02, places=8)
+        self.assertFalse(estimated["cost_exact"])
+        self.assertEqual(estimated["cost_source"], "estimated_tokens")
+
+    def test_update_response_metrics_summary_tracks_prompt_difficulty_and_recommendations(self):
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = pathlib.Path(td) / "summary.json"
+            first = runner.update_response_metrics_summary(
+                summary_path,
+                {
+                    "owner": "gemini",
+                    "quality_score": 0.2,
+                    "latency_sec": 200.0,
+                    "prompt_difficulty_score": 70,
+                    "first_time_pass": False,
+                    "validation_passed": False,
+                    "cost_exact": False,
+                    "cost_usd": 0.1,
+                },
+            )
+            self.assertEqual(first["responses_total"], 1)
+            self.assertAlmostEqual(first["prompt_difficulty_score_avg"], 70.0, places=6)
+            self.assertGreater(len(first["optimization_recommendations"]), 0)
+            self.assertIn("gemini", first["by_owner"])
+
+            second = runner.update_response_metrics_summary(
+                summary_path,
+                {
+                    "owner": "gemini",
+                    "quality_score": 1.0,
+                    "latency_sec": 10.0,
+                    "prompt_difficulty_score": 20,
+                    "first_time_pass": True,
+                    "validation_passed": True,
+                    "cost_exact": True,
+                    "cost_usd": 0.01,
+                },
+            )
+            self.assertEqual(second["responses_total"], 2)
+            self.assertAlmostEqual(second["prompt_difficulty_score_avg"], 45.0, places=6)
+            self.assertIn("quality_score_avg", second["by_owner"]["gemini"])
+            self.assertIn("latency_sec_avg", second["by_owner"]["gemini"])
+            self.assertIn("prompt_difficulty_score_avg", second["by_owner"]["gemini"])
+
     def test_load_tasks_supports_claude_owner(self):
         with tempfile.TemporaryDirectory() as td:
             path = pathlib.Path(td) / "tasks.json"
