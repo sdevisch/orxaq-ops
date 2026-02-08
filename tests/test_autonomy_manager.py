@@ -303,6 +303,10 @@ class ManagerTests(unittest.TestCase):
                     "path": "/tmp/repo",
                     "branch": "main",
                     "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
                     "dirty": False,
                     "changed_files": 0,
                 },
@@ -365,6 +369,10 @@ class ManagerTests(unittest.TestCase):
                         "ok": True,
                         "branch": "main",
                         "head": "abc123",
+                        "upstream": "origin/main",
+                        "ahead": 0,
+                        "behind": 0,
+                        "sync_state": "synced",
                         "dirty": False,
                         "changed_files": 0,
                     },
@@ -378,6 +386,46 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("done=1", text)
         self.assertIn("impl_repo", text)
         self.assertIn("test_repo", text)
+        self.assertIn("sync=synced", text)
+
+    def test_repo_monitor_snapshot_flags_behind_branch(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch("orxaq_autonomy.manager._repo_basic_check", return_value=(True, "ok")), mock.patch(
+                "orxaq_autonomy.manager._git_command",
+                side_effect=[
+                    (True, "main"),
+                    (True, "abc123"),
+                    (True, ""),
+                    (True, "origin/main"),
+                    (True, "0 2"),
+                ],
+            ):
+                payload = manager._repo_monitor_snapshot(repo)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["sync_state"], "behind")
+        self.assertEqual(payload["ahead"], 0)
+        self.assertEqual(payload["behind"], 2)
+        self.assertIn("sync_behind", payload["error"])
+
+    def test_repo_monitor_snapshot_allows_ahead_branch(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch("orxaq_autonomy.manager._repo_basic_check", return_value=(True, "ok")), mock.patch(
+                "orxaq_autonomy.manager._git_command",
+                side_effect=[
+                    (True, "main"),
+                    (True, "abc123"),
+                    (True, ""),
+                    (True, "origin/main"),
+                    (True, "2 0"),
+                ],
+            ):
+                payload = manager._repo_monitor_snapshot(repo)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sync_state"], "ahead")
+        self.assertEqual(payload["ahead"], 2)
+        self.assertEqual(payload["behind"], 0)
 
     def test_supervise_foreground_restarts_after_failure(self):
         with tempfile.TemporaryDirectory() as td:

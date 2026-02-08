@@ -891,6 +891,18 @@ def _git_command(repo: Path, args: list[str], timeout_sec: int = 10) -> tuple[bo
     return False, message
 
 
+def _parse_rev_list_counts(raw: str) -> tuple[int, int] | None:
+    parts = raw.strip().split()
+    if len(parts) != 2:
+        return None
+    try:
+        ahead = int(parts[0])
+        behind = int(parts[1])
+    except ValueError:
+        return None
+    return ahead, behind
+
+
 def _repo_monitor_snapshot(repo: Path) -> dict[str, Any]:
     ok, message = _repo_basic_check(repo)
     if not ok:
@@ -902,12 +914,20 @@ def _repo_monitor_snapshot(repo: Path) -> dict[str, Any]:
             "head": "",
             "dirty": False,
             "changed_files": 0,
+            "upstream": "",
+            "ahead": -1,
+            "behind": -1,
+            "sync_state": "unknown",
         }
 
     branch_ok, branch_value = _git_command(repo, ["rev-parse", "--abbrev-ref", "HEAD"])
     head_ok, head_value = _git_command(repo, ["rev-parse", "--short", "HEAD"])
     dirty_ok, dirty_value = _git_command(repo, ["status", "--porcelain"])
+    upstream_ok, upstream_value = _git_command(repo, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
     changed_files = len([line for line in dirty_value.splitlines() if line.strip()]) if dirty_ok else 0
+    ahead = -1
+    behind = -1
+    sync_state = "unknown"
 
     errors: list[str] = []
     if not branch_ok:
@@ -916,6 +936,29 @@ def _repo_monitor_snapshot(repo: Path) -> dict[str, Any]:
         errors.append(f"head: {head_value}")
     if not dirty_ok:
         errors.append(f"dirty: {dirty_value}")
+    if not upstream_ok:
+        errors.append(f"upstream: {upstream_value}")
+        sync_state = "no_upstream"
+    else:
+        counts_ok, counts_value = _git_command(repo, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        if not counts_ok:
+            errors.append(f"sync: {counts_value}")
+        else:
+            parsed = _parse_rev_list_counts(counts_value)
+            if parsed is None:
+                errors.append(f"sync_parse: {counts_value}")
+            else:
+                ahead, behind = parsed
+                if ahead > 0 and behind > 0:
+                    sync_state = "diverged"
+                    errors.append(f"sync_diverged: ahead={ahead}, behind={behind}")
+                elif ahead > 0:
+                    sync_state = "ahead"
+                elif behind > 0:
+                    sync_state = "behind"
+                    errors.append(f"sync_behind: ahead={ahead}, behind={behind}")
+                else:
+                    sync_state = "synced"
 
     return {
         "path": str(repo),
@@ -925,6 +968,10 @@ def _repo_monitor_snapshot(repo: Path) -> dict[str, Any]:
         "head": head_value if head_ok else "",
         "dirty": bool(changed_files) if dirty_ok else False,
         "changed_files": changed_files,
+        "upstream": upstream_value if upstream_ok else "",
+        "ahead": ahead,
+        "behind": behind,
+        "sync_state": sync_state,
     }
 
 
@@ -1094,6 +1141,10 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
         return (
             f"{label}: branch={payload.get('branch', '')} "
             f"head={payload.get('head', '')} "
+            f"upstream={payload.get('upstream', '')} "
+            f"sync={payload.get('sync_state', '')} "
+            f"ahead={payload.get('ahead', -1)} "
+            f"behind={payload.get('behind', -1)} "
             f"dirty={payload.get('dirty', False)} "
             f"changed_files={payload.get('changed_files', 0)}"
         )
