@@ -1,0 +1,7 @@
+.env.autonomy
+artifacts/
+state/
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
