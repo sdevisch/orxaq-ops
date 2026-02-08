@@ -73,6 +73,9 @@ class CliTests(unittest.TestCase):
                     "responses_total": 3,
                     "quality_score_avg": 0.9,
                     "cost_usd_total": 1.23,
+                    "tokens_total": 4200,
+                    "token_rate_per_minute": 840.0,
+                    "exciting_stat": {"label": "Token Flow", "value": "4,200 tokens"},
                 }
             }
             with mock.patch("orxaq_autonomy.cli.monitor_snapshot", return_value=payload):
@@ -82,6 +85,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             data = json.loads(buffer.getvalue())
             self.assertEqual(data["responses_total"], 3)
+            self.assertEqual(data["tokens_total"], 4200)
+            self.assertEqual(data["exciting_stat"]["label"], "Token Flow")
 
     def test_metrics_command_prints_recommendations(self):
         with tempfile.TemporaryDirectory() as td:

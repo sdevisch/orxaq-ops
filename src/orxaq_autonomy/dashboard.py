@@ -276,6 +276,7 @@ def _dashboard_html(refresh_sec: int) -> str:
 
       <article class="card span-4">
         <h2>Cost &amp; Quality</h2>
+        <div id="excitingStat" class="logline">Most exciting stat: loading...</div>
         <div id="metricsSummary" class="mono">metrics: loading...</div>
         <div id="metricsList" class="repo"></div>
       </article>
@@ -421,15 +422,19 @@ def _dashboard_html(refresh_sec: int) -> str:
       const difficultyAvg = Number(responseMetrics.prompt_difficulty_score_avg || 0);
       const costTotal = Number(responseMetrics.cost_usd_total || 0);
       const costCoverage = Number(responseMetrics.exact_cost_coverage || 0);
+      const excitingStat = responseMetrics.exciting_stat || {{}};
       byId("metricsSummary").textContent =
         `responses: ${{responseCount}} · first-pass: ${{Math.round(firstPassRate * 100)}}% · acceptance: ${{Math.round(acceptanceRate * 100)}}% · avg latency: ${{latencyAvg.toFixed(2)}}s · avg difficulty: ${{difficultyAvg.toFixed(1)}} · total cost: $${{costTotal.toFixed(4)}} · exact cost: ${{Math.round(costCoverage * 100)}}%`;
+      byId("excitingStat").textContent =
+        `Most exciting stat: ${{excitingStat.label || 'Awaiting Data'}} -> ${{excitingStat.value || '0'}}${{excitingStat.detail ? ' · ' + excitingStat.detail : ''}}`;
       const ownerRows = Object.entries(responseMetrics.by_owner || {{}}).map(([owner, payload]) => {{
         const item = payload || {{}};
         const ownerResponses = Number(item.responses || 0);
         const ownerCost = Number(item.cost_usd_total || 0);
         const ownerFirstPass = Number(item.first_time_pass_rate || 0);
         const ownerValidation = Number(item.validation_pass_rate || 0);
-        return `<div class="line"><span class="mono">${{escapeHtml(owner)}}</span> responses=${{ownerResponses}} · first-pass=${{Math.round(ownerFirstPass * 100)}}% · validation=${{Math.round(ownerValidation * 100)}}% · cost=$${{ownerCost.toFixed(4)}}</div>`;
+        const ownerTokens = Number(item.tokens_total || 0);
+        return `<div class="line"><span class="mono">${{escapeHtml(owner)}}</span> responses=${{ownerResponses}} · first-pass=${{Math.round(ownerFirstPass * 100)}}% · validation=${{Math.round(ownerValidation * 100)}}% · tokens=${{ownerTokens}} · cost=$${{ownerCost.toFixed(4)}}</div>`;
       }});
       const recommendations = Array.isArray(responseMetrics.optimization_recommendations)
         ? responseMetrics.optimization_recommendations
@@ -750,7 +755,15 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "prompt_difficulty_score_avg": 0.0,
                 "cost_usd_total": 0.0,
                 "exact_cost_coverage": 0.0,
+                "tokens_total": 0,
+                "token_rate_per_minute": 0.0,
                 "by_owner": {},
+                "exciting_stat": {
+                    "label": "Awaiting Data",
+                    "value": "0",
+                    "detail": "No response metrics recorded yet.",
+                    "kind": "idle",
+                },
                 "optimization_recommendations": [],
                 "ok": False,
                 "errors": [message],

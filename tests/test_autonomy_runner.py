@@ -505,6 +505,22 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertFalse(estimated["cost_exact"])
         self.assertEqual(estimated["cost_source"], "estimated_tokens")
 
+    def test_compute_response_cost_unpriced_still_reports_token_flow(self):
+        pricing = {"models": {"codex": {"input_per_million": 0.0, "output_per_million": 0.0}}}
+        payload = runner.compute_response_cost(
+            pricing=pricing,
+            owner="codex",
+            model="codex",
+            usage={"source": "none"},
+            prompt_tokens_est=321,
+            response_tokens_est=123,
+        )
+        self.assertIsNone(payload["cost_usd"])
+        self.assertEqual(payload["input_tokens"], 321)
+        self.assertEqual(payload["output_tokens"], 123)
+        self.assertEqual(payload["total_tokens"], 444)
+        self.assertEqual(payload["cost_source"], "unpriced_model_estimated_tokens")
+
     def test_update_response_metrics_summary_tracks_prompt_difficulty_and_recommendations(self):
         with tempfile.TemporaryDirectory() as td:
             summary_path = pathlib.Path(td) / "summary.json"
@@ -519,10 +535,16 @@ class RuntimeSafeguardTests(unittest.TestCase):
                     "validation_passed": False,
                     "cost_exact": False,
                     "cost_usd": 0.1,
+                    "token_count_exact": False,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
                 },
             )
             self.assertEqual(first["responses_total"], 1)
             self.assertAlmostEqual(first["prompt_difficulty_score_avg"], 70.0, places=6)
+            self.assertEqual(first["tokens_total"], 150)
+            self.assertAlmostEqual(first["token_rate_per_minute"], 45.0, places=6)
             self.assertGreater(len(first["optimization_recommendations"]), 0)
             self.assertIn("gemini", first["by_owner"])
 
@@ -537,13 +559,20 @@ class RuntimeSafeguardTests(unittest.TestCase):
                     "validation_passed": True,
                     "cost_exact": True,
                     "cost_usd": 0.01,
+                    "token_count_exact": True,
+                    "input_tokens": 40,
+                    "output_tokens": 10,
+                    "total_tokens": 50,
                 },
             )
             self.assertEqual(second["responses_total"], 2)
             self.assertAlmostEqual(second["prompt_difficulty_score_avg"], 45.0, places=6)
+            self.assertEqual(second["tokens_total"], 200)
+            self.assertAlmostEqual(second["token_exact_coverage"], 0.5, places=6)
             self.assertIn("quality_score_avg", second["by_owner"]["gemini"])
             self.assertIn("latency_sec_avg", second["by_owner"]["gemini"])
             self.assertIn("prompt_difficulty_score_avg", second["by_owner"]["gemini"])
+            self.assertIn("tokens_avg", second["by_owner"]["gemini"])
 
     def test_load_tasks_supports_claude_owner(self):
         with tempfile.TemporaryDirectory() as td:

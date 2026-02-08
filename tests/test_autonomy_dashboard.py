@@ -24,6 +24,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Conversations", html)
         self.assertIn("Cost &amp; Quality", html)
         self.assertIn("metricsSummary", html)
+        self.assertIn("excitingStat", html)
         self.assertIn("Resilience Diagnostics", html)
         self.assertIn("renderDiagnostics", html)
         self.assertIn("lane_agents", html)

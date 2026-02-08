@@ -375,18 +375,6 @@ def compute_response_cost(
     rates = _resolve_pricing_entry(pricing, owner=owner, model=model)
     input_rate = float(rates.get("input_per_million", 0.0) or 0.0)
     output_rate = float(rates.get("output_per_million", 0.0) or 0.0)
-    if input_rate <= 0.0 and output_rate <= 0.0:
-        return {
-            "cost_usd": None,
-            "cost_exact": False,
-            "cost_source": "unpriced_model",
-            "input_tokens": usage.get("input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
-            "total_tokens": usage.get("total_tokens"),
-            "input_rate_per_million": input_rate,
-            "output_rate_per_million": output_rate,
-        }
-
     input_tokens = usage.get("input_tokens")
     output_tokens = usage.get("output_tokens")
     cost_exact = input_tokens is not None and output_tokens is not None
@@ -400,6 +388,20 @@ def compute_response_cost(
     total_tokens = usage.get("total_tokens")
     if total_tokens is None and input_tokens is not None and output_tokens is not None:
         total_tokens = int(input_tokens) + int(output_tokens)
+
+    if input_rate <= 0.0 and output_rate <= 0.0:
+        unpriced_source = "unpriced_model_exact_usage" if cost_exact else "unpriced_model_estimated_tokens"
+        return {
+            "cost_usd": None,
+            "cost_exact": bool(cost_exact),
+            "cost_source": unpriced_source,
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "total_tokens": int(total_tokens) if total_tokens is not None else None,
+            "input_rate_per_million": input_rate,
+            "output_rate_per_million": output_rate,
+        }
+
     cost = ((float(input_tokens) * input_rate) + (float(output_tokens) * output_rate)) / 1_000_000.0
     return {
         "cost_usd": round(cost, 8),
@@ -444,6 +446,12 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     )
     exact_cost_count = int(summary.get("exact_cost_count", 0) or 0) + (1 if metric.get("cost_exact", False) else 0)
     total_cost = float(summary.get("cost_usd_total", 0.0) or 0.0) + float(metric.get("cost_usd", 0.0) or 0.0)
+    tokens_total = int(summary.get("tokens_total", 0) or 0) + int(metric.get("total_tokens", 0) or 0)
+    tokens_input_total = int(summary.get("tokens_input_total", 0) or 0) + int(metric.get("input_tokens", 0) or 0)
+    tokens_output_total = int(summary.get("tokens_output_total", 0) or 0) + int(metric.get("output_tokens", 0) or 0)
+    token_exact_count = int(summary.get("token_exact_count", 0) or 0) + (
+        1 if metric.get("token_count_exact", False) else 0
+    )
 
     by_owner = summary.get("by_owner", {})
     if not isinstance(by_owner, dict):
@@ -471,6 +479,10 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     owner_counts["cost_usd_total"] = float(owner_counts.get("cost_usd_total", 0.0) or 0.0) + float(
         metric.get("cost_usd", 0.0) or 0.0
     )
+    owner_counts["tokens_total"] = int(owner_counts.get("tokens_total", 0) or 0) + int(metric.get("total_tokens", 0) or 0)
+    owner_counts["token_exact_count"] = int(owner_counts.get("token_exact_count", 0) or 0) + (
+        1 if metric.get("token_count_exact", False) else 0
+    )
     owner_responses = int(owner_counts.get("responses", 0) or 0)
     owner_counts["quality_score_avg"] = round(
         float(owner_counts.get("quality_score_sum", 0.0) or 0.0) / max(1, owner_responses),
@@ -484,7 +496,16 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
         float(owner_counts.get("prompt_difficulty_score_sum", 0.0) or 0.0) / max(1, owner_responses),
         6,
     )
+    owner_counts["tokens_avg"] = round(float(owner_counts.get("tokens_total", 0) or 0) / max(1, owner_responses), 6)
+    owner_counts["token_exact_coverage"] = round(
+        float(owner_counts.get("token_exact_count", 0) or 0) / max(1, owner_responses),
+        6,
+    )
     by_owner[owner] = owner_counts
+
+    token_rate_per_minute = 0.0
+    if latency_sum > 0.0:
+        token_rate_per_minute = (float(tokens_total) / latency_sum) * 60.0
 
     summary.update(
         {
@@ -504,6 +525,13 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
             "exact_cost_coverage": round(exact_cost_count / max(1, total), 6),
             "cost_usd_total": round(total_cost, 8),
             "cost_usd_avg": round(total_cost / max(1, total), 8),
+            "tokens_total": tokens_total,
+            "tokens_input_total": tokens_input_total,
+            "tokens_output_total": tokens_output_total,
+            "tokens_avg": round(float(tokens_total) / max(1, total), 6),
+            "token_exact_count": token_exact_count,
+            "token_exact_coverage": round(float(token_exact_count) / max(1, total), 6),
+            "token_rate_per_minute": round(token_rate_per_minute, 6),
             "by_owner": by_owner,
             "latest_metric": metric,
         }
@@ -519,6 +547,10 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     if float(summary.get("exact_cost_coverage", 0.0)) < 0.8:
         recommendations.append(
             "Exact cost coverage is low. Enable provider token usage in agent outputs to avoid estimated costs."
+        )
+    if float(summary.get("token_exact_coverage", 0.0)) < 0.6:
+        recommendations.append(
+            "Token exact coverage is low. Capture provider token counts to strengthen throughput telemetry."
         )
     summary["optimization_recommendations"] = recommendations
     _write_json(path, summary)
@@ -2207,6 +2239,11 @@ def main(argv: list[str] | None = None) -> int:
                 "prompt_tokens_est": _safe_int(telemetry.get("prompt_tokens_est", 0), 0),
                 "response_tokens_est": _safe_int(telemetry.get("response_tokens_est", 0), 0),
                 "usage_source": str(usage_payload.get("source", "none")),
+                "token_count_exact": bool(
+                    usage_payload.get("source", "none") in {"payload", "command_output"}
+                    and usage_payload.get("input_tokens") is not None
+                    and usage_payload.get("output_tokens") is not None
+                ),
                 "input_tokens": cost_fields.get("input_tokens"),
                 "output_tokens": cost_fields.get("output_tokens"),
                 "total_tokens": cost_fields.get("total_tokens"),

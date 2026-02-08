@@ -322,6 +322,10 @@ class ManagerTests(unittest.TestCase):
                         "quality_score_sum": 3.0,
                         "latency_sec_sum": 20.0,
                         "prompt_difficulty_score_sum": 120.0,
+                        "tokens_total": 5000,
+                        "tokens_input_total": 3500,
+                        "tokens_output_total": 1500,
+                        "token_exact_count": 3,
                         "first_time_pass_count": 3,
                         "acceptance_pass_count": 3,
                         "exact_cost_count": 2,
@@ -332,6 +336,7 @@ class ManagerTests(unittest.TestCase):
                                 "first_time_pass": 3,
                                 "validation_passed": 3,
                                 "cost_usd_total": 1.25,
+                                "tokens_total": 5000,
                             }
                         },
                     }
@@ -346,6 +351,9 @@ class ManagerTests(unittest.TestCase):
             self.assertAlmostEqual(metrics["latency_sec_avg"], 5.0, places=6)
             self.assertAlmostEqual(metrics["prompt_difficulty_score_avg"], 30.0, places=6)
             self.assertAlmostEqual(metrics["cost_usd_total"], 1.25, places=8)
+            self.assertEqual(metrics["tokens_total"], 5000)
+            self.assertAlmostEqual(metrics["token_rate_per_minute"], 15000.0, places=6)
+            self.assertEqual(metrics["exciting_stat"]["label"], "Token Flow")
             self.assertIn("codex", metrics["by_owner"])
 
     def test_monitor_snapshot_retains_output_when_lane_snapshot_fails(self):
@@ -460,6 +468,7 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("test_repo", text)
         self.assertIn("sync=synced", text)
         self.assertIn("handoffs: to_codex=3 to_gemini=1", text)
+        self.assertIn("exciting_stat:", text)
 
     def test_repo_monitor_snapshot_flags_behind_branch(self):
         with tempfile.TemporaryDirectory() as td:

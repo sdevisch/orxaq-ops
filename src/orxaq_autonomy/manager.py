@@ -1035,6 +1035,38 @@ def _float_value(raw: Any, default: float = 0.0) -> float:
         return default
 
 
+def _build_exciting_stat(metrics: dict[str, Any]) -> dict[str, Any]:
+    responses_total = _int_value(metrics.get("responses_total", 0), 0)
+    tokens_total = _int_value(metrics.get("tokens_total", 0), 0)
+    token_rate_per_minute = _float_value(metrics.get("token_rate_per_minute", 0.0), 0.0)
+    first_time_pass_rate = _float_value(metrics.get("first_time_pass_rate", 0.0), 0.0)
+    quality_score_avg = _float_value(metrics.get("quality_score_avg", 0.0), 0.0)
+
+    if tokens_total > 0:
+        return {
+            "label": "Token Flow",
+            "value": f"{tokens_total:,} tokens",
+            "detail": (
+                f"{token_rate_per_minute:.1f} tokens/min across {responses_total} responses "
+                f"(exact coverage {round(_float_value(metrics.get('token_exact_coverage', 0.0), 0.0) * 100)}%)"
+            ),
+            "kind": "throughput",
+        }
+    if responses_total > 0:
+        return {
+            "label": "First-Time Pass",
+            "value": f"{first_time_pass_rate * 100:.1f}%",
+            "detail": f"quality={quality_score_avg:.2f} across {responses_total} responses",
+            "kind": "quality",
+        }
+    return {
+        "label": "Awaiting Data",
+        "value": "0",
+        "detail": "No response metrics recorded yet.",
+        "kind": "idle",
+    }
+
+
 def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str, Any]]) -> dict[str, Any]:
     candidate_paths: list[Path] = [config.metrics_summary_file]
     for lane in lane_items:
@@ -1067,6 +1099,10 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
     acceptance_pass_count = 0
     exact_cost_count = 0
     cost_usd_total = 0.0
+    tokens_total = 0
+    tokens_input_total = 0
+    tokens_output_total = 0
+    token_exact_count = 0
     currency = "USD"
 
     for path in paths:
@@ -1076,6 +1112,7 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             "missing": False,
             "responses_total": 0,
             "cost_usd_total": 0.0,
+            "tokens_total": 0,
             "error": "",
         }
         if not path.exists():
@@ -1126,6 +1163,13 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             0,
         )
         source_cost = _float_value(summary.get("cost_usd_total", 0.0), 0.0)
+        source_tokens_total = _int_value(summary.get("tokens_total", 0), 0)
+        source_tokens_input_total = _int_value(summary.get("tokens_input_total", 0), 0)
+        source_tokens_output_total = _int_value(summary.get("tokens_output_total", 0), 0)
+        source_token_exact_count = _int_value(
+            summary.get("token_exact_count", round(_float_value(summary.get("token_exact_coverage", 0.0), 0.0) * source_responses)),
+            0,
+        )
 
         responses_total += source_responses
         quality_sum += source_quality_sum
@@ -1135,9 +1179,14 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         acceptance_pass_count += source_acceptance_pass
         exact_cost_count += source_exact_cost
         cost_usd_total += source_cost
+        tokens_total += source_tokens_total
+        tokens_input_total += source_tokens_input_total
+        tokens_output_total += source_tokens_output_total
+        token_exact_count += source_token_exact_count
 
         report["responses_total"] = source_responses
         report["cost_usd_total"] = round(source_cost, 8)
+        report["tokens_total"] = source_tokens_total
         reports.append(report)
 
         owner_map = summary.get("by_owner", {})
@@ -1146,7 +1195,16 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
                 if not isinstance(owner_payload, dict):
                     continue
                 owner = str(owner_name)
-                aggregate_owner = by_owner.get(owner, {"responses": 0, "first_time_pass": 0, "validation_passed": 0, "cost_usd_total": 0.0})
+                aggregate_owner = by_owner.get(
+                    owner,
+                    {
+                        "responses": 0,
+                        "first_time_pass": 0,
+                        "validation_passed": 0,
+                        "cost_usd_total": 0.0,
+                        "tokens_total": 0,
+                    },
+                )
                 aggregate_owner["responses"] = _int_value(aggregate_owner.get("responses", 0), 0) + _int_value(
                     owner_payload.get("responses", 0),
                     0,
@@ -1162,6 +1220,10 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
                 aggregate_owner["cost_usd_total"] = _float_value(aggregate_owner.get("cost_usd_total", 0.0), 0.0) + _float_value(
                     owner_payload.get("cost_usd_total", 0.0),
                     0.0,
+                )
+                aggregate_owner["tokens_total"] = _int_value(aggregate_owner.get("tokens_total", 0), 0) + _int_value(
+                    owner_payload.get("tokens_total", 0),
+                    0,
                 )
                 by_owner[owner] = aggregate_owner
 
@@ -1189,8 +1251,17 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             6,
         )
         owner_payload["cost_usd_total"] = round(_float_value(owner_payload.get("cost_usd_total", 0.0), 0.0), 8)
+        owner_payload["tokens_total"] = _int_value(owner_payload.get("tokens_total", 0), 0)
+        owner_payload["tokens_avg"] = round(
+            _int_value(owner_payload.get("tokens_total", 0), 0) / owner_responses,
+            6,
+        )
 
     coverage = round(exact_cost_count / max(1, responses_total), 6)
+    token_exact_coverage = round(token_exact_count / max(1, responses_total), 6)
+    token_rate_per_minute = 0.0
+    if latency_sum > 0.0:
+        token_rate_per_minute = (float(tokens_total) / latency_sum) * 60.0
     snapshot = {
         "timestamp": _now_iso(),
         "summary_file": str(config.metrics_summary_file),
@@ -1210,11 +1281,19 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         "exact_cost_coverage": coverage,
         "cost_usd_total": round(cost_usd_total, 8),
         "cost_usd_avg": round(cost_usd_total / max(1, responses_total), 8),
+        "tokens_total": tokens_total,
+        "tokens_input_total": tokens_input_total,
+        "tokens_output_total": tokens_output_total,
+        "tokens_avg": round(tokens_total / max(1, responses_total), 6),
+        "token_exact_count": token_exact_count,
+        "token_exact_coverage": token_exact_coverage,
+        "token_rate_per_minute": round(token_rate_per_minute, 6),
         "currency": currency,
         "by_owner": by_owner,
         "latest_metric": latest_metric,
         "optimization_recommendations": recommendations,
     }
+    snapshot["exciting_stat"] = _build_exciting_stat(snapshot)
     return snapshot
 
 
@@ -1375,6 +1454,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     handoffs = snapshot.get("handoffs", {})
     lanes = snapshot.get("lanes", {})
     response_metrics = snapshot.get("response_metrics", {})
+    exciting_stat = response_metrics.get("exciting_stat", {}) if isinstance(response_metrics.get("exciting_stat", {}), dict) else {}
     conversations = snapshot.get("conversations", {})
     diagnostics = snapshot.get("diagnostics", {})
     impl = repos.get("implementation", {})
@@ -1428,6 +1508,10 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
             f"first_time_pass_rate={response_metrics.get('first_time_pass_rate', 0.0)} "
             f"latency_avg={response_metrics.get('latency_sec_avg', 0.0)}s "
             f"cost_total=${response_metrics.get('cost_usd_total', 0.0)}"
+        ),
+        (
+            f"exciting_stat: {exciting_stat.get('label', 'n/a')}={exciting_stat.get('value', 'n/a')} "
+            f"({exciting_stat.get('detail', '')})"
         ),
         _repo_line("impl_repo", impl),
         _repo_line("test_repo", tests),
