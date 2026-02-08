@@ -23,7 +23,8 @@ cp .env.autonomy.example .env.autonomy
 
 Edit `.env.autonomy` and set:
 
-- `OPENAI_API_KEY` (required)
+- `GEMINI_API_KEY` (required unless `~/.gemini/settings.json` is already configured)
+- `OPENAI_API_KEY` (optional if `codex login` is already configured)
 - `ORXAQ_IMPL_REPO` (optional, defaults to `../orxaq`)
 - `ORXAQ_TEST_REPO` (optional, defaults to `../orxaq_gemini`)
 

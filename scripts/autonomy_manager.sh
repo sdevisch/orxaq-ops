@@ -31,10 +31,32 @@ require_bins() {
 }
 
 check_key() {
-  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "OPENAI_API_KEY is not set. Add it to $ENV_FILE or export it in your shell."
-    exit 1
+  if [[ -n "${OPENAI_API_KEY:-}" && "${OPENAI_API_KEY:-}" != "replace_me" ]]; then
+    return
   fi
+  if codex login status >/dev/null 2>&1; then
+    return
+  fi
+  echo "Codex auth missing. Set OPENAI_API_KEY in $ENV_FILE or run: codex login"
+  exit 1
+}
+
+check_gemini_auth() {
+  if [[ -n "${GEMINI_API_KEY:-}" && "${GEMINI_API_KEY:-}" != "replace_me" ]]; then
+    return
+  fi
+  if [[ "${GOOGLE_GENAI_USE_VERTEXAI:-}" == "true" || "${GOOGLE_GENAI_USE_GCA:-}" == "true" ]]; then
+    return
+  fi
+
+  if [[ -f "$HOME/.gemini/settings.json" ]] && grep -q '"selectedType"' "$HOME/.gemini/settings.json"; then
+    return
+  fi
+
+  echo "Gemini auth missing."
+  echo "Set GEMINI_API_KEY (or GOOGLE_GENAI_USE_VERTEXAI/GOOGLE_GENAI_USE_GCA) in $ENV_FILE,"
+  echo "or configure ~/.gemini/settings.json with security.auth.selectedType."
+  exit 1
 }
 
 require_python() {
@@ -65,6 +87,7 @@ run_foreground() {
   load_env
   require_bins
   check_key
+  check_gemini_auth
   require_python
   cd "$ROOT_DIR"
   mkdir -p "$AUTONOMY_DIR"
