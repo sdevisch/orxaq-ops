@@ -150,6 +150,91 @@ class SchedulingTests(unittest.TestCase):
         self.assertGreater(entry["retryable_failures"], 0)
         self.assertTrue(entry["not_before"])
 
+    def test_recover_deadlocked_tasks_reopens_dependency_and_unblocks_blocked(self):
+        impl = runner.Task(
+            id="impl",
+            owner="codex",
+            priority=1,
+            title="impl",
+            description="impl",
+            depends_on=[],
+            acceptance=[],
+        )
+        tests = runner.Task(
+            id="tests",
+            owner="gemini",
+            priority=2,
+            title="tests",
+            description="tests",
+            depends_on=["impl"],
+            acceptance=[],
+        )
+        state = {
+            "impl": {
+                "status": runner.STATUS_DONE,
+                "attempts": 1,
+                "retryable_failures": 0,
+                "deadlock_recoveries": 0,
+                "deadlock_reopens": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "",
+                "owner": "codex",
+            },
+            "tests": {
+                "status": runner.STATUS_BLOCKED,
+                "attempts": 8,
+                "retryable_failures": 0,
+                "deadlock_recoveries": 0,
+                "deadlock_reopens": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "failing edge case",
+                "owner": "gemini",
+            },
+        }
+        payload = runner.recover_deadlocked_tasks(tasks=[impl, tests], state=state)
+        self.assertTrue(payload["changed"])
+        self.assertIn("impl", payload["reopened_tasks"])
+        self.assertIn("tests", payload["unblocked_tasks"])
+        self.assertEqual(state["impl"]["status"], runner.STATUS_PENDING)
+        self.assertEqual(state["tests"]["status"], runner.STATUS_PENDING)
+
+    def test_recover_deadlocked_tasks_respects_recovery_limit(self):
+        blocked = runner.Task(
+            id="blocked",
+            owner="gemini",
+            priority=1,
+            title="blocked",
+            description="blocked",
+            depends_on=[],
+            acceptance=[],
+        )
+        state = {
+            "blocked": {
+                "status": runner.STATUS_BLOCKED,
+                "attempts": 9,
+                "retryable_failures": 0,
+                "deadlock_recoveries": 3,
+                "deadlock_reopens": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "persisting issue",
+                "owner": "gemini",
+            }
+        }
+        payload = runner.recover_deadlocked_tasks(
+            tasks=[blocked],
+            state=state,
+            max_recoveries_per_task=3,
+        )
+        self.assertFalse(payload["changed"])
+        self.assertEqual(payload["reason"], "recovery_limits_reached")
+        self.assertEqual(state["blocked"]["status"], runner.STATUS_BLOCKED)
+
     def test_recycle_tasks_for_continuous_mode_resets_done_tasks(self):
         task = runner.Task(
             id="task-a",

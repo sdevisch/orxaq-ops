@@ -389,7 +389,9 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("pending").textContent = pending;
       byId("blocked").textContent = blocked;
       byId("unknown").textContent = unknown;
-      byId("activeTasks").textContent = `active_tasks: ${{(progress.active_tasks || []).join(", ") || "none"}}`;
+      const progressSource = String(progress.source || "primary_state");
+      byId("activeTasks").textContent =
+        `active_tasks: ${{(progress.active_tasks || []).join(", ") || "none"}} · blocked: ${{(progress.blocked_tasks || []).join(", ") || "none"}} · source=${{progressSource}}`;
 
       byId("taskBar").style.setProperty("--done", pct(done, total) + "%");
       byId("taskBar").style.setProperty("--in_progress", pct(inProgress, total) + "%");

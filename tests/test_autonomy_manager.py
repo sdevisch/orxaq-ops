@@ -283,6 +283,7 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("handoffs", snapshot)
             self.assertIn("runtime", snapshot)
             self.assertIn("effective_agents_running", snapshot["runtime"])
+            self.assertIn("source", snapshot["progress"])
 
     def test_monitor_snapshot_reports_handoff_counts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -396,6 +397,41 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["lanes"]["ok"])
             self.assertIn("lane source unavailable", snapshot["lanes"]["errors"][0])
 
+    def test_monitor_snapshot_prefers_lane_progress_when_available(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "task-a": {"status": "done"},
+                        "task-b": {"status": "done"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lane_payload = {
+                "ok": True,
+                "errors": [],
+                "running_count": 1,
+                "total_count": 1,
+                "lanes": [
+                    {
+                        "id": "lane-a",
+                        "owner": "codex",
+                        "running": True,
+                        "health": "ok",
+                        "state_counts": {"pending": 1, "in_progress": 1, "done": 0, "blocked": 0, "unknown": 0},
+                        "task_total": 2,
+                    }
+                ],
+            }
+            with mock.patch("orxaq_autonomy.manager.lane_status_snapshot", return_value=lane_payload):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(snapshot["progress"]["source"], "lane_states")
+            self.assertEqual(snapshot["progress"]["counts"]["pending"], 1)
+            self.assertEqual(snapshot["progress"]["counts"]["in_progress"], 1)
+
     def test_dashboard_status_snapshot_defaults(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -403,6 +439,7 @@ class ManagerTests(unittest.TestCase):
             snapshot = manager.dashboard_status_snapshot(cfg)
             self.assertFalse(snapshot["running"])
             self.assertEqual(snapshot["pid"], None)
+            self.assertIn("build_current", snapshot)
 
     def test_start_dashboard_background_writes_pid_and_meta(self):
         with tempfile.TemporaryDirectory() as td:
@@ -423,6 +460,8 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(snapshot["running"])
             self.assertEqual(snapshot["pid"], 4321)
             self.assertTrue(cfg.dashboard_meta_file.exists())
+            meta = json.loads(cfg.dashboard_meta_file.read_text(encoding="utf-8"))
+            self.assertIn("build_id", meta)
 
     def test_stop_dashboard_background_terminates_pid(self):
         with tempfile.TemporaryDirectory() as td:
@@ -433,6 +472,32 @@ class ManagerTests(unittest.TestCase):
                 snapshot = manager.stop_dashboard_background(cfg)
             terminate.assert_called_once_with(777)
             self.assertFalse(snapshot["running"])
+
+    def test_ensure_dashboard_background_restarts_when_build_is_stale(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            stale_snapshot = {
+                "running": True,
+                "build_current": False,
+                "pid": 222,
+                "url": "http://127.0.0.1:8765/",
+            }
+            fresh_snapshot = {"running": True, "pid": 333, "url": "http://127.0.0.1:8765/", "build_current": True}
+            with mock.patch(
+                "orxaq_autonomy.manager.dashboard_status_snapshot",
+                return_value=stale_snapshot,
+            ), mock.patch(
+                "orxaq_autonomy.manager.stop_dashboard_background",
+                return_value={"running": False},
+            ) as stop_dashboard, mock.patch(
+                "orxaq_autonomy.manager.start_dashboard_background",
+                return_value=fresh_snapshot,
+            ) as start_dashboard:
+                snapshot = manager.ensure_dashboard_background(cfg, open_browser=False)
+            stop_dashboard.assert_called_once()
+            start_dashboard.assert_called_once()
+            self.assertTrue(snapshot["running"])
 
     def test_render_monitor_text_contains_key_fields(self):
         text = manager.render_monitor_text(
@@ -1039,6 +1104,53 @@ class ManagerTests(unittest.TestCase):
                 payload = manager.ensure_lanes_background(cfg)
             self.assertEqual(payload["started_count"], 1)
             self.assertEqual(payload["skipped_count"], 0)
+            start.assert_called_once_with(cfg, "lane-a")
+
+    def test_ensure_lanes_background_restarts_running_lane_on_build_update(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            lanes_file = root / "config" / "lanes.json"
+            lanes_file.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.stop_lane_background", return_value={"id": "lane-a", "running": False}) as stop, mock.patch(
+                "orxaq_autonomy.manager.start_lane_background",
+                return_value={"id": "lane-a", "pid": 555},
+            ) as start, mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "lanes": [
+                        {
+                            "id": "lane-a",
+                            "running": True,
+                            "heartbeat_stale": False,
+                            "build_current": False,
+                            "state_counts": {"done": 0, "pending": 1, "in_progress": 0, "blocked": 0},
+                            "task_total": 1,
+                        }
+                    ]
+                },
+            ):
+                payload = manager.ensure_lanes_background(cfg)
+            self.assertEqual(payload["restarted_count"], 1)
+            stop.assert_called_once_with(cfg, "lane-a", reason="build_update")
             start.assert_called_once_with(cfg, "lane-a")
 
     def test_stop_lane_background_marks_pause_flag(self):

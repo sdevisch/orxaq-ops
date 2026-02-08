@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -761,11 +762,54 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _autonomy_runtime_build_id(config: ManagerConfig, *, include_dashboard: bool = True) -> str:
+    hasher = hashlib.sha256()
+    files = ["src/orxaq_autonomy/manager.py", "src/orxaq_autonomy/cli.py", "src/orxaq_autonomy/runner.py"]
+    if include_dashboard:
+        files.append("src/orxaq_autonomy/dashboard.py")
+    for rel in files:
+        path = (config.root_dir / rel).resolve()
+        hasher.update(rel.encode("utf-8"))
+        if path.exists():
+            hasher.update(path.read_bytes())
+        else:
+            hasher.update(b"missing")
+    return hasher.hexdigest()[:12]
+
+
+def _dashboard_build_id(config: ManagerConfig) -> str:
+    return _autonomy_runtime_build_id(config, include_dashboard=True)
+
+
+def _lane_build_id(config: ManagerConfig, lane: dict[str, Any]) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(_autonomy_runtime_build_id(config, include_dashboard=False).encode("utf-8"))
+    lane_keys = (
+        "id",
+        "owner",
+        "tasks_file",
+        "objective_file",
+        "impl_repo",
+        "test_repo",
+        "metrics_file",
+        "metrics_summary_file",
+        "pricing_file",
+    )
+    for key in lane_keys:
+        hasher.update(str(key).encode("utf-8"))
+        hasher.update(str(lane.get(key, "")).encode("utf-8"))
+    for item in lane.get("validate_commands", []):
+        hasher.update(str(item).encode("utf-8"))
+    return hasher.hexdigest()[:12]
+
+
 def dashboard_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     pid = _read_pid(config.dashboard_pid_file)
     running = _pid_running(pid)
     meta = _read_json_file(config.dashboard_meta_file)
     url = str(meta.get("url", "")).strip()
+    build_id = str(meta.get("build_id", "")).strip()
+    expected_build_id = _dashboard_build_id(config)
 
     # Best-effort: update URL from log banner if available.
     if config.dashboard_log_file.exists():
@@ -781,6 +825,9 @@ def dashboard_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "host": str(meta.get("host", "")),
         "port": int(meta.get("port", 0) or 0),
         "refresh_sec": int(meta.get("refresh_sec", 0) or 0),
+        "build_id": build_id,
+        "expected_build_id": expected_build_id,
+        "build_current": bool(build_id and build_id == expected_build_id),
         "log_file": str(config.dashboard_log_file),
         "pid_file": str(config.dashboard_pid_file),
         "meta_file": str(config.dashboard_meta_file),
@@ -845,6 +892,7 @@ def start_dashboard_background(
             "port": int(port),
             "refresh_sec": int(refresh_sec),
             "url": f"http://{host}:{int(port)}/",
+            "build_id": _dashboard_build_id(config),
         },
     )
     time.sleep(0.7)
@@ -871,8 +919,10 @@ def ensure_dashboard_background(
     open_browser: bool = False,
 ) -> dict[str, Any]:
     snapshot = dashboard_status_snapshot(config)
-    if snapshot["running"]:
+    if snapshot["running"] and snapshot.get("build_current", True):
         return snapshot
+    if snapshot["running"]:
+        stop_dashboard_background(config)
     return start_dashboard_background(
         config,
         host=host,
@@ -1018,6 +1068,46 @@ def _state_progress_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "counts": counts,
         "active_tasks": sorted(active_tasks),
         "blocked_tasks": sorted(blocked_tasks),
+    }
+
+
+def _combined_progress_snapshot(config: ManagerConfig, lanes: dict[str, Any]) -> dict[str, Any]:
+    primary = _state_progress_snapshot(config)
+    lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
+    if not lane_items:
+        primary["source"] = "primary_state"
+        return primary
+
+    counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
+    active_tasks: list[str] = []
+    blocked_tasks: list[str] = []
+    task_total = 0
+    for lane in lane_items:
+        if not isinstance(lane, dict):
+            continue
+        lane_counts = lane.get("state_counts", {})
+        if not isinstance(lane_counts, dict):
+            continue
+        for key in counts:
+            counts[key] += _int_value(lane_counts.get(key, 0), 0)
+        task_total += _int_value(lane.get("task_total", 0), 0)
+        lane_id = str(lane.get("id", "")).strip() or "unknown"
+        if _int_value(lane_counts.get("in_progress", 0), 0) > 0:
+            active_tasks.append(lane_id)
+        if _int_value(lane_counts.get("blocked", 0), 0) > 0:
+            blocked_tasks.append(lane_id)
+
+    if sum(counts.values()) == 0 and task_total == 0:
+        primary["source"] = "primary_state"
+        return primary
+
+    return {
+        "counts": counts,
+        "active_tasks": sorted(set(active_tasks)),
+        "blocked_tasks": sorted(set(blocked_tasks)),
+        "source": "lane_states",
+        "lane_task_total": task_total,
+        "primary_state_counts": primary.get("counts", {}),
     }
 
 
@@ -1299,7 +1389,6 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
 
 def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     status = status_snapshot(config)
-    progress = _state_progress_snapshot(config)
     diagnostics: dict[str, Any] = {"ok": True, "errors": [], "sources": {}}
 
     def _mark_source(name: str, ok: bool, error: str = "") -> None:
@@ -1324,6 +1413,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         lanes["errors"] = [str(err)]
         lanes["error"] = str(err)
     _mark_source("lanes", bool(lanes.get("ok", False)), "; ".join(lanes.get("errors", [])))
+    progress = _combined_progress_snapshot(config, lanes)
 
     conv: dict[str, Any] = {
         "timestamp": _now_iso(),
@@ -2019,6 +2109,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     running = True
                     _write_pid(pid_path, lock_pid)
             meta = _read_json_file(meta_path)
+            expected_build_id = _lane_build_id(config, lane)
+            build_id = str(meta.get("build_id", "")).strip()
+            build_current = bool(build_id and build_id == expected_build_id)
             paused = pause_path.exists()
             state_progress = _read_lane_state_progress(Path(lane["state_file"]), Path(lane["tasks_file"]))
             state_counts = state_progress["counts"]
@@ -2064,6 +2157,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "heartbeat_age_sec": heartbeat_age_sec,
                     "heartbeat_stale": heartbeat_stale,
                     "paused": paused,
+                    "build_id": build_id,
+                    "expected_build_id": expected_build_id,
+                    "build_current": build_current,
                     "state_counts": state_counts,
                     "task_total": int(state_progress.get("task_total", 0)),
                     "state_entries": int(state_progress.get("state_entries", 0)),
@@ -2104,6 +2200,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "heartbeat_age_sec": -1,
                     "heartbeat_stale": False,
                     "paused": False,
+                    "build_id": "",
+                    "expected_build_id": _lane_build_id(config, lane),
+                    "build_current": False,
                     "state_counts": {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 1},
                     "task_total": 0,
                     "state_entries": 0,
@@ -2321,6 +2420,7 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "metrics_file": str(lane["metrics_file"]),
             "metrics_summary_file": str(lane["metrics_summary_file"]),
             "pricing_file": str(lane["pricing_file"]),
+            "build_id": _lane_build_id(config, lane),
             "exclusive_paths": lane["exclusive_paths"],
         },
     )
@@ -2399,18 +2499,20 @@ def ensure_lanes_background(config: ManagerConfig) -> dict[str, Any]:
         current = by_id.get(lane_id, {})
         running = bool(current.get("running", False))
         stale = bool(current.get("heartbeat_stale", False))
+        build_current = bool(current.get("build_current", False))
         if pause_file.exists():
             skipped.append({"id": lane_id, "reason": "manually_paused"})
             continue
-        if running and not stale:
+        if running and not stale and build_current:
             ensured.append({"id": lane_id, "status": "running"})
             continue
         try:
-            if running and stale:
-                stop_lane_background(config, lane_id, reason="stale_restart")
+            if running and (stale or not build_current):
+                reason = "stale_heartbeat" if stale else "build_update"
+                stop_lane_background(config, lane_id, reason=reason)
                 started_lane = start_lane_background(config, lane_id)
                 restarted.append({"id": lane_id, "status": "restarted", "pid": started_lane.get("pid")})
-                _append_lane_event(config, lane_id, "auto_restarted", {"reason": "stale_heartbeat"})
+                _append_lane_event(config, lane_id, "auto_restarted", {"reason": reason})
             else:
                 started_lane = start_lane_background(config, lane_id)
                 started.append({"id": lane_id, "status": "started", "pid": started_lane.get("pid")})

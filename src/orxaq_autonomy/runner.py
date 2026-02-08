@@ -884,6 +884,8 @@ def load_state(path: Path, tasks: list[Task]) -> dict[str, dict[str, Any]]:
             "status": status,
             "attempts": _safe_int(entry.get("attempts", 0), 0),
             "retryable_failures": _safe_int(entry.get("retryable_failures", 0), 0),
+            "deadlock_recoveries": _safe_int(entry.get("deadlock_recoveries", 0), 0),
+            "deadlock_reopens": _safe_int(entry.get("deadlock_reopens", 0), 0),
             "not_before": str(entry.get("not_before", "")),
             "last_update": str(entry.get("last_update", "")),
             "last_summary": str(entry.get("last_summary", "")),
@@ -1013,6 +1015,86 @@ def soonest_pending_time(
         if soonest is None or not_before < soonest:
             soonest = not_before
     return soonest
+
+
+def recover_deadlocked_tasks(
+    *,
+    tasks: list[Task],
+    state: dict[str, dict[str, Any]],
+    dependency_state: dict[str, dict[str, Any]] | None = None,
+    max_recoveries_per_task: int = 3,
+) -> dict[str, Any]:
+    task_by_id = {task.id: task for task in tasks}
+    blocked_tasks = [task for task in tasks if state.get(task.id, {}).get("status") == STATUS_BLOCKED]
+    if not blocked_tasks:
+        return {"changed": False, "reopened_tasks": [], "unblocked_tasks": [], "reason": "no_blocked_tasks"}
+
+    reopened_tasks: list[str] = []
+    unblocked_tasks: list[str] = []
+    changed = False
+    now_iso = _now_iso()
+    blocked_tasks.sort(key=lambda task: (task.priority, OWNER_PRIORITY.get(task.owner, 99), task.id))
+
+    for blocked_task in blocked_tasks:
+        blocked_entry = state.get(blocked_task.id, {})
+        blocked_recoveries = _safe_int(blocked_entry.get("deadlock_recoveries", 0), 0)
+        if blocked_recoveries >= max_recoveries_per_task:
+            continue
+
+        # Prefer reopening direct dependency tasks owned by a different lane
+        # so implementation lanes can react to independent test feedback.
+        dep_candidates: list[Task] = []
+        for dep_id in blocked_task.depends_on:
+            dep_task = task_by_id.get(dep_id)
+            dep_entry = state.get(dep_id, {})
+            if dep_task is None:
+                continue
+            if dep_entry.get("status") != STATUS_DONE:
+                continue
+            dep_reopens = _safe_int(dep_entry.get("deadlock_reopens", 0), 0)
+            if dep_reopens >= max_recoveries_per_task:
+                continue
+            dep_candidates.append(dep_task)
+
+        dep_candidates.sort(
+            key=lambda task: (
+                0 if task.owner != blocked_task.owner else 1,
+                task.priority,
+                OWNER_PRIORITY.get(task.owner, 99),
+                task.id,
+            )
+        )
+        if dep_candidates:
+            dep_task = dep_candidates[0]
+            dep_entry = state[dep_task.id]
+            dep_entry["status"] = STATUS_PENDING
+            dep_entry["retryable_failures"] = 0
+            dep_entry["not_before"] = ""
+            dep_entry["last_update"] = now_iso
+            dep_entry["last_error"] = (
+                f"Deadlock recovery reopened task due to blocked dependent `{blocked_task.id}`."
+            )
+            dep_entry["deadlock_reopens"] = _safe_int(dep_entry.get("deadlock_reopens", 0), 0) + 1
+            reopened_tasks.append(dep_task.id)
+            changed = True
+
+        blocked_entry["status"] = STATUS_PENDING
+        blocked_entry["retryable_failures"] = 0
+        blocked_entry["not_before"] = ""
+        blocked_entry["last_update"] = now_iso
+        blocked_entry["deadlock_recoveries"] = blocked_recoveries + 1
+        blocked_entry["last_error"] = (
+            f"Deadlock recovery retry {blocked_entry['deadlock_recoveries']} for blocked task `{blocked_task.id}`."
+        )
+        unblocked_tasks.append(blocked_task.id)
+        changed = True
+
+    return {
+        "changed": changed,
+        "reopened_tasks": sorted(set(reopened_tasks)),
+        "unblocked_tasks": sorted(set(unblocked_tasks)),
+        "reason": "recovered" if changed else "recovery_limits_reached",
+    }
 
 
 def build_agent_prompt(
@@ -2036,6 +2118,37 @@ def main(argv: list[str] | None = None) -> int:
                     extra={"pending": pending, "blocked": blocked, "waiting_on_deps": waiting_on_deps},
                 )
                 time.sleep(sleep_for)
+                continue
+
+            recovery = recover_deadlocked_tasks(
+                tasks=tasks,
+                state=state,
+                dependency_state=dependency_state,
+                max_recoveries_per_task=max(1, args.max_attempts),
+            )
+            if recovery.get("changed", False):
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="deadlock_recovery",
+                    cycle=cycle,
+                    task_id=None,
+                    message="recovered blocked/pending deadlock",
+                    extra=recovery,
+                )
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=None,
+                    owner="system",
+                    event_type="deadlock_recovery",
+                    content=(
+                        "Recovered deadlock by reopening tasks. "
+                        f"reopened={recovery.get('reopened_tasks', [])}, "
+                        f"unblocked={recovery.get('unblocked_tasks', [])}"
+                    ),
+                    meta={"recovery": recovery},
+                )
+                save_state(state_file, state)
                 continue
 
             _print(f"No ready tasks remain. Pending={pending}, Blocked={blocked}")
