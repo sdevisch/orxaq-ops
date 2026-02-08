@@ -5,5 +5,5 @@ type: software
 authors:
   - family-names: De Visch
     given-names: Stijn
-repository-code: "https://github.com/sdevisch/orxaq-ops"
+repository-code: "https://github.com/Orxaq/orxaq-ops"
 license: MIT

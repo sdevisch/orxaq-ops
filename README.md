@@ -1,7 +1,7 @@
 # orxaq-ops
 
-[![CI](https://github.com/sdevisch/orxaq-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sdevisch/orxaq-ops/actions/workflows/ci.yml)
-[![Release](https://github.com/sdevisch/orxaq-ops/actions/workflows/release-pypi.yml/badge.svg)](https://github.com/sdevisch/orxaq-ops/actions/workflows/release-pypi.yml)
+[![CI](https://github.com/Orxaq/orxaq-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Orxaq/orxaq-ops/actions/workflows/ci.yml)
+[![Release](https://github.com/Orxaq/orxaq-ops/actions/workflows/release-pypi.yml/badge.svg)](https://github.com/Orxaq/orxaq-ops/actions/workflows/release-pypi.yml)
 
 Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standalone Python package (`orxaq-autonomy`) with protocol-based task execution, optional MCP context ingestion, and cross-platform lifecycle management.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,9 +23,10 @@ class RepoSpec:
 
 
 def _default_specs(root: Path) -> list[RepoSpec]:
+    github_owner = os.getenv("ORXAQ_GITHUB_OWNER", "Orxaq").strip() or "Orxaq"
     return [
-        RepoSpec(repo="sdevisch/orxaq", branch="main", readme=(root.parent / "orxaq" / "README.md").resolve()),
-        RepoSpec(repo="sdevisch/orxaq-ops", branch="main", readme=(root / "README.md").resolve()),
+        RepoSpec(repo=f"{github_owner}/orxaq", branch="main", readme=(root.parent / "orxaq" / "README.md").resolve()),
+        RepoSpec(repo=f"{github_owner}/orxaq-ops", branch="main", readme=(root / "README.md").resolve()),
     ]
 
 

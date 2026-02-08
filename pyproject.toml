@@ -24,10 +24,10 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/sdevisch/orxaq-ops"
-Repository = "https://github.com/sdevisch/orxaq-ops"
-Issues = "https://github.com/sdevisch/orxaq-ops/issues"
-Documentation = "https://github.com/sdevisch/orxaq-ops/blob/main/README.md"
+Homepage = "https://github.com/Orxaq/orxaq-ops"
+Repository = "https://github.com/Orxaq/orxaq-ops"
+Issues = "https://github.com/Orxaq/orxaq-ops/issues"
+Documentation = "https://github.com/Orxaq/orxaq-ops/blob/main/README.md"
 
 [project.scripts]
 orxaq-autonomy = "orxaq_autonomy.cli:main"

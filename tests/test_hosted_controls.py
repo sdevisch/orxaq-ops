@@ -15,6 +15,21 @@ SPEC.loader.exec_module(check_hosted_controls)
 
 
 class HostedControlsTests(unittest.TestCase):
+    def test_default_specs_use_org_owner_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            specs = check_hosted_controls._default_specs(root)
+            self.assertEqual(specs[0].repo, "Orxaq/orxaq")
+            self.assertEqual(specs[1].repo, "Orxaq/orxaq-ops")
+
+    def test_default_specs_respect_env_owner_override(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            with mock.patch.dict("os.environ", {"ORXAQ_GITHUB_OWNER": "ExampleOrg"}, clear=False):
+                specs = check_hosted_controls._default_specs(root)
+            self.assertEqual(specs[0].repo, "ExampleOrg/orxaq")
+            self.assertEqual(specs[1].repo, "ExampleOrg/orxaq-ops")
+
     def test_badge_urls_from_readme(self):
         with tempfile.TemporaryDirectory() as td:
             readme = pathlib.Path(td) / "README.md"
