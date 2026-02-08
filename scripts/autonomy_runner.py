@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -50,7 +51,43 @@ RETRYABLE_ERROR_PATTERNS = (
     "context deadline exceeded",
     "internal server error",
     "unavailable",
+    "index.lock",
+    "another git process",
+    "unable to create",
+    "terminal prompts disabled",
+    "could not read username",
+    "eof when reading a line",
+    "resource temporarily unavailable",
+    "no rule to make target",
+    "command not found",
 )
+
+NON_INTERACTIVE_ENV_OVERRIDES = {
+    "CI": "1",
+    "TERM": "dumb",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_PAGER": "cat",
+    "PIP_NO_INPUT": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "PIP_PROGRESS_BAR": "off",
+    "PYTHONUNBUFFERED": "1",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "FORCE_COLOR": "0",
+    "CLICOLOR": "0",
+    "NO_COLOR": "1",
+}
+
+VALIDATION_FALLBACKS = {
+    "make lint": ["python3 -m ruff check .", ".venv/bin/ruff check ."],
+    "make test": [
+        "pytest -q",
+        "python3 -m pytest -q",
+        ".venv/bin/pytest -q",
+    ],
+}
+
+TEST_COMMAND_HINTS = ("pytest", "make test")
+GIT_LOCK_BASENAMES = ("index.lock", "HEAD.lock", "packed-refs.lock")
 
 
 @dataclass(frozen=True)
@@ -167,6 +204,124 @@ def _pid_is_running(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def build_subprocess_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(NON_INTERACTIVE_ENV_OVERRIDES)
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
+def _list_process_commands() -> list[str]:
+    if os.name == "nt":
+        return []
+    result = subprocess.run(
+        ["ps", "ax", "-o", "command="],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def has_running_git_processes() -> bool:
+    commands = _list_process_commands()
+    if not commands:
+        return False
+    for cmd in commands:
+        lowered = cmd.lower()
+        if "git " in lowered or lowered.endswith("/git"):
+            return True
+    return False
+
+
+def find_git_lock_files(repo: Path) -> list[Path]:
+    git_dir = repo / ".git"
+    if not git_dir.is_dir():
+        return []
+    lock_files: list[Path] = []
+    for name in GIT_LOCK_BASENAMES:
+        lock_path = git_dir / name
+        if lock_path.exists():
+            lock_files.append(lock_path)
+    return lock_files
+
+
+def heal_stale_git_locks(repo: Path, stale_after_sec: int) -> list[Path]:
+    removed: list[Path] = []
+    lock_files = find_git_lock_files(repo)
+    if not lock_files:
+        return removed
+    if has_running_git_processes():
+        return removed
+    now = time.time()
+    for lock_path in lock_files:
+        try:
+            age = now - lock_path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        if age < stale_after_sec:
+            continue
+        lock_path.unlink(missing_ok=True)
+        removed.append(lock_path)
+    return removed
+
+
+def get_repo_filetype_context(repo: Path, limit: int = 8) -> str:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=str(repo),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return "File-type profile unavailable."
+    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not files:
+        return "File-type profile unavailable."
+    counts: Counter[str] = Counter()
+    for rel in files:
+        path = Path(rel)
+        suffix = path.suffix.lower().lstrip(".")
+        if suffix:
+            counts[suffix] += 1
+        else:
+            counts["(no_ext)"] += 1
+    most_common = counts.most_common(limit)
+    top = ", ".join(f"{ext}:{count}" for ext, count in most_common)
+    return f"Top file types: {top}."
+
+
+def repo_state_hints(repo: Path) -> list[str]:
+    hints: list[str] = []
+    git_dir = repo / ".git"
+    if not git_dir.exists():
+        return hints
+    if (git_dir / "MERGE_HEAD").exists():
+        hints.append("Merge in progress detected (.git/MERGE_HEAD).")
+    if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+        hints.append("Rebase in progress detected (.git/rebase-*).")
+    if (git_dir / "CHERRY_PICK_HEAD").exists():
+        hints.append("Cherry-pick in progress detected (.git/CHERRY_PICK_HEAD).")
+    return hints
+
+
+def validation_fallback_commands(raw: str) -> list[str]:
+    try:
+        normalized = " ".join(shlex.split(raw.strip()))
+    except ValueError:
+        return []
+    return list(VALIDATION_FALLBACKS.get(normalized, []))
+
+
+def is_test_command(raw: str) -> bool:
+    normalized = raw.lower()
+    return any(hint in normalized for hint in TEST_COMMAND_HINTS)
 
 
 def write_heartbeat(
@@ -309,6 +464,8 @@ def build_agent_prompt(
     role: str,
     repo_path: Path,
     retry_context: dict[str, Any] | None,
+    repo_context: str,
+    repo_hints: list[str],
 ) -> str:
     acceptance = "\n".join(f"- {item}" for item in task.acceptance) or "- No explicit acceptance items"
 
@@ -324,6 +481,11 @@ def build_agent_prompt(
                 "- Recovery directive: Continue from the current repository state and finish all acceptance criteria.\n"
             )
 
+    repo_hints_text = ""
+    if repo_hints:
+        hints = "\n".join(f"- {hint}" for hint in repo_hints)
+        repo_hints_text = f"Repository state hints:\n{hints}\n"
+
     return (
         f"{objective_text.strip()}\n\n"
         "Current autonomous task:\n"
@@ -332,7 +494,9 @@ def build_agent_prompt(
         f"- Owner role: {role}\n"
         f"- Repository path: {repo_path}\n"
         f"- Description: {task.description}\n"
+        f"- Repository file profile: {repo_context}\n"
         f"- Acceptance criteria:\n{acceptance}\n"
+        f"{repo_hints_text}"
         f"{continuation_block}\n"
         "Execution requirements:\n"
         "- Work fully autonomously for this task.\n"
@@ -340,6 +504,9 @@ def build_agent_prompt(
         "- Run validation commands: `make lint` then `make test`.\n"
         "- Commit and push contiguous changes.\n"
         "- If a command fails transiently (rate limits/network/timeouts), retry with resilient fallbacks before giving up.\n"
+        "- Use non-interactive commands only (never wait for terminal prompts).\n"
+        "- Handle new/unknown file types safely: preserve binary formats, avoid destructive rewrites, and add `.gitattributes` entries when needed.\n"
+        "- If git locks or in-progress git states are detected, recover safely and continue.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
         "- status must be one of: done, partial, blocked.\n"
     )
@@ -351,13 +518,17 @@ def run_command(
     timeout_sec: int,
     progress_callback: Callable[[int], None] | None = None,
     progress_interval_sec: int = 15,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = build_subprocess_env(extra_env)
     process = subprocess.Popen(
         cmd,
         cwd=str(cwd),
         text=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     start = time.monotonic()
     last_progress = start
@@ -388,21 +559,60 @@ def run_validations(
     validate_commands: list[str],
     timeout_sec: int,
     progress_callback: Callable[[str, int], None] | None = None,
+    retries_per_command: int = 1,
 ) -> tuple[bool, str]:
     for raw in validate_commands:
-        cmd = shlex.split(raw)
+        try:
+            cmd = shlex.split(raw)
+        except ValueError as err:
+            return False, f"Validation command parse failed for `{raw}`: {err}"
         if not cmd:
             continue
-        _print(f"Running validation in {repo}: {raw}")
-        result = run_command(
-            cmd,
-            cwd=repo,
-            timeout_sec=timeout_sec,
-            progress_callback=(lambda elapsed: progress_callback(raw, elapsed)) if progress_callback else None,
-        )
-        if result.returncode != 0:
-            details = (result.stdout + "\n" + result.stderr).strip()
-            return False, f"Validation failed for `{raw}`:\n{details}"
+        attempts = max(1, retries_per_command + 1) if is_test_command(raw) else 1
+        failure_details = ""
+        for idx in range(attempts):
+            _print(f"Running validation in {repo}: {raw} (attempt {idx + 1}/{attempts})")
+            result = run_command(
+                cmd,
+                cwd=repo,
+                timeout_sec=timeout_sec,
+                progress_callback=(lambda elapsed: progress_callback(raw, elapsed)) if progress_callback else None,
+            )
+            if result.returncode == 0:
+                failure_details = ""
+                break
+            failure_details = (result.stdout + "\n" + result.stderr).strip()
+            if idx + 1 < attempts:
+                _print(f"Validation retry queued for `{raw}` after failure.")
+        if not failure_details:
+            continue
+
+        fallbacks = validation_fallback_commands(raw)
+        if fallbacks:
+            fallback_errors: list[str] = []
+            for fallback in fallbacks:
+                fallback_cmd = shlex.split(fallback)
+                if not fallback_cmd:
+                    continue
+                _print(f"Running fallback validation in {repo}: {fallback}")
+                fallback_result = run_command(
+                    fallback_cmd,
+                    cwd=repo,
+                    timeout_sec=timeout_sec,
+                    progress_callback=(lambda elapsed: progress_callback(fallback, elapsed)) if progress_callback else None,
+                )
+                if fallback_result.returncode == 0:
+                    failure_details = ""
+                    break
+                fallback_errors.append(
+                    f"`{fallback}` failed:\n{(fallback_result.stdout + '\n' + fallback_result.stderr).strip()}"
+                )
+            if not failure_details:
+                continue
+            if fallback_errors:
+                failure_details = f"{failure_details}\n\nFallback failures:\n" + "\n\n".join(fallback_errors)
+
+        return False, f"Validation failed for `{raw}`:\n{failure_details}"
     return True, "ok"
 
 
@@ -481,6 +691,8 @@ def run_codex_task(
     timeout_sec: int,
     retry_context: dict[str, Any],
     progress_callback: Callable[[int], None] | None,
+    repo_context: str,
+    repo_hints: list[str],
 ) -> tuple[bool, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{task.id}_codex_result.json"
@@ -490,6 +702,8 @@ def run_codex_task(
         role="implementation-owner",
         repo_path=repo,
         retry_context=retry_context,
+        repo_context=repo_context,
+        repo_hints=repo_hints,
     )
 
     cmd = [
@@ -543,6 +757,8 @@ def run_gemini_task(
     timeout_sec: int,
     retry_context: dict[str, Any],
     progress_callback: Callable[[int], None] | None,
+    repo_context: str,
+    repo_hints: list[str],
 ) -> tuple[bool, dict[str, Any]]:
     prompt = build_agent_prompt(
         task,
@@ -550,6 +766,8 @@ def run_gemini_task(
         role="test-owner",
         repo_path=repo,
         retry_context=retry_context,
+        repo_context=repo_context,
+        repo_hints=repo_hints,
     )
     prompt += (
         "\nTesting-owner constraints:\n"
@@ -685,6 +903,7 @@ def main() -> int:
     parser.add_argument("--max-retryable-blocked-retries", type=int, default=20)
     parser.add_argument("--retry-backoff-base-sec", type=int, default=30)
     parser.add_argument("--retry-backoff-max-sec", type=int, default=1800)
+    parser.add_argument("--git-lock-stale-sec", type=int, default=300)
     parser.add_argument("--idle-sleep-sec", type=int, default=10)
     parser.add_argument("--agent-timeout-sec", type=int, default=3600)
     parser.add_argument("--validate-timeout-sec", type=int, default=1800)
@@ -699,6 +918,7 @@ def main() -> int:
     parser.add_argument("--codex-model", default=None)
     parser.add_argument("--gemini-model", default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--validation-retries", type=int, default=1)
     args = parser.parse_args()
 
     impl_repo = Path(args.impl_repo).resolve()
@@ -808,6 +1028,11 @@ def main() -> int:
             continue
 
         owner_repo = impl_repo if task.owner == "codex" else test_repo
+        healed = heal_stale_git_locks(owner_repo, stale_after_sec=args.git_lock_stale_sec)
+        if healed:
+            _print(f"Removed stale git locks in {owner_repo}: {', '.join(str(x) for x in healed)}")
+        repo_context = get_repo_filetype_context(owner_repo)
+        repo_hints = repo_state_hints(owner_repo)
         retry_context = {
             "attempts": task_state.get("attempts", 0),
             "last_summary": task_state.get("last_summary", ""),
@@ -844,6 +1069,8 @@ def main() -> int:
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
                 progress_callback=task_progress,
+                repo_context=repo_context,
+                repo_hints=repo_hints,
             )
         else:
             task_progress = lambda elapsed: write_heartbeat(
@@ -863,6 +1090,8 @@ def main() -> int:
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
                 progress_callback=task_progress,
+                repo_context=repo_context,
+                repo_hints=repo_hints,
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)
@@ -871,6 +1100,12 @@ def main() -> int:
         summary_text = str(outcome.get("summary", ""))
 
         if not ok or status == STATUS_BLOCKED:
+            if "lock" in blocker_text.lower() or "another git process" in blocker_text.lower():
+                healed_on_failure = heal_stale_git_locks(owner_repo, stale_after_sec=args.git_lock_stale_sec)
+                if healed_on_failure:
+                    healed_text = ", ".join(str(x) for x in healed_on_failure)
+                    blocker_text = f"{blocker_text}\nRecovered stale lock files: {healed_text}"
+                    _print(f"Recovered stale git lock(s) after failure: {healed_text}")
             retryable = is_retryable_error(blocker_text)
             attempts = _safe_int(task_state.get("attempts", 0), 0)
             retryable_failures = _safe_int(task_state.get("retryable_failures", 0), 0)
@@ -931,6 +1166,7 @@ def main() -> int:
                 repo=validation_repo,
                 validate_commands=args.validate_command,
                 timeout_sec=args.validate_timeout_sec,
+                retries_per_command=args.validation_retries,
                 progress_callback=lambda cmd, elapsed: write_heartbeat(
                     heartbeat_file,
                     phase="task_validating",

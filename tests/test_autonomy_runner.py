@@ -1,8 +1,11 @@
 import datetime as dt
 import importlib.util
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 def load_runner_module():
@@ -42,6 +45,7 @@ class RetryClassificationTests(unittest.TestCase):
     def test_retryable_error_true(self):
         self.assertTrue(runner.is_retryable_error("HTTP 429 Too Many Requests"))
         self.assertTrue(runner.is_retryable_error("network timeout while calling model"))
+        self.assertTrue(runner.is_retryable_error("Unable to create .git/index.lock"))
 
     def test_retryable_error_false(self):
         self.assertFalse(runner.is_retryable_error("assertion failed in unit test"))
@@ -120,6 +124,35 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(entry["status"], runner.STATUS_PENDING)
         self.assertGreater(entry["retryable_failures"], 0)
         self.assertTrue(entry["not_before"])
+
+
+class RuntimeSafeguardTests(unittest.TestCase):
+    def test_build_subprocess_env_sets_non_interactive_defaults(self):
+        env = runner.build_subprocess_env()
+        self.assertEqual(env["CI"], "1")
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(env["PIP_NO_INPUT"], "1")
+
+    def test_validation_fallback_commands_for_make_targets(self):
+        self.assertGreater(len(runner.validation_fallback_commands("make test")), 0)
+        self.assertGreater(len(runner.validation_fallback_commands("make lint")), 0)
+        self.assertEqual(runner.validation_fallback_commands("echo ok"), [])
+
+    def test_heal_stale_git_locks_removes_old_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp)
+            git_dir = repo / ".git"
+            git_dir.mkdir(parents=True, exist_ok=True)
+            lock_file = git_dir / "index.lock"
+            lock_file.write_text("stale", encoding="utf-8")
+            old = dt.datetime.now(dt.timezone.utc).timestamp() - 600
+            os.utime(lock_file, (old, old))
+
+            with mock.patch.object(runner, "has_running_git_processes", return_value=False):
+                removed = runner.heal_stale_git_locks(repo, stale_after_sec=300)
+
+            self.assertIn(lock_file, removed)
+            self.assertFalse(lock_file.exists())
 
 
 if __name__ == "__main__":

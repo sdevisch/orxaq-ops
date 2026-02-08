@@ -11,6 +11,7 @@ This keeps operational autonomy tooling out of `orxaq` so product releases stay 
 - `scripts/preflight.sh` - strict readiness gate (auth, tools, repo cleanliness).
 - `scripts/generate_workspace.sh` - writes VS Code multi-root workspace file.
 - `scripts/install_keepalive.sh` - installs/uninstalls user-space keepalive job (macOS launchd).
+- `docs/autonomy-halt-mitigation.md` - failure-mode playbook and built-in controls.
 - `config/tasks.json` - prioritized queue.
 - `config/objective.md` - project objective and stop criteria.
 - `config/codex_result.schema.json` - expected Codex JSON response schema.
@@ -81,6 +82,10 @@ make install-keepalive
 - Cooldown-aware task scheduling (`not_before`) avoids tight failure loops.
 - Retry context is fed back into prompts so agents continue from previous failures.
 - Non-strict agent output parsing recovers JSON from fenced/embedded text.
+- All subprocesses run in forced non-interactive mode (`CI=1`, `GIT_TERMINAL_PROMPT=0`, `PIP_NO_INPUT=1`, no TTY stdin).
+- Stale git lock files are auto-healed before task execution and after git-lock related failures.
+- Validation commands auto-retry for test commands and use fallback commands when `make` targets are missing.
+- Prompt context includes repository file-type profile and active git-state hints (merge/rebase/cherry-pick in progress).
 
 ## Failure Handling Matrix
 
