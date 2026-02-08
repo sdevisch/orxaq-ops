@@ -276,6 +276,33 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(pathlib.Path(snapshot["monitor_file"]).exists())
             self.assertIn("repos", snapshot)
             self.assertIn("diagnostics", snapshot)
+            self.assertIn("handoffs", snapshot)
+
+    def test_monitor_snapshot_reports_handoff_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            handoff_dir = root / "artifacts" / "autonomy" / "handoffs"
+            handoff_dir.mkdir(parents=True, exist_ok=True)
+            (handoff_dir / "to_codex.ndjson").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "task_id": "a"}),
+                        json.dumps({"timestamp": "2026-01-01T00:00:01+00:00", "task_id": "b"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (handoff_dir / "to_gemini.ndjson").write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:02+00:00", "task_id": "c"}) + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(snapshot["handoffs"]["to_codex_events"], 2)
+            self.assertEqual(snapshot["handoffs"]["to_gemini_events"], 1)
+            self.assertEqual(snapshot["handoffs"]["latest_to_codex"]["task_id"], "b")
+            self.assertEqual(snapshot["handoffs"]["latest_to_gemini"]["task_id"], "c")
 
     def test_monitor_snapshot_retains_output_when_lane_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
@@ -378,6 +405,7 @@ class ManagerTests(unittest.TestCase):
                     },
                     "tests": {"ok": False, "error": "missing repo"},
                 },
+                "handoffs": {"to_codex_events": 3, "to_gemini_events": 1},
                 "latest_log_line": "running task",
                 "monitor_file": "/tmp/monitor.json",
             }
@@ -387,6 +415,7 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("impl_repo", text)
         self.assertIn("test_repo", text)
         self.assertIn("sync=synced", text)
+        self.assertIn("handoffs: to_codex=3 to_gemini=1", text)
 
     def test_repo_monitor_snapshot_flags_behind_branch(self):
         with tempfile.TemporaryDirectory() as td:

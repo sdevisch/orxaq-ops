@@ -1088,6 +1088,11 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         log_error = str(err)
         latest_log_line = f"log read error: {err}"
     _mark_source("logs", log_error == "", log_error)
+    handoff_dir = (config.artifacts_dir / "handoffs").resolve()
+    to_codex_file = handoff_dir / "to_codex.ndjson"
+    to_gemini_file = handoff_dir / "to_gemini.ndjson"
+    to_codex_events = _tail_ndjson(to_codex_file, 500)
+    to_gemini_events = _tail_ndjson(to_gemini_file, 500)
 
     snapshot = {
         "timestamp": _now_iso(),
@@ -1105,6 +1110,13 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "repos": {
             "implementation": impl_repo,
             "tests": test_repo,
+        },
+        "handoffs": {
+            "dir": str(handoff_dir),
+            "to_codex_events": len(to_codex_events),
+            "to_gemini_events": len(to_gemini_events),
+            "latest_to_codex": (to_codex_events[-1] if to_codex_events else {}),
+            "latest_to_gemini": (to_gemini_events[-1] if to_gemini_events else {}),
         },
         "latest_log_line": latest_log_line,
         "diagnostics": diagnostics,
@@ -1126,6 +1138,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     counts = progress.get("counts", {})
     active = progress.get("active_tasks", [])
     repos = snapshot.get("repos", {})
+    handoffs = snapshot.get("handoffs", {})
     lanes = snapshot.get("lanes", {})
     conversations = snapshot.get("conversations", {})
     diagnostics = snapshot.get("diagnostics", {})
@@ -1166,6 +1179,10 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
         (
             f"conversations: events={conversations.get('total_events', 0)} "
             f"owners={conversations.get('owner_counts', {})}"
+        ),
+        (
+            f"handoffs: to_codex={handoffs.get('to_codex_events', 0)} "
+            f"to_gemini={handoffs.get('to_gemini_events', 0)}"
         ),
         (
             f"diagnostics: ok={diagnostics.get('ok', True)} "
