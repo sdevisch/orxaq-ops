@@ -290,6 +290,27 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(len(popen_calls), 2)
 
+    def test_tail_logs_latest_run_only_filters_historical_traceback(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.log_file.write_text(
+                "\n".join(
+                    [
+                        "Traceback (most recent call last):",
+                        "old failure",
+                        "[2026-02-08T20:30:18.086450+00:00] supervisor: launching runner",
+                        "[2026-02-08T20:30:18.176992+00:00] Starting autonomy runner",
+                        "[2026-02-08T20:30:18.177239+00:00] Running Gemini task",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            logs = manager.tail_logs(cfg, lines=40, latest_run_only=True)
+            self.assertIn("supervisor: launching runner", logs)
+            self.assertNotIn("old failure", logs)
+
     def test_bootstrap_background_starts_and_writes_startup_packet(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

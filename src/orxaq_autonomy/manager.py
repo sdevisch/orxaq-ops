@@ -744,10 +744,15 @@ def reset_state(config: ManagerConfig) -> None:
     config.state_file.unlink(missing_ok=True)
 
 
-def tail_logs(config: ManagerConfig, lines: int = 40) -> str:
+def tail_logs(config: ManagerConfig, lines: int = 40, latest_run_only: bool = False) -> str:
     if not config.log_file.exists():
         return ""
     content = config.log_file.read_text(encoding="utf-8").splitlines()
+    if latest_run_only:
+        for idx in range(len(content) - 1, -1, -1):
+            if "supervisor: launching runner" in content[idx]:
+                content = content[idx:]
+                break
     return "\n".join(content[-lines:])
 
 

@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "status":
             print(json.dumps(status_snapshot(cfg), indent=2, sort_keys=True))
-            logs = tail_logs(cfg)
+            logs = tail_logs(cfg, latest_run_only=True)
             if logs:
                 print("--- logs ---")
                 print(logs)
