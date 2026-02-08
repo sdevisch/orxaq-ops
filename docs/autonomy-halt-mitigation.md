@@ -34,4 +34,6 @@ Controls:
 Controls:
 - Supervisor restarts runner with exponential backoff.
 - `ensure` command restarts service if stopped or stale.
-- Optional OS keepalive (`scripts/install_keepalive.sh`) runs `ensure` every minute in user space.
+- Optional OS keepalive installs a user-space scheduler entry:
+  - Windows Task Scheduler task (`schtasks`) under current user.
+  - macOS LaunchAgent (`~/Library/LaunchAgents`).

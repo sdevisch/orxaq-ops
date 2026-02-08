@@ -6,3 +6,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 orxaq-dual-agent.code-workspace
+build/
+dist/
+*.egg-info/

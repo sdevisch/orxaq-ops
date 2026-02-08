@@ -1,0 +1,14 @@
+{
+  "name": "orxaq-autonomy",
+  "version": "1",
+  "description": "Reusable protocol for resilient autonomous software delivery.",
+  "required_behaviors": [
+    "work-non-interactively",
+    "retry-transient-failures",
+    "recover-git-locks",
+    "validate-and-report",
+    "continue-after-partial-output",
+    "respect-non-admin-boundaries"
+  ],
+  "filetype_policy": "Preserve unknown and binary file types; avoid destructive rewrites; use .gitattributes for explicit handling."
+}

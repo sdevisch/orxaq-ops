@@ -1,50 +1,64 @@
-.PHONY: run supervise start stop ensure status logs reset preflight workspace open-vscode install-keepalive uninstall-keepalive keepalive-status lint test
+PYTHON ?= python3
+ROOT := $(CURDIR)
+export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
+AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
+
+.PHONY: run supervise start stop ensure status logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test package
 
 run:
-	./scripts/autonomy_manager.sh run
+	$(AUTONOMY) run
 
 supervise:
-	./scripts/autonomy_manager.sh supervise
+	$(AUTONOMY) supervise
 
 start:
-	./scripts/autonomy_manager.sh start
+	$(AUTONOMY) start
 
 stop:
-	./scripts/autonomy_manager.sh stop
+	$(AUTONOMY) stop
 
 ensure:
-	./scripts/autonomy_manager.sh ensure
+	$(AUTONOMY) ensure
 
 status:
-	./scripts/autonomy_manager.sh status
+	$(AUTONOMY) status
 
 logs:
-	./scripts/autonomy_manager.sh logs
+	$(AUTONOMY) logs
 
 reset:
-	./scripts/autonomy_manager.sh reset
+	$(AUTONOMY) reset
 
 preflight:
-	./scripts/preflight.sh
+	$(AUTONOMY) preflight
 
 workspace:
-	./scripts/generate_workspace.sh
+	$(AUTONOMY) workspace
 
 open-vscode: workspace
-	./scripts/open_vscode.sh
+	$(AUTONOMY) open-ide --ide vscode
+
+open-cursor: workspace
+	$(AUTONOMY) open-ide --ide cursor
+
+open-pycharm:
+	$(AUTONOMY) open-ide --ide pycharm
 
 install-keepalive:
-	./scripts/install_keepalive.sh install
+	$(AUTONOMY) install-keepalive
 
 uninstall-keepalive:
-	./scripts/install_keepalive.sh uninstall
+	$(AUTONOMY) uninstall-keepalive
 
 keepalive-status:
-	./scripts/install_keepalive.sh status
+	$(AUTONOMY) keepalive-status
 
 lint:
-	python3 -m py_compile scripts/autonomy_runner.py
+	$(PYTHON) -m py_compile src/orxaq_autonomy/*.py scripts/autonomy_runner.py
 	bash -n scripts/autonomy_manager.sh scripts/preflight.sh scripts/generate_workspace.sh scripts/open_vscode.sh scripts/install_keepalive.sh
 
 test:
-	python3 -m unittest discover -s tests -p 'test_*.py'
+	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
+
+package:
+	$(PYTHON) -m build

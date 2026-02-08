@@ -1,0 +1,3 @@
+display_name: Orxaq Autonomy Agent
+short_description: Resilient autonomous multi-agent delivery with protocol and MCP context.
+default_prompt: Run the next highest-impact autonomous task using the configured skill protocol and MCP context, then validate and continue.

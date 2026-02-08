@@ -1,5 +1,5 @@
 import datetime as dt
-import importlib.util
+import importlib
 import os
 import pathlib
 import sys
@@ -9,17 +9,15 @@ from unittest import mock
 
 
 def load_runner_module():
-    script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "autonomy_runner.py"
-    spec = importlib.util.spec_from_file_location("autonomy_runner", script)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load autonomy_runner module")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    root = pathlib.Path(__file__).resolve().parents[1]
+    src = root / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    return importlib.import_module("orxaq_autonomy.runner")
 
 
 runner = load_runner_module()
+from orxaq_autonomy.protocols import MCPContextBundle, SkillProtocolSpec
 
 
 class ParseJsonTextTests(unittest.TestCase):
@@ -153,6 +151,31 @@ class RuntimeSafeguardTests(unittest.TestCase):
 
             self.assertIn(lock_file, removed)
             self.assertFalse(lock_file.exists())
+
+    def test_prompt_includes_skill_protocol_and_mcp_context(self):
+        task = runner.Task(
+            id="task-1",
+            owner="codex",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a1"],
+        )
+        prompt = runner.build_agent_prompt(
+            task=task,
+            objective_text="Objective",
+            role="implementation-owner",
+            repo_path=pathlib.Path("/tmp/repo"),
+            retry_context={},
+            repo_context="Top file types: py:10.",
+            repo_hints=[],
+            skill_protocol=SkillProtocolSpec(name="proto", version="2", description="d"),
+            mcp_context=MCPContextBundle(source="file", snippets=["ctx"]),
+        )
+        self.assertIn("Autonomy skill protocol", prompt)
+        self.assertIn("proto", prompt)
+        self.assertIn("MCP context", prompt)
 
 
 if __name__ == "__main__":

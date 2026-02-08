@@ -1,103 +1,97 @@
 # orxaq-ops
 
-Control-plane workspace for unattended multi-agent execution against the Orxaq product repo.
+Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standalone Python package (`orxaq-autonomy`) with protocol-based task execution, optional MCP context ingestion, and cross-platform lifecycle management.
 
-This keeps operational autonomy tooling out of `orxaq` so product releases stay clean.
+## What Changed
+
+- Autonomy is packaged in `src/orxaq_autonomy` (independent package, reusable outside this repo).
+- Runner supports a reusable **skill protocol** (`config/skill_protocol.json`).
+- Runner can inject optional **MCP context** (`--mcp-context-file`) into prompts.
+- Supervisor/manager is now Python-based and works on macOS + Windows in user space (no admin required).
+- IDE launch/open flows are IDE-independent (VS Code, Cursor, PyCharm).
 
 ## Layout
 
-- `scripts/autonomy_runner.py` - task scheduler and agent executor.
-- `scripts/autonomy_manager.sh` - lifecycle and self-healing supervisor (`run/supervise/start/stop/ensure/status/logs/reset`).
-- `scripts/preflight.sh` - strict readiness gate (auth, tools, repo cleanliness).
-- `scripts/generate_workspace.sh` - writes VS Code multi-root workspace file.
-- `scripts/install_keepalive.sh` - installs/uninstalls user-space keepalive job (macOS launchd).
-- `docs/autonomy-halt-mitigation.md` - failure-mode playbook and built-in controls.
-- `config/tasks.json` - prioritized queue.
-- `config/objective.md` - project objective and stop criteria.
-- `config/codex_result.schema.json` - expected Codex JSON response schema.
-- `state/state.json` - runtime task state (auto-created).
-- `artifacts/autonomy/` - reports, logs, heartbeat, and lock files.
+- `src/orxaq_autonomy/cli.py` - package CLI (`orxaq-autonomy`).
+- `src/orxaq_autonomy/manager.py` - cross-platform supervisor, keepalive, lifecycle.
+- `src/orxaq_autonomy/runner.py` - resilient task runner with retries/validation.
+- `src/orxaq_autonomy/protocols.py` - skill protocol + MCP context interfaces.
+- `src/orxaq_autonomy/ide.py` - workspace generation and IDE launch helpers.
+- `skills/orxaq-autonomy-agent/SKILL.md` - reusable skill definition for autonomy workflows.
+- `config/skill_protocol.json` - reusable autonomy protocol contract.
+- `config/mcp_context.example.json` - sample MCP-style context payload.
+- `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
+
+Legacy shell scripts remain for compatibility, but `make` now uses the package CLI.
 
 ## Setup
 
 ```bash
 cd /Users/sdevisch/dev/orxaq-ops
 cp .env.autonomy.example .env.autonomy
+python3 -m pip install -e .
 ```
 
-Edit `.env.autonomy` and set:
+Set auth and repos in `.env.autonomy`:
 
-- `GEMINI_API_KEY` (required unless `~/.gemini/settings.json` is already configured)
-- `OPENAI_API_KEY` (optional if `codex login` is already configured)
-- `ORXAQ_IMPL_REPO` (optional, defaults to `../orxaq`)
-- `ORXAQ_TEST_REPO` (optional, defaults to `../orxaq_gemini`)
+- `GEMINI_API_KEY` or `~/.gemini/settings.json`
+- `OPENAI_API_KEY` or `codex login`
+- `ORXAQ_IMPL_REPO` (default `../orxaq`)
+- `ORXAQ_TEST_REPO` (default `../orxaq_gemini`)
 
-Ensure CLIs are installed and authenticated:
+Optional reusable context controls:
 
-```bash
-which codex
-which gemini
-```
+- `ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE` (default `config/skill_protocol.json`)
+- `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
 
 ## Commands
 
 ```bash
-make start      # start supervisor in background
-make ensure     # self-heal: start if stopped, restart stale runner
+make preflight
+make start
+make ensure
 make status
 make logs
 make stop
-make reset
-make preflight
-make workspace
-make open-vscode
 make install-keepalive
 make keepalive-status
-make lint
-make test
+make workspace
+make open-vscode
+make open-cursor
+make open-pycharm
 ```
 
-`make open-vscode` launches `Visual Studio Code.app` explicitly (not Cursor).
-
-Run foreground (for debugging):
+Foreground debug:
 
 ```bash
-make run         # runner only
-make supervise   # supervisor + auto-restart in foreground
+make run
+make supervise
 ```
 
-Install OS-level self-heal (recommended):
+## Reuse Model
+
+This package is reusable in any repo:
 
 ```bash
-make install-keepalive
+orxaq-autonomy --root /path/to/orxaq-ops start
+orxaq-autonomy --root /path/to/orxaq-ops status
 ```
 
-## Resilience Features
+Skill protocol + MCP context are data-driven, so you can swap project/task context without changing code.
 
-- File lock (`artifacts/autonomy/runner.lock`) prevents concurrent runner instances.
-- Atomic state/report writes prevent partial JSON corruption on crashes.
-- Heartbeat file (`artifacts/autonomy/heartbeat.json`) updated every cycle/phase.
-- Supervisor monitors heartbeat and restarts runner if stale or crashed.
-- Exponential backoff on retryable failures (timeouts, 429, transient network/service issues).
-- Cooldown-aware task scheduling (`not_before`) avoids tight failure loops.
-- Retry context is fed back into prompts so agents continue from previous failures.
-- Non-strict agent output parsing recovers JSON from fenced/embedded text.
-- All subprocesses run in forced non-interactive mode (`CI=1`, `GIT_TERMINAL_PROMPT=0`, `PIP_NO_INPUT=1`, no TTY stdin).
-- Stale git lock files are auto-healed before task execution and after git-lock related failures.
-- Validation commands auto-retry for test commands and use fallback commands when `make` targets are missing.
-- Prompt context includes repository file-type profile and active git-state hints (merge/rebase/cherry-pick in progress).
+## Non-Admin Hardening (Windows/macOS)
 
-## Failure Handling Matrix
+- No privileged operations required for routine operation.
+- Keepalive installation uses user-space schedulers only:
+  - Windows: Task Scheduler (`schtasks`) under current user.
+  - macOS: LaunchAgents (`~/Library/LaunchAgents`).
+- Subprocesses are forced non-interactive (`CI=1`, `GIT_TERMINAL_PROMPT=0`, `PIP_NO_INPUT=1`, `stdin=DEVNULL`).
+- Stale git locks are auto-healed only when no active git process is detected.
 
-- CLI crash/non-zero exit: retry with backoff; supervisor restarts process.
-- Runner hang: stale heartbeat detection triggers forced restart.
-- State corruption risk: atomic writes + lock file.
-- Transient API/network failures: classified as retryable and re-queued.
-- Partial task output: automatically re-queued up to retry budget.
-- True hard blockers: task marked blocked with full error context in state and report.
+## Resilience Summary
 
-## Recommended Cron Self-Heal
-
-- macOS: use `make install-keepalive` (launchd, user-space, no admin).
-- Other systems fallback command:
-  `cd /Users/sdevisch/dev/orxaq-ops && ./scripts/autonomy_manager.sh ensure`
+- Atomic state/report writes and runner lock file.
+- Heartbeat-driven stale-runner detection and restart.
+- Exponential backoff for retryable failures.
+- Validation retries + fallback validation commands.
+- Prompt includes file-type profile + repo-state hints + protocol requirements.

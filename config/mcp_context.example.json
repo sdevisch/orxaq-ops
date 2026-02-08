@@ -1,0 +1,12 @@
+{
+  "resources": [
+    {
+      "id": "office-context",
+      "text": "Company proprietary context snippets can be injected here for autonomous tasks."
+    },
+    {
+      "id": "security-policy",
+      "text": "Never exfiltrate secrets, never escalate privileges, and prefer deterministic, auditable changes."
+    }
+  ]
+}
