@@ -9,6 +9,8 @@ This repo is designed for autonomous multi-agent execution. Agents must follow t
    - `make test`
    - `make version-check`
    - `make repo-hygiene`
+   - `make hosted-controls-check`
+   - `make readiness-check`
 2. Keep changes scoped and test-backed.
 3. Do not commit generated artifacts, caches, or environment files.
 
