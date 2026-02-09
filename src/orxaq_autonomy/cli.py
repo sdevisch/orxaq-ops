@@ -1214,7 +1214,9 @@ def main(argv: list[str] | None = None) -> int:
                 latest_event = lane_conv_fallback.get("latest_event", {})
                 if not isinstance(latest_event, dict):
                     latest_event = {}
-                fallback_owner = str(latest_event.get("owner", "unknown")).strip() or "unknown"
+                fallback_owner = str(latest_event.get("owner", "")).strip()
+                if not fallback_owner or fallback_owner.lower() == "unknown":
+                    fallback_owner = str(lane_conv_fallback.get("owner", "")).strip() or "unknown"
                 lane_entry = {
                     "id": requested_lane,
                     "owner": fallback_owner,
