@@ -40,5 +40,12 @@
 *.py merge=python
 *.md merge=text
 
+# Lane configuration safety
+config/** text
+docs/** text
+
 # Additional safety configurations
 * !filter !merge !diff
+
+# Ensure no destructive overwrites
+* -text
