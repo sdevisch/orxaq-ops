@@ -2598,6 +2598,104 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(payload["scaling"]["groups"]["codex-core"]["allowed_parallel_lanes"], 2)
             self.assertEqual(start.call_count, 2)
 
+    def test_start_lanes_background_scales_down_running_lane_when_npv_gate_holds(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8")
+                + "ORXAQ_AUTONOMY_SCALING_ENABLED=1\n",
+                encoding="utf-8",
+            )
+            decision_file = root / "artifacts" / "autonomy" / "scaling_decision.json"
+            decision_file.parent.mkdir(parents=True, exist_ok=True)
+            decision_file.write_text(
+                json.dumps(
+                    {
+                        "decision": "hold",
+                        "should_scale": False,
+                        "marginal_npv_usd": -0.2,
+                        "capacity": {
+                            "requested_parallel_agents": 2,
+                            "requested_subagents_per_agent": 1,
+                        },
+                        "constraints": {
+                            "projected_daily_spend_usd": 1.0,
+                            "daily_budget_usd": 20.0,
+                            "max_parallel_agents": 2,
+                            "max_subagents_per_agent": 2,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 1,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_max_parallel_agents": 2,
+                                "scaling_max_subagents_per_agent": 2,
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 2,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_max_parallel_agents": 2,
+                                "scaling_max_subagents_per_agent": 2,
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "lanes": [
+                        {"id": "lane-a", "running": True, "owner": "codex", "codex_model": ""},
+                        {"id": "lane-b", "running": True, "owner": "codex", "codex_model": ""},
+                    ]
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.stop_lane_background",
+                return_value={"id": "lane-b", "running": False},
+            ) as stop, mock.patch(
+                "orxaq_autonomy.manager.start_lane_background",
+                side_effect=lambda _cfg, lane_name: {"id": lane_name, "pid": 99},
+            ) as start:
+                payload = manager.start_lanes_background(cfg)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["started"][0]["id"], "lane-a")
+            self.assertEqual(payload["scaled_down_count"], 1)
+            self.assertEqual(payload["scaled_down"][0]["id"], "lane-b")
+            self.assertEqual(payload["scaled_down"][0]["reason"], "decision_not_approved")
+            stop.assert_called_once_with(cfg, "lane-b", reason="scale_down_npv_gate", pause=False)
+            start.assert_called_once_with(cfg, "lane-a")
+
     def test_start_lanes_background_keeps_valid_lane_when_another_lane_is_invalid(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

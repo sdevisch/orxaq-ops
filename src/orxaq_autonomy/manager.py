@@ -5638,6 +5638,7 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
     }
     started: list[dict[str, Any]] = []
     scaled_up: list[dict[str, Any]] = []
+    scaled_down: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
     failed: list[dict[str, Any]] = list(config_failures)
@@ -5673,14 +5674,48 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
         current_parallel_running = max(0, _int_value(running_by_parallel_key.get(parallel_key, 0), 0))
         lane_scaling = scaling_plan.get("by_lane", {}).get(str(lane.get("id", "")).strip(), {})
         if not bool(lane_scaling.get("allowed", True)):
-            skipped.append(
-                {
-                    "id": str(lane.get("id", "")).strip(),
-                    "owner": str(lane.get("owner", "unknown")).strip() or "unknown",
-                    "reason": str(lane_scaling.get("reason", "npv_gate_hold")).strip() or "npv_gate_hold",
-                    "group": str(lane_scaling.get("group", "")).strip(),
+            lane_name = str(lane.get("id", "")).strip()
+            lane_owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+            lane_reason = str(lane_scaling.get("reason", "npv_gate_hold")).strip() or "npv_gate_hold"
+            lane_group = str(lane_scaling.get("group", "")).strip()
+            if lane_running:
+                scale_payload = {
+                    "group": lane_group,
+                    "slot": _int_value(lane_scaling.get("slot", 1), 1),
+                    "allowed_parallel_lanes": _int_value(lane_scaling.get("allowed_parallel_lanes", 1), 1),
+                    "reason": lane_reason,
+                    "reasons": lane_scaling.get("reasons", []),
+                    "decision": lane_scaling.get("decision", {}),
                 }
-            )
+                try:
+                    stop_lane_background(
+                        config,
+                        lane_name,
+                        reason="scale_down_npv_gate",
+                        pause=False,
+                    )
+                    running_by_parallel_key[parallel_key] = max(0, current_parallel_running - 1)
+                    scaled_down.append(
+                        {
+                            "id": lane_name,
+                            "owner": lane_owner,
+                            "status": "scaled_down",
+                            "reason": lane_reason,
+                            "group": lane_group,
+                        }
+                    )
+                    _append_lane_event(config, lane_name, "scale_down", scale_payload)
+                except Exception as err:
+                    failed.append({"id": lane_name, "owner": lane_owner, "error": str(err), "source": "lane_runtime"})
+            else:
+                skipped.append(
+                    {
+                        "id": lane_name,
+                        "owner": lane_owner,
+                        "reason": lane_reason,
+                        "group": lane_group,
+                    }
+                )
             continue
         if not lane_running and current_parallel_running >= parallel_limit:
             skipped.append(
@@ -5743,9 +5778,11 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
         "requested_lane": resolved_lane or "all_enabled",
         "started_count": len(started),
         "scaled_up_count": len(scaled_up),
+        "scaled_down_count": len(scaled_down),
         "skipped_count": len(skipped),
         "started": started,
         "scaled_up": scaled_up,
+        "scaled_down": scaled_down,
         "skipped": skipped,
         "config_error_count": len(config_failures),
         "config_errors": [item["error"] for item in config_failures],
