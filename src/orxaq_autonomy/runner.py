@@ -1384,14 +1384,45 @@ def _current_branch(repo: Path) -> tuple[bool, str]:
     return _git_output(repo, ["rev-parse", "--abbrev-ref", "HEAD"])
 
 
-def ensure_pushable_branch(repo: Path, owner: str = "autonomy", timeout_sec: int = 180) -> tuple[bool, str]:
+def ensure_pushable_branch(
+    repo: Path,
+    owner: str = "autonomy",
+    timeout_sec: int = 180,
+    force_switch: bool = False,
+) -> tuple[bool, str]:
     ok, branch = _current_branch(repo)
     if not ok:
         return False, f"unable to read current branch: {branch}"
-    if branch not in PROTECTED_BRANCH_NAMES:
-        return True, f"current branch is pushable: {branch}"
 
     target = _autonomy_branch_name(repo, owner=owner)
+    if branch == "HEAD":
+        checkout = run_command(["git", "checkout", target], cwd=repo, timeout_sec=timeout_sec)
+        if checkout.returncode == 0:
+            return True, f"switched to existing pushable branch `{target}` from detached HEAD"
+        create = run_command(["git", "checkout", "-b", target], cwd=repo, timeout_sec=timeout_sec)
+        if create.returncode != 0:
+            return False, (
+                "failed to switch off detached HEAD:\n"
+                f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
+                f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
+            )
+        return True, f"created pushable branch `{target}` from detached HEAD"
+
+    if branch not in PROTECTED_BRANCH_NAMES:
+        if force_switch and branch != target:
+            checkout = run_command(["git", "checkout", target], cwd=repo, timeout_sec=timeout_sec)
+            if checkout.returncode == 0:
+                return True, f"switched to existing pushable branch `{target}` from `{branch}`"
+            create = run_command(["git", "checkout", "-b", target], cwd=repo, timeout_sec=timeout_sec)
+            if create.returncode != 0:
+                return False, (
+                    f"failed to switch from branch `{branch}` after push rejection:\n"
+                    f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
+                    f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
+                )
+            return True, f"created pushable branch `{target}` from `{branch}`"
+        return True, f"current branch is pushable: {branch}"
+
     checkout = run_command(["git", "checkout", target], cwd=repo, timeout_sec=timeout_sec)
     if checkout.returncode == 0:
         return True, f"switched to existing pushable branch `{target}` from protected `{branch}`"
@@ -1442,7 +1473,7 @@ def _push_with_recovery(
         output = (retry.stdout + "\n" + retry.stderr).strip()
 
     if _is_protected_branch_rejection(output):
-        switched, message = ensure_pushable_branch(repo, owner=owner, timeout_sec=timeout_sec)
+        switched, message = ensure_pushable_branch(repo, owner=owner, timeout_sec=timeout_sec, force_switch=True)
         if not switched:
             return False, f"{message}\n\nOriginal push error:\n{output}"
         ok, new_branch = _current_branch(repo)
@@ -1480,7 +1511,7 @@ def _push_with_recovery(
         no_verify_output = (no_verify_retry.stdout + "\n" + no_verify_retry.stderr).strip()
 
     if _is_protected_branch_rejection(no_verify_output):
-        switched, message = ensure_pushable_branch(repo, owner=owner, timeout_sec=timeout_sec)
+        switched, message = ensure_pushable_branch(repo, owner=owner, timeout_sec=timeout_sec, force_switch=True)
         if switched:
             ok, branch_after_switch = _current_branch(repo)
             if ok:

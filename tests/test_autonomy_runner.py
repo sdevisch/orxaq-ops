@@ -935,6 +935,35 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertEqual(status, "pushed")
         self.assertIn("codex/gemini-orxaq", details)
 
+    def test_ensure_pushable_branch_force_switches_non_protected_branch(self):
+        repo = pathlib.Path("/tmp/repo")
+        with mock.patch.object(
+            runner,
+            "_current_branch",
+            return_value=(True, "codex/fix-remote"),
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "codex/gemini-repo"],
+                    returncode=1,
+                    stdout="",
+                    stderr="did not match any file(s) known to git",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "-b", "codex/gemini-repo"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+            ],
+        ):
+            ok, details = runner.ensure_pushable_branch(repo, owner="gemini", force_switch=True)
+        self.assertTrue(ok)
+        self.assertIn("codex/gemini-repo", details)
+        self.assertIn("codex/fix-remote", details)
+
     def test_push_with_recovery_updates_moved_remote_and_retries(self):
         repo = pathlib.Path("/tmp/repo")
         with mock.patch.object(
@@ -1001,6 +1030,50 @@ class AgentExecutionHardeningTests(unittest.TestCase):
             ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="gemini")
         self.assertTrue(ok)
         self.assertIn("protected-branch switch", details)
+
+    def test_push_with_recovery_switches_from_custom_protected_branch(self):
+        repo = pathlib.Path("/tmp/repo")
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "codex/fix-remote"),
+                (True, "codex/fix-remote"),
+                (True, "codex/gemini-repo"),
+            ],
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(
+                    ["git", "push"],
+                    returncode=1,
+                    stdout="",
+                    stderr="GH013: Changes must be made through a pull request.",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "codex/gemini-repo"],
+                    returncode=1,
+                    stdout="",
+                    stderr="did not match any file(s) known to git",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "-b", "codex/gemini-repo"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "push", "-u", "origin", "codex/gemini-repo"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+            ],
+        ):
+            ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="gemini")
+        self.assertTrue(ok)
+        self.assertIn("pushed new branch `codex/gemini-repo`", details)
 
 
 if __name__ == "__main__":
