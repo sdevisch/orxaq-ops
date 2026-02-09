@@ -1115,6 +1115,76 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["lane"]["conversation_source_state"], "ok")
             self.assertEqual(payload["conversation_source_health"]["state"], "ok")
 
+    def test_lane_inspect_recovers_missing_lane_case_insensitively_from_conversation_signal(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "lanes_file": "config/lanes.json",
+                "errors": [],
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+                "running_count": 1,
+                "total_count": 1,
+            }
+            conversation_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "gemini",
+                        "lane_id": "missing",
+                        "event_type": "status",
+                        "content": "still active",
+                    }
+                ],
+                "sources": [
+                    {"lane_id": "missing", "ok": True, "error": "", "event_count": 1},
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conversation_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "MISSING"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["input_lane"], "MISSING")
+            self.assertEqual(payload["requested_lane"], "missing")
+            self.assertEqual(payload["lane"]["id"], "missing")
+            self.assertEqual(payload["lane"]["owner"], "gemini")
+            self.assertEqual(payload["conversation_source_health"]["lane"], "missing")
+            self.assertEqual(payload["conversation_source_health"]["reported_sources"], 1)
+            self.assertEqual(payload["conversation_source_health"]["state"], "ok")
+
+    def test_lane_conversation_source_health_matches_lane_case_insensitively(self):
+        payload = {
+            "sources": [
+                {
+                    "lane_id": "lane-a",
+                    "ok": True,
+                    "missing": True,
+                    "recoverable_missing": True,
+                    "fallback_used": True,
+                    "error": "",
+                    "event_count": 2,
+                }
+            ],
+            "partial": False,
+            "errors": [],
+        }
+        health = cli._lane_conversation_source_health(payload, lane_id="LANE-A")
+        self.assertEqual(health["lane"], "lane-a")
+        self.assertEqual(health["state"], "ok")
+        self.assertEqual(health["reported_sources"], 1)
+        self.assertEqual(health["event_count"], 2)
+        self.assertEqual(health["missing_count"], 1)
+        self.assertEqual(health["recoverable_missing_count"], 1)
+        self.assertEqual(health["fallback_count"], 1)
+
     def test_lane_inspect_recovers_owner_from_source_metadata_without_events(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

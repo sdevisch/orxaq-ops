@@ -495,16 +495,40 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _resolve_lane_key(keys: list[str], requested_lane: str) -> str:
+    lane_filter = requested_lane.strip()
+    if not lane_filter:
+        return ""
+    if lane_filter in keys:
+        return lane_filter
+    folded_matches = [lane_id for lane_id in keys if lane_id.lower() == lane_filter.lower()]
+    if len(folded_matches) == 1:
+        return folded_matches[0]
+    return lane_filter
+
+
+def _resolve_rollup_lane_key(rollup: dict[str, dict[str, Any]], requested_lane: str) -> str:
+    keys = [str(lane_id).strip() for lane_id in rollup if str(lane_id).strip()]
+    return _resolve_lane_key(keys, requested_lane)
+
+
 def _lane_conversation_source_health(payload: dict[str, Any], *, lane_id: str) -> dict[str, Any]:
     requested_lane = lane_id.strip()
+    resolved_lane = requested_lane
+    requested_lane_folded = requested_lane.lower()
     reports = payload.get("sources", [])
     if not isinstance(reports, list):
         reports = []
-    lane_reports = [
-        item
-        for item in reports
-        if isinstance(item, dict) and str(item.get("lane_id", "")).strip() == requested_lane
-    ]
+    lane_reports: list[dict[str, Any]] = []
+    for item in reports:
+        if not isinstance(item, dict):
+            continue
+        source_lane = str(item.get("lane_id", "")).strip()
+        if source_lane.lower() != requested_lane_folded:
+            continue
+        lane_reports.append(item)
+        if source_lane and resolved_lane.lower() == requested_lane_folded:
+            resolved_lane = source_lane
     errors: list[str] = []
     event_count = 0
     missing_count = 0
@@ -531,7 +555,7 @@ def _lane_conversation_source_health(payload: dict[str, Any], *, lane_id: str) -
         state = "ok" if ok else "degraded"
         ok_value = ok
     return {
-        "lane": requested_lane,
+        "lane": resolved_lane or requested_lane,
         "state": state,
         "ok": ok_value,
         "reported_sources": len(lane_reports),
@@ -1233,7 +1257,10 @@ def main(argv: list[str] | None = None) -> int:
                 tail=args.tail,
             )
             lane_conv_rollup = _lane_conversation_rollup(conv_payload)
-            lane_conv_fallback = lane_conv_rollup.get(resolved_lane, {})
+            resolved_rollup_lane = _resolve_rollup_lane_key(lane_conv_rollup, resolved_lane)
+            lane_conv_fallback = lane_conv_rollup.get(resolved_rollup_lane, {})
+            if lane_conv_fallback:
+                resolved_lane = resolved_rollup_lane
             lane_signal_available = bool(lane_conv_fallback)
             if not selected and any(str(item).strip().startswith("Unknown lane id ") for item in lane_errors):
                 if not lane_signal_available:
