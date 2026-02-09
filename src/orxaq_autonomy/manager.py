@@ -609,6 +609,165 @@ def _repo_basic_check(repo: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _slug_token(value: str, *, fallback: str, max_len: int) -> str:
+    token = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value).strip().lower()).strip("-._")
+    if not token:
+        token = fallback
+    return token[:max_len]
+
+
+def _first_nonempty_line(text: str) -> str:
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if line:
+            return line
+    return ""
+
+
+def _git_output(repo: Path, args: list[str]) -> tuple[bool, str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+    )
+    text = (proc.stdout + "\n" + proc.stderr).strip()
+    return proc.returncode == 0, text
+
+
+def _lane_worktree_branch_name(lane_id: str, role: str) -> str:
+    lane_token = _slug_token(lane_id, fallback="lane", max_len=40)
+    role_token = _slug_token(role, fallback="repo", max_len=20)
+    return f"codex/lane-{lane_token}-{role_token}"
+
+
+def _prepare_lane_worktree_checkout(
+    *,
+    repo: Path,
+    lane_id: str,
+    role: str,
+    worktree_root: Path,
+) -> tuple[Path, str]:
+    ok, message = _repo_basic_check(repo)
+    if not ok:
+        raise RuntimeError(message)
+
+    ok_top, top_out = _git_output(repo, ["rev-parse", "--show-toplevel"])
+    if not ok_top:
+        raise RuntimeError(f"unable to resolve git top-level for {repo}: {top_out}")
+    top_line = _first_nonempty_line(top_out)
+    if not top_line:
+        raise RuntimeError(f"git top-level output was empty for {repo}")
+    top_repo = Path(top_line).resolve()
+    branch = _lane_worktree_branch_name(lane_id, role)
+    target = (worktree_root / role).resolve()
+
+    if target.exists():
+        ok_existing, existing_message = _repo_basic_check(target)
+        if not ok_existing:
+            raise RuntimeError(f"lane worktree path is invalid: {target} ({existing_message})")
+        ok_branch, branch_out = _git_output(target, ["rev-parse", "--abbrev-ref", "HEAD"])
+        if not ok_branch:
+            raise RuntimeError(f"unable to read branch in lane worktree {target}: {branch_out}")
+        current_branch = _first_nonempty_line(branch_out)
+        if current_branch != branch:
+            switch = subprocess.run(
+                ["git", "-C", str(target), "checkout", "-B", branch],
+                capture_output=True,
+                text=True,
+            )
+            if switch.returncode != 0:
+                switch_out = (switch.stdout + "\n" + switch.stderr).strip()
+                raise RuntimeError(
+                    f"unable to switch lane worktree branch in {target} to {branch}: {switch_out}"
+                )
+        return target, branch
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-C", str(top_repo), "worktree", "prune"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    add = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(top_repo),
+            "worktree",
+            "add",
+            "--force",
+            "--checkout",
+            "-B",
+            branch,
+            str(target),
+            "HEAD",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if add.returncode != 0:
+        add_out = (add.stdout + "\n" + add.stderr).strip()
+        raise RuntimeError(
+            f"unable to create lane worktree for lane={lane_id} role={role} at {target}: {add_out}"
+        )
+    return target, branch
+
+
+def _prepare_lane_runtime_repos(config: ManagerConfig, lane: dict[str, Any]) -> dict[str, Any]:
+    if not bool(lane.get("isolated_worktree", True)):
+        return {
+            "runtime_impl_repo": Path(lane["impl_repo"]).resolve(),
+            "runtime_test_repo": Path(lane["test_repo"]).resolve(),
+            "worktree_branches": {},
+        }
+
+    worktree_root = Path(lane.get("worktree_root", lane["runtime_dir"] / "worktrees")).resolve()
+    impl_repo = Path(lane["impl_repo"]).resolve()
+    test_repo = Path(lane["test_repo"]).resolve()
+    branches: dict[str, str] = {}
+
+    same_repo = False
+    try:
+        same_repo = os.path.samefile(impl_repo, test_repo)
+    except OSError:
+        same_repo = str(impl_repo) == str(test_repo)
+
+    if same_repo:
+        shared_repo, shared_branch = _prepare_lane_worktree_checkout(
+            repo=impl_repo,
+            lane_id=str(lane["id"]),
+            role="shared",
+            worktree_root=worktree_root,
+        )
+        branches["shared"] = shared_branch
+        return {
+            "runtime_impl_repo": shared_repo,
+            "runtime_test_repo": shared_repo,
+            "worktree_branches": branches,
+        }
+
+    impl_checkout, impl_branch = _prepare_lane_worktree_checkout(
+        repo=impl_repo,
+        lane_id=str(lane["id"]),
+        role="impl",
+        worktree_root=worktree_root,
+    )
+    test_checkout, test_branch = _prepare_lane_worktree_checkout(
+        repo=test_repo,
+        lane_id=str(lane["id"]),
+        role="test",
+        worktree_root=worktree_root,
+    )
+    branches["impl"] = impl_branch
+    branches["test"] = test_branch
+    return {
+        "runtime_impl_repo": impl_checkout,
+        "runtime_test_repo": test_checkout,
+        "worktree_branches": branches,
+    }
+
+
 def preflight(config: ManagerConfig, *, require_clean: bool = True) -> dict[str, Any]:
     diagnostics = runtime_diagnostics(config)
     runtime_ok = bool(diagnostics["ok"])
@@ -3271,6 +3430,7 @@ def _parallel_capacity_plan(
         decision_reason = "stable"
         last_signal_at = str(previous.get("last_signal_at", "")).strip()
         last_recovery_at = str(previous.get("last_recovery_at", "")).strip()
+        seen_capacity_signal = signal_total > 0 or bool(last_signal_at)
 
         if signal_count > 0:
             target_limit = max(1, running_count - 1) if running_count > 1 else 1
@@ -3284,6 +3444,15 @@ def _parallel_capacity_plan(
             stable_cycles = 0
             signal_total += signal_count
             last_signal_at = now_iso
+            seen_capacity_signal = True
+        elif running_count > current_limit and not seen_capacity_signal and configured_limit > current_limit:
+            # Avoid permanent under-capacity when the manager restarts into an already
+            # healthy lane set with no observed provider saturation signals.
+            current_limit = configured_limit
+            stable_cycles = 0
+            decision = "increase"
+            decision_reason = "bootstrap_configured_limit"
+            last_recovery_at = now_iso
         elif running_count <= current_limit:
             stable_cycles += 1
             if stable_cycles >= config.parallel_capacity_recovery_cycles and current_limit < configured_limit:

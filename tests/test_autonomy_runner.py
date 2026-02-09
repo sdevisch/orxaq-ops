@@ -888,6 +888,27 @@ class RuntimeSafeguardTests(unittest.TestCase):
             self.assertEqual(len(tasks), 1)
             self.assertEqual(tasks[0].owner, "claude")
 
+    def test_load_tasks_normalizes_legacy_single_task_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "tasks.json"
+            path.write_text(
+                runner.json.dumps(
+                    {
+                        "task": "claude-autonomy-stability-audit",
+                        "description": "Audit resilience controls.",
+                        "validation_steps": ["Verify retries", "Review logging"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            tasks = runner.load_tasks(path)
+            self.assertEqual(len(tasks), 1)
+            task = tasks[0]
+            self.assertEqual(task.id, "claude-autonomy-stability-audit")
+            self.assertEqual(task.owner, "claude")
+            self.assertEqual(task.priority, 1)
+            self.assertEqual(task.acceptance, ["Verify retries", "Review logging"])
+
     def test_append_conversation_event_writes_ndjson(self):
         with tempfile.TemporaryDirectory() as td:
             path = pathlib.Path(td) / "conversations.ndjson"

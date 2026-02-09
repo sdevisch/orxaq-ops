@@ -1296,8 +1296,52 @@ def write_heartbeat(
     _write_json(path, payload)
 
 
+def _normalize_legacy_task_spec(path: Path, raw: dict[str, Any]) -> list[dict[str, Any]] | None:
+    task_id = str(raw.get("id") or raw.get("task") or "").strip()
+    if not task_id:
+        return None
+    owner = str(raw.get("owner") or "").strip().lower()
+    if owner not in SUPPORTED_OWNERS:
+        inferred_owner = task_id.split("-", 1)[0].strip().lower()
+        owner = inferred_owner if inferred_owner in SUPPORTED_OWNERS else "codex"
+    priority = max(1, _safe_int(raw.get("priority", 1), 1))
+    title = str(raw.get("title") or task_id.replace("-", " ")).strip() or task_id
+    description = str(raw.get("description") or title).strip() or title
+
+    depends_on_raw = raw.get("depends_on", [])
+    depends_on: list[str] = []
+    if isinstance(depends_on_raw, list):
+        depends_on = [str(item).strip() for item in depends_on_raw if str(item).strip()]
+
+    acceptance_raw = raw.get("acceptance")
+    if not isinstance(acceptance_raw, list) or not acceptance_raw:
+        acceptance_raw = raw.get("validation_steps", [])
+    if not isinstance(acceptance_raw, list) or not acceptance_raw:
+        acceptance_raw = raw.get("objectives", [])
+    acceptance: list[str] = []
+    if isinstance(acceptance_raw, list):
+        acceptance = [str(item).strip() for item in acceptance_raw if str(item).strip()]
+
+    return [
+        {
+            "id": task_id,
+            "owner": owner,
+            "priority": priority,
+            "title": title,
+            "description": description,
+            "depends_on": depends_on,
+            "acceptance": acceptance,
+        }
+    ]
+
+
 def load_tasks(path: Path) -> list[Task]:
     raw = json.loads(_read_text(path))
+    if isinstance(raw, dict):
+        normalized = _normalize_legacy_task_spec(path, raw)
+        if normalized is not None:
+            _print(f"Normalized legacy single-task payload to array format: {path}")
+            raw = normalized
     if not isinstance(raw, list):
         raise ValueError(f"Task file must be a JSON array: {path}")
     tasks: list[Task] = []

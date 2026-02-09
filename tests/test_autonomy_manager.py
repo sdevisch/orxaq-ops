@@ -3427,7 +3427,15 @@ class ManagerTests(unittest.TestCase):
                 "orxaq_autonomy.manager.lane_status_snapshot",
                 return_value={
                     "lanes": [
-                        {"id": "lane-a", "running": True, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
+                        {
+                            "id": "lane-a",
+                            "running": True,
+                            "heartbeat_stale": False,
+                            "build_current": True,
+                            "owner": "codex",
+                            "codex_model": "",
+                            "latest_log_line": "provider reported rate limit while processing request",
+                        },
                         {"id": "lane-b", "running": True, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
                         {"id": "lane-c", "running": True, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
                     ]
@@ -3443,6 +3451,81 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(payload["scaled_down"][0]["reason"], "provider_model_parallel_limit")
             stop.assert_called_once_with(cfg, "lane-c", reason="scale_down_parallel_limit", pause=False)
             start.assert_not_called()
+
+    def test_ensure_lanes_background_bootstraps_parallel_limit_without_capacity_signals(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-c",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-d",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "lanes": [
+                        {"id": "lane-a", "running": True, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
+                        {"id": "lane-b", "running": True, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
+                        {"id": "lane-c", "running": True, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
+                        {"id": "lane-d", "running": False, "heartbeat_stale": False, "build_current": True, "owner": "codex", "codex_model": ""},
+                    ]
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.stop_lane_background",
+                return_value={"id": "lane-c", "running": False},
+            ) as stop, mock.patch(
+                "orxaq_autonomy.manager.start_lane_background",
+                return_value={"id": "lane-d", "pid": 999},
+            ) as start:
+                payload = manager.ensure_lanes_background(cfg)
+            self.assertEqual(payload["started_count"], 1)
+            self.assertEqual(payload["started"][0]["id"], "lane-d")
+            self.assertEqual(payload["scaled_down_count"], 0)
+            self.assertEqual(payload["skipped_count"], 0)
+            stop.assert_not_called()
+            start.assert_called_once_with(cfg, "lane-d")
 
     def test_stop_lanes_background_skips_disabled_lane_when_not_running(self):
         with tempfile.TemporaryDirectory() as td:
