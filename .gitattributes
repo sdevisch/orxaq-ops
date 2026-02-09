@@ -23,6 +23,7 @@
 *.log binary
 *.sqlite binary
 *.db binary
+*.rds binary
 
 # Executable scripts
 *.sh text eol=lf
@@ -32,7 +33,12 @@
 *.key binary
 *.pem binary
 *.crt binary
+*.cert binary
+*.p12 binary
 
 # Merge configurations
 *.py merge=python
 *.md merge=text
+
+# Additional safety configurations
+* !filter !merge !diff
