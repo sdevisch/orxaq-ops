@@ -12,8 +12,22 @@
 
 ### 2. Git Operation Recovery
 - Auto-heal stale lock files
+  - Detect `.git/index.lock`, `.git/HEAD.lock`, `.git/packed-refs.lock`
+  - Remove locks if no active git processes exist
+  - Default stale threshold: 300 seconds
 - Detect and resolve in-progress Git states
+  - Identify merge conflicts, rebasing, cherry-picking
+  - Safely abort or skip unresolvable states
+  - Maintain comprehensive recovery logs
 - Implement exponential backoff for retry
+  - Base retry interval: 30 seconds
+  - Maximum retry interval: 1800 seconds (30 minutes)
+  - Exponential backoff formula: `delay = base * (2 ** retry_count)`
+  - Track and log retry attempts with detailed diagnostics
+- Prevent destructive git operations
+  - Block force push to protected branches
+  - Validate branch state before critical operations
+  - Implement safe push mechanisms with lease and force-with-lease
 
 ### 3. Test Run Reliability
 - Timeout-bound test execution
