@@ -512,6 +512,33 @@ def _dashboard_html(refresh_sec: int) -> str:
     function escapeHtml(value) {{
       return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }}
+    const USER_TIMEZONE = (() => {{
+      try {{
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+      }} catch (_err) {{
+        return "local";
+      }}
+    }})();
+    const USER_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(undefined, {{
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZoneName: "short",
+    }});
+    function formatTimestamp(value) {{
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      const parsed = new Date(raw);
+      if (!Number.isFinite(parsed.getTime())) return raw;
+      return USER_TIMESTAMP_FORMATTER.format(parsed);
+    }}
+    function formatNowTimestamp() {{
+      return USER_TIMESTAMP_FORMATTER.format(new Date());
+    }}
     function stateBadge(ok) {{ return ok ? '<span class="ok">ok</span>' : '<span class="bad">error</span>'; }}
     function parseTail(value) {{
       const parsed = Number(value || 0);
@@ -811,7 +838,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         ? events.map((event) => {{
             return [
               '<div class="feed-item">',
-              `<div class="feed-head"><span>${{escapeHtml(event.timestamp || "")}}</span><span>track=${{escapeHtml(event.track || "-")}}</span><span>kind=${{escapeHtml(event.kind || "-")}}</span><span>type=${{escapeHtml(event.event_type || "-")}}</span></div>`,
+              `<div class="feed-head"><span>${{escapeHtml(formatTimestamp(event.timestamp || ""))}}</span><span>track=${{escapeHtml(event.track || "-")}}</span><span>kind=${{escapeHtml(event.kind || "-")}}</span><span>type=${{escapeHtml(event.event_type || "-")}}</span></div>`,
               `<div>${{escapeHtml(event.label || "")}}</div>`,
               '</div>',
             ].join("");
@@ -976,7 +1003,7 @@ def _dashboard_html(refresh_sec: int) -> str:
               ? lane.latest_conversation_event
               : (latestConversationByLane[laneId] || null);
             const latestConversationLine = latestConversation
-              ? `<div class="line mono">latest_conversation=${{escapeHtml(String(latestConversation.timestamp || ""))}} owner=${{escapeHtml(String(latestConversation.owner || "unknown"))}} type=${{escapeHtml(String(latestConversation.event_type || "-"))}}${{String(latestConversation.content || "").trim() ? ` content=${{escapeHtml(String(latestConversation.content).trim().slice(0, 120))}}` : ""}}</div>`
+              ? `<div class="line mono">latest_conversation=${{escapeHtml(formatTimestamp(String(latestConversation.timestamp || "")))}} owner=${{escapeHtml(String(latestConversation.owner || "unknown"))}} type=${{escapeHtml(String(latestConversation.event_type || "-"))}}${{String(latestConversation.content || "").trim() ? ` content=${{escapeHtml(String(latestConversation.content).trim().slice(0, 120))}}` : ""}}</div>`
               : `<div class="line mono">latest_conversation=none</div>`;
             return [
               `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s · build=${{buildCurrent}}</div>`,
@@ -1077,7 +1104,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("repoImpl").innerHTML = repoMarkup((snapshot.repos || {{}}).implementation);
       byId("repoTest").innerHTML = repoMarkup((snapshot.repos || {{}}).tests);
       byId("latestLog").textContent = snapshot.latest_log_line || "(no log line yet)";
-      byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
+      byId("updated").textContent = `updated: ${{formatNowTimestamp()}} (${{USER_TIMEZONE}})`;
 
       byId("meta").innerHTML = [
         `<span class="pill">runner pid: ${{status.runner_pid ?? "-"}}</span>`,
@@ -1171,7 +1198,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         const content = escapeHtml(event.content || '');
         return [
           '<div class="feed-item">',
-          `<div class="feed-head"><span>${{escapeHtml(ts)}}</span><span>owner=${{escapeHtml(owner)}}</span><span>lane=${{escapeHtml(laneId)}}</span><span>task=${{escapeHtml(task)}}</span><span>type=${{escapeHtml(type)}}</span></div>`,
+          `<div class="feed-head"><span>${{escapeHtml(formatTimestamp(ts))}}</span><span>owner=${{escapeHtml(owner)}}</span><span>lane=${{escapeHtml(laneId)}}</span><span>task=${{escapeHtml(task)}}</span><span>type=${{escapeHtml(type)}}</span></div>`,
           source ? `<div class="mono">source=${{escapeHtml(source)}}</div>` : '',
           `<div>${{content}}</div>`,
           '</div>',
@@ -1312,7 +1339,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         render(snapshotForRender, lanePayload, effectiveConversationPayload);
       }} else {{
         byId("latestLog").textContent = `monitor fetch failed: ${{monitorResult.error}}`;
-        byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
+        byId("updated").textContent = `updated: ${{formatNowTimestamp()}} (${{USER_TIMEZONE}})`;
         if (lanePayload) {{
           renderLanes(lanePayload, {{}}, effectiveConversationPayload);
         }} else {{

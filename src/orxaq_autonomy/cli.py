@@ -481,6 +481,20 @@ def _parse_event_timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _format_local_timestamp(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone()
+    return local.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def _lane_conversation_rollup(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     reports = payload.get("sources", [])
     if not isinstance(reports, list):
@@ -1286,7 +1300,7 @@ def main(argv: list[str] | None = None) -> int:
                         "  conversations: "
                         f"state={lane.get('conversation_source_state', 'unreported')} "
                         f"events={lane.get('conversation_event_count', 0)} "
-                        f"latest_ts={latest.get('timestamp', '') or '-'} "
+                        f"latest_ts={_format_local_timestamp(latest.get('timestamp', ''))} "
                         f"latest_owner={latest.get('owner', '') or '-'} "
                         f"latest_type={latest.get('event_type', '') or '-'}"
                     )

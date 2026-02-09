@@ -925,6 +925,43 @@ class CliTests(unittest.TestCase):
             self.assertEqual(kwargs["lines"], 200)
             self.assertTrue(kwargs["include_lanes"])
 
+    def test_lanes_status_text_with_conversations_formats_latest_timestamp_in_local_tz(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "lanes_file": "config/lanes.json",
+                "running_count": 1,
+                "total_count": 1,
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "pid": 123, "health": "ok"}],
+            }
+            conversation_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "ready",
+                    }
+                ],
+                "sources": [{"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1}],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conversation_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--with-conversations"])
+            self.assertEqual(rc, 0)
+            output = buffer.getvalue()
+            self.assertIn("latest_ts=", output)
+            self.assertNotIn("2026-01-01T00:00:01+00:00", output)
+
     def test_lanes_status_command_with_lane_filter(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

@@ -60,6 +60,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("lastSuccessfulLanePayload", html)
         self.assertIn("lastSuccessfulConversationPayload", html)
         self.assertIn("lastSuccessfulDawPayload", html)
+        self.assertIn("USER_TIMEZONE", html)
+        self.assertIn("formatTimestamp", html)
         self.assertIn("stale cache used", html)
         self.assertIn("using cached snapshot", html)
         self.assertIn("buildConversationSourceMap", html)

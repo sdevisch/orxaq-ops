@@ -27,6 +27,20 @@ def _now_iso() -> str:
     return _now_utc().isoformat()
 
 
+def _format_local_timestamp(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    local = parsed.astimezone()
+    return local.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def _log(msg: str) -> None:
     print(f"[{_now_iso()}] {msg}", flush=True)
 
@@ -1705,7 +1719,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
         )
 
     lines = [
-        f"[{snapshot.get('timestamp', '')}] supervisor={status.get('supervisor_running', False)} "
+        f"[{_format_local_timestamp(snapshot.get('timestamp', ''))}] supervisor={status.get('supervisor_running', False)} "
         f"runner={status.get('runner_running', False)} heartbeat_age={status.get('heartbeat_age_sec', -1)}s",
         "tasks: "
         f"done={counts.get('done', 0)} "
