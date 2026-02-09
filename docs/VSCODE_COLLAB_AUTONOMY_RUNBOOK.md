@@ -155,6 +155,8 @@ make reset
 ```bash
 make lanes-status
 make lanes-plan
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-status --json --with-conversations
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-status --lane codex-governance --json --with-conversations --conversation-lines 120
 ```
 
 - Operate lanes directly:
