@@ -69,6 +69,60 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("response_metrics", payload)
         self.assertFalse(payload["response_metrics"]["ok"])
 
+    def test_safe_monitor_snapshot_reuses_lane_and_conversation_fallbacks(self):
+        lane_payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "running_count": 1,
+            "total_count": 1,
+            "health_counts": {"ok": 1},
+            "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+            "lanes": [
+                {
+                    "id": "lane-a",
+                    "owner": "codex",
+                    "running": True,
+                    "health": "ok",
+                    "state_counts": {"pending": 0, "in_progress": 1, "done": 0, "blocked": 0, "unknown": 0},
+                }
+            ],
+        }
+        conv_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "total_events": 1,
+            "owner_counts": {"codex": 1},
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "lane healthy",
+                }
+            ],
+            "sources": [{"lane_id": "lane-a", "ok": True, "event_count": 1}],
+        }
+        with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("monitor unavailable")), mock.patch(
+            "orxaq_autonomy.dashboard._safe_lane_status_snapshot",
+            return_value=lane_payload,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._safe_conversations_snapshot",
+            return_value=conv_payload,
+        ):
+            payload = dashboard._safe_monitor_snapshot(mock.Mock())
+        self.assertEqual(payload["lanes"]["running_count"], 1)
+        self.assertEqual(payload["lanes"]["owner_counts"]["codex"]["running"], 1)
+        self.assertEqual(payload["runtime"]["lane_operational_count"], 1)
+        self.assertEqual(payload["runtime"]["lane_owner_health"]["codex"]["total"], 1)
+        self.assertEqual(payload["conversations"]["recent_events"][0]["lane_id"], "lane-a")
+        self.assertTrue(payload["diagnostics"]["sources"]["lanes"]["ok"])
+        self.assertTrue(payload["diagnostics"]["sources"]["conversations"]["ok"])
+        self.assertFalse(payload["diagnostics"]["sources"]["monitor"]["ok"])
+
     def test_safe_lane_status_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()
         cfg.lanes_file = pathlib.Path("/tmp/lanes.json")

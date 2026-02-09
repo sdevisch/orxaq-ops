@@ -1812,6 +1812,138 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
         return monitor_snapshot(config)
     except Exception as err:
         message = str(err)
+        lane_payload: dict[str, Any] = {
+            "timestamp": "",
+            "lanes_file": "",
+            "running_count": 0,
+            "total_count": 0,
+            "lanes": [],
+            "health_counts": {},
+            "owner_counts": {},
+            "partial": True,
+            "ok": False,
+            "errors": [],
+        }
+        try:
+            lane_candidate = _safe_lane_status_snapshot(config)
+            if isinstance(lane_candidate, dict):
+                lane_payload = lane_candidate
+        except Exception as lane_err:
+            lane_payload["errors"] = [f"lane status fallback error: {lane_err}"]
+
+        conversation_payload: dict[str, Any] = {
+            "total_events": 0,
+            "events": [],
+            "owner_counts": {},
+            "sources": [],
+            "partial": True,
+            "ok": False,
+            "errors": [],
+        }
+        try:
+            conv_candidate = _safe_conversations_snapshot(config, lines=60, include_lanes=True)
+            if isinstance(conv_candidate, dict):
+                conversation_payload = conv_candidate
+        except Exception as conv_err:
+            conversation_payload["errors"] = [f"conversation fallback error: {conv_err}"]
+
+        lane_items = lane_payload.get("lanes", [])
+        if not isinstance(lane_items, list):
+            lane_items = []
+        lane_items = [item for item in lane_items if isinstance(item, dict)]
+
+        lane_errors = lane_payload.get("errors", [])
+        if not isinstance(lane_errors, list):
+            lane_errors = [str(lane_errors)] if str(lane_errors).strip() else []
+        lane_errors = [str(item).strip() for item in lane_errors if str(item).strip()]
+
+        lane_health_counts = lane_payload.get("health_counts", {})
+        if not isinstance(lane_health_counts, dict):
+            lane_health_counts = {}
+        lane_owner_counts = lane_payload.get("owner_counts", {})
+        if not isinstance(lane_owner_counts, dict):
+            lane_owner_counts = {}
+
+        lane_operational_states = {"ok", "paused", "idle"}
+        lane_operational_count = 0
+        lane_degraded_count = 0
+        for lane in lane_items:
+            health = str(lane.get("health", "unknown")).strip().lower()
+            if health in lane_operational_states:
+                lane_operational_count += 1
+            else:
+                lane_degraded_count += 1
+
+        conversation_events = conversation_payload.get("events", [])
+        if not isinstance(conversation_events, list):
+            conversation_events = []
+        recent_events = [item for item in conversation_events if isinstance(item, dict)][-20:]
+
+        conversation_errors = conversation_payload.get("errors", [])
+        if not isinstance(conversation_errors, list):
+            conversation_errors = [str(conversation_errors)] if str(conversation_errors).strip() else []
+        conversation_errors = [str(item).strip() for item in conversation_errors if str(item).strip()]
+
+        conversation_sources = conversation_payload.get("sources", [])
+        if not isinstance(conversation_sources, list):
+            conversation_sources = []
+
+        conversation_owner_counts = conversation_payload.get("owner_counts", {})
+        if not isinstance(conversation_owner_counts, dict):
+            conversation_owner_counts = {}
+
+        diagnostics_sources = {
+            "monitor": {"ok": False, "error": message},
+            "lanes": {"ok": bool(lane_payload.get("ok", False)), "error": "; ".join(lane_errors)},
+            "conversations": {
+                "ok": bool(conversation_payload.get("ok", False)),
+                "error": "; ".join(conversation_errors),
+            },
+            "response_metrics": {"ok": False, "error": message},
+            "implementation_repo": {"ok": False, "error": message},
+            "tests_repo": {"ok": False, "error": message},
+            "logs": {"ok": False, "error": message},
+            "handoffs": {"ok": False, "error": message},
+        }
+        diagnostics_errors = [f"monitor: {message}"]
+        for source_name, source_info in diagnostics_sources.items():
+            if source_name == "monitor":
+                continue
+            if source_info["ok"]:
+                continue
+            error_text = str(source_info.get("error", "")).strip()
+            if error_text:
+                diagnostics_errors.append(f"{source_name}: {error_text}")
+
+        progress_counts = {"done": 0, "in_progress": 0, "pending": 0, "blocked": 0, "unknown": 0}
+        active_tasks: list[str] = []
+        blocked_tasks: list[str] = []
+        for lane in lane_items:
+            state_counts = lane.get("state_counts", {})
+            if not isinstance(state_counts, dict):
+                continue
+            lane_id = str(lane.get("id", "")).strip() or "unknown"
+            for key in progress_counts:
+                if key == "unknown":
+                    continue
+                try:
+                    progress_counts[key] += int(state_counts.get(key, 0))
+                except (TypeError, ValueError):
+                    continue
+            try:
+                if int(state_counts.get("in_progress", 0)) > 0:
+                    active_tasks.append(f"lane:{lane_id}")
+            except (TypeError, ValueError):
+                pass
+            try:
+                if int(state_counts.get("blocked", 0)) > 0:
+                    blocked_tasks.append(f"lane:{lane_id}")
+            except (TypeError, ValueError):
+                pass
+        if sum(progress_counts.values()) == 0:
+            progress_counts["unknown"] = 1
+
+        running_count = sum(1 for lane in lane_items if bool(lane.get("running", False)))
         return {
             "timestamp": "",
             "latest_log_line": f"monitor snapshot error: {message}",
@@ -1824,32 +1956,46 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "supervisor_pid": None,
             },
             "progress": {
-                "counts": {"done": 0, "in_progress": 0, "pending": 0, "blocked": 0, "unknown": 1},
-                "active_tasks": [],
-                "blocked_tasks": [],
+                "counts": progress_counts,
+                "active_tasks": sorted(set(active_tasks)),
+                "blocked_tasks": sorted(set(blocked_tasks)),
+                "source": "fallback_partial",
             },
             "lanes": {
-                "running_count": 0,
-                "total_count": 0,
-                "lanes": [],
-                "health_counts": {},
-                "owner_counts": {},
-                "partial": True,
-                "ok": False,
-                "errors": [message],
+                **lane_payload,
+                "running_count": running_count,
+                "total_count": len(lane_items),
+                "lanes": lane_items,
+                "health_counts": lane_health_counts,
+                "owner_counts": lane_owner_counts,
+                "partial": bool(lane_payload.get("partial", False)) or bool(lane_errors),
+                "ok": bool(lane_payload.get("ok", False)) and not bool(lane_errors),
+                "errors": lane_errors,
             },
             "runtime": {
-                "lane_health_counts": {},
-                "lane_owner_health": {},
+                "primary_runner_running": False,
+                "lane_agents_running": running_count > 0,
+                "effective_agents_running": running_count > 0,
+                "lane_operational_count": lane_operational_count,
+                "lane_degraded_count": lane_degraded_count,
+                "lane_health_counts": lane_health_counts,
+                "lane_owner_health": lane_owner_counts,
+                "push_recovery_events": {
+                    "recent_total": 0,
+                    "auto_push_race_recovered": 0,
+                    "task_push_race_recovered": 0,
+                    "latest": {},
+                },
             },
             "conversations": {
-                "total_events": 0,
-                "owner_counts": {},
-                "latest": {},
-                "recent_events": [],
-                "partial": True,
-                "errors": [message],
-                "sources": [],
+                "ok": bool(conversation_payload.get("ok", False)),
+                "total_events": conversation_payload.get("total_events", len(conversation_events)),
+                "owner_counts": conversation_owner_counts,
+                "latest": (recent_events[-1] if recent_events else {}),
+                "recent_events": recent_events,
+                "partial": bool(conversation_payload.get("partial", False)) or bool(conversation_errors),
+                "errors": conversation_errors,
+                "sources": conversation_sources,
             },
             "repos": {
                 "implementation": {"ok": False, "error": message},
@@ -1878,8 +2024,8 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             },
             "diagnostics": {
                 "ok": False,
-                "errors": [f"monitor: {message}"],
-                "sources": {"monitor": {"ok": False, "error": message}},
+                "errors": diagnostics_errors,
+                "sources": diagnostics_sources,
             },
             "monitor_file": "",
         }
