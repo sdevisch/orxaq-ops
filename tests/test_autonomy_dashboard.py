@@ -372,6 +372,24 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(filtered["health_counts"], {"ok": 1})
         self.assertEqual(filtered["owner_counts"]["codex"]["total"], 1)
 
+    def test_filter_lane_status_payload_matches_lane_case_insensitively(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+                {"id": "lane-b", "owner": "gemini", "running": False, "health": "stale"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="LANE-A")
+        self.assertEqual(filtered["requested_lane"], "lane-a")
+        self.assertEqual(filtered["total_count"], 1)
+        self.assertEqual(filtered["lanes"][0]["id"], "lane-a")
+        self.assertTrue(filtered["ok"])
+        self.assertFalse(filtered["partial"])
+
     def test_filter_lane_status_payload_normalizes_missing_lane_fields(self):
         payload = {
             "lanes_file": "/tmp/lanes.json",
@@ -972,6 +990,40 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(enriched["partial"])
         self.assertFalse(enriched["ok"])
 
+    def test_augment_lane_payload_with_conversation_rollup_recovers_missing_lane_case_insensitively(self):
+        lane_payload = {
+            "requested_lane": "LANE-A",
+            "errors": ["Unknown lane id 'LANE-A'. Update /tmp/lanes.json."],
+            "lanes": [],
+            "health_counts": {},
+            "owner_counts": {},
+            "ok": False,
+            "partial": True,
+        }
+        conversation_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:01+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "ready",
+                }
+            ],
+            "sources": [
+                {"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        self.assertEqual(enriched["requested_lane"], "lane-a")
+        self.assertEqual(enriched["recovered_lane_count"], 1)
+        self.assertEqual(enriched["recovered_lanes"], ["lane-a"])
+        self.assertEqual(enriched["lanes"][0]["id"], "lane-a")
+        self.assertEqual(enriched["lanes"][0]["owner"], "codex")
+
     def test_augment_lane_payload_with_conversation_rollup_recovers_owner_from_source_metadata(self):
         lane_payload = {
             "requested_lane": "lane-a",
@@ -1163,6 +1215,25 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["partial"])
         self.assertEqual(payload["action"], "status")
         self.assertEqual(payload["lane"], "lane-a")
+
+    def test_safe_lane_action_status_reports_resolved_lane(self):
+        cfg = mock.Mock()
+        with mock.patch(
+            "orxaq_autonomy.dashboard._safe_lane_status_snapshot",
+            return_value={"ok": True, "lanes": []},
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._filter_lane_status_payload",
+            return_value={"ok": True, "partial": False, "errors": [], "lanes": [], "requested_lane": "lane-a"},
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._safe_conversations_snapshot",
+            return_value={"ok": True, "partial": False, "errors": [], "events": [], "sources": []},
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._augment_lane_payload_with_conversation_rollup",
+            return_value={"ok": True, "partial": False, "errors": [], "lanes": [], "requested_lane": "lane-a"},
+        ):
+            payload = dashboard._safe_lane_action(cfg, action="status", lane_id="LANE-A")
+        self.assertEqual(payload["lane"], "lane-a")
+        self.assertEqual(payload["requested_lane"], "lane-a")
 
     def test_safe_lane_action_ensure_forwards_lane_id(self):
         cfg = mock.Mock()

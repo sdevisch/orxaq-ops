@@ -675,6 +675,50 @@ class CliTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertTrue(conversations.call_args.kwargs["include_lanes"])
 
+    def test_lane_inspect_matches_requested_lane_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 1,
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "alpha",
+                    },
+                ],
+                "owner_counts": {"codex": 1},
+                "sources": [{"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1}],
+                "partial": False,
+                "ok": True,
+                "errors": [],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ) as conversations:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "LANE-A"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["requested_lane"], "lane-a")
+            self.assertEqual(payload["input_lane"], "LANE-A")
+            self.assertEqual(payload["lane"]["id"], "lane-a")
+            self.assertEqual(payload["conversations"]["filters"]["lane"], "lane-a")
+            self.assertEqual(payload["conversation_source_health"]["lane"], "lane-a")
+
     def test_lane_inspect_suppresses_unrelated_lane_errors(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -1527,6 +1571,31 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["lanes"][0]["id"], "lane-a")
             self.assertEqual(data["health_counts"], {"ok": 1})
             self.assertEqual(data["owner_counts"]["codex"]["running"], 1)
+
+    def test_lanes_status_command_with_lane_filter_matches_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "running_count": 1,
+                    "total_count": 2,
+                    "lanes": [
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"},
+                        {"id": "lane-b", "owner": "gemini", "running": False, "pid": None, "health": "stopped"},
+                    ],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "LANE-A"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertEqual(data["requested_lane"], "lane-a")
+            self.assertEqual(data["total_count"], 1)
+            self.assertEqual(data["lanes"][0]["id"], "lane-a")
 
     def test_lanes_status_with_lane_filter_suppresses_unrelated_errors(self):
         with tempfile.TemporaryDirectory() as td:

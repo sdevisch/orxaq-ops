@@ -2305,7 +2305,13 @@ def _augment_lane_payload_with_conversation_rollup(
     if not isinstance(lane_items, list):
         lane_items = []
 
-    requested_lane = str(lane_payload.get("requested_lane", "all")).strip() or "all"
+    requested_lane_raw = str(lane_payload.get("requested_lane", "all")).strip() or "all"
+    requested_lane = requested_lane_raw
+    if requested_lane != "all":
+        known_lane_ids = sorted(set(rollup) | {str(item.get("id", "")).strip() for item in lane_items if isinstance(item, dict)})
+        folded_matches = [lane_id for lane_id in known_lane_ids if lane_id and lane_id.lower() == requested_lane.lower()]
+        if len(folded_matches) == 1:
+            requested_lane = folded_matches[0]
     enriched_lanes: list[dict[str, Any]] = []
     seen_lanes: set[str] = set()
     for lane in lane_items:
@@ -2429,6 +2435,7 @@ def _augment_lane_payload_with_conversation_rollup(
     result["conversation_partial"] = bool(conversation_payload.get("partial", False))
     result["conversation_ok"] = bool(conversation_payload.get("ok", False))
     result["conversation_errors"] = normalized_errors
+    result["requested_lane"] = requested_lane if requested_lane != "all" else "all"
     return result
 
 
@@ -2449,22 +2456,38 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
             )
             payload = _augment_lane_payload_with_conversation_rollup(payload, conversation_payload)
             payload["action"] = "status"
-            payload["lane"] = normalized_lane or ""
+            payload["lane"] = (
+                str(payload.get("requested_lane", normalized_lane)).strip()
+                if normalized_lane
+                else ""
+            )
             return payload
         if normalized_action == "ensure":
             payload = ensure_lanes_background(config, lane_id=normalized_lane)
             payload["action"] = "ensure"
-            payload["lane"] = normalized_lane or ""
+            payload["lane"] = (
+                str(payload.get("requested_lane", normalized_lane)).strip()
+                if normalized_lane
+                else ""
+            )
             return payload
         if normalized_action == "start":
             payload = start_lanes_background(config, lane_id=normalized_lane)
             payload["action"] = "start"
-            payload["lane"] = normalized_lane or ""
+            payload["lane"] = (
+                str(payload.get("requested_lane", normalized_lane)).strip()
+                if normalized_lane
+                else ""
+            )
             return payload
         if normalized_action == "stop":
             payload = stop_lanes_background(config, lane_id=normalized_lane)
             payload["action"] = "stop"
-            payload["lane"] = normalized_lane or ""
+            payload["lane"] = (
+                str(payload.get("requested_lane", normalized_lane)).strip()
+                if normalized_lane
+                else ""
+            )
             if "ok" not in payload:
                 payload["ok"] = int(payload.get("failed_count", 0)) == 0
             payload.setdefault("failed_count", 0)
@@ -2539,12 +2562,33 @@ def _normalize_lane_entry(raw: Any) -> dict[str, Any] | None:
     return lane
 
 
+def _resolve_lane_filter(lane_items: list[dict[str, Any]], requested_lane: str) -> str:
+    lane_filter = requested_lane.strip()
+    if not lane_filter:
+        return ""
+    known_ids = sorted(
+        {
+            str(item.get("id", "")).strip()
+            for item in lane_items
+            if isinstance(item, dict) and str(item.get("id", "")).strip()
+        }
+    )
+    if lane_filter in known_ids:
+        return lane_filter
+    folded_matches = [lane_id for lane_id in known_ids if lane_id.lower() == lane_filter.lower()]
+    if len(folded_matches) == 1:
+        return folded_matches[0]
+    return lane_filter
+
+
 def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -> dict[str, Any]:
-    requested_lane = lane_id.strip()
+    requested_lane_raw = lane_id.strip()
     raw_lane_items = payload.get("lanes", [])
     if not isinstance(raw_lane_items, list):
         raw_lane_items = []
     lane_items = [item for item in (_normalize_lane_entry(raw) for raw in raw_lane_items) if item is not None]
+    requested_lane = _resolve_lane_filter(lane_items, requested_lane_raw)
+    requested_lane_normalized = requested_lane.lower()
     known_lane_ids = {
         str(item.get("id", "")).strip().lower()
         for item in lane_items
@@ -2554,7 +2598,7 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
     suppressed_errors: list[str] = []
 
     if requested_lane:
-        lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == requested_lane]
+        lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip().lower() == requested_lane_normalized]
         lane_specific_errors = [
             item
             for item in normalized_errors

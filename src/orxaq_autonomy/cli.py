@@ -393,17 +393,38 @@ def _normalize_lane_entry(raw: Any) -> dict[str, Any] | None:
     return lane
 
 
+def _resolve_lane_filter(lane_items: list[dict[str, Any]], requested_lane: str) -> str:
+    lane_filter = requested_lane.strip()
+    if not lane_filter:
+        return ""
+    known_ids = sorted(
+        {
+            str(item.get("id", "")).strip()
+            for item in lane_items
+            if isinstance(item, dict) and str(item.get("id", "")).strip()
+        }
+    )
+    if lane_filter in known_ids:
+        return lane_filter
+    folded_matches = [lane_id for lane_id in known_ids if lane_id.lower() == lane_filter.lower()]
+    if len(folded_matches) == 1:
+        return folded_matches[0]
+    return lane_filter
+
+
 def _filter_lane_status_payload(
     payload: dict[str, Any],
     *,
     requested_lane: str = "",
     lanes_file: Path,
 ) -> dict[str, Any]:
-    lane_filter = requested_lane.strip()
+    lane_filter_raw = requested_lane.strip()
     raw_lane_items = payload.get("lanes", [])
     if not isinstance(raw_lane_items, list):
         raw_lane_items = []
     lane_items = [item for item in (_normalize_lane_entry(raw) for raw in raw_lane_items) if item is not None]
+    lane_filter = _resolve_lane_filter(lane_items, lane_filter_raw)
+    lane_filter_normalized = lane_filter.lower()
     known_lane_ids = {
         str(item.get("id", "")).strip().lower()
         for item in lane_items
@@ -413,7 +434,7 @@ def _filter_lane_status_payload(
     suppressed_errors: list[str] = []
 
     if lane_filter:
-        lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == lane_filter]
+        lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip().lower() == lane_filter_normalized]
         lane_specific_errors = [
             item
             for item in normalized_errors
@@ -745,7 +766,13 @@ def _augment_lane_status_with_conversations(
         lane_items = []
     rollup = _lane_conversation_rollup(conversation_payload)
 
-    requested_lane = str(lane_payload.get("requested_lane", "all")).strip() or "all"
+    requested_lane_raw = str(lane_payload.get("requested_lane", "all")).strip() or "all"
+    requested_lane = requested_lane_raw
+    if requested_lane != "all":
+        known_lane_ids = sorted(set(rollup) | {str(item.get("id", "")).strip() for item in lane_items if isinstance(item, dict)})
+        folded_matches = [lane_id for lane_id in known_lane_ids if lane_id and lane_id.lower() == requested_lane.lower()]
+        if len(folded_matches) == 1:
+            requested_lane = folded_matches[0]
     enriched_lanes: list[dict[str, Any]] = []
     seen_lanes: set[str] = set()
     for lane in lane_items:
@@ -873,6 +900,7 @@ def _augment_lane_status_with_conversations(
     out["conversation_partial"] = bool(conversation_payload.get("partial", False))
     out["conversation_ok"] = bool(conversation_payload.get("ok", False))
     out["conversation_errors"] = normalized_errors
+    out["requested_lane"] = requested_lane if requested_lane != "all" else "all"
     return out
 
 
@@ -1186,6 +1214,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested_lane=requested_lane,
                 lanes_file=cfg.lanes_file,
             )
+            resolved_lane = str(lane_payload.get("requested_lane", "")).strip() or requested_lane
             lane_items = lane_payload.get("lanes", [])
             if not isinstance(lane_items, list):
                 lane_items = []
@@ -1198,13 +1227,13 @@ def main(argv: list[str] | None = None) -> int:
                 lines=args.lines,
                 include_lanes=not args.no_lanes,
                 owner=args.owner,
-                lane_id=requested_lane,
+                lane_id=resolved_lane,
                 event_type=args.event_type,
                 contains=args.contains,
                 tail=args.tail,
             )
             lane_conv_rollup = _lane_conversation_rollup(conv_payload)
-            lane_conv_fallback = lane_conv_rollup.get(requested_lane, {})
+            lane_conv_fallback = lane_conv_rollup.get(resolved_lane, {})
             lane_signal_available = bool(lane_conv_fallback)
             if not selected and any(str(item).strip().startswith("Unknown lane id ") for item in lane_errors):
                 if not lane_signal_available:
@@ -1220,7 +1249,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not fallback_owner or fallback_owner.lower() == "unknown":
                     fallback_owner = str(lane_conv_fallback.get("owner", "")).strip() or "unknown"
                 lane_entry = {
-                    "id": requested_lane,
+                    "id": resolved_lane,
                     "owner": fallback_owner,
                     "running": False,
                     "pid": None,
@@ -1307,10 +1336,11 @@ def main(argv: list[str] | None = None) -> int:
             lane_health = str(lane_entry.get("health", "")).strip().lower()
             conversation_source_health = _lane_conversation_source_health(
                 conv_payload,
-                lane_id=requested_lane,
+                lane_id=resolved_lane,
             )
             payload = {
-                "requested_lane": requested_lane,
+                "requested_lane": resolved_lane,
+                "input_lane": requested_lane,
                 "lane": lane_entry,
                 "lane_errors": lane_errors,
                 "suppressed_lane_errors": lane_payload.get("suppressed_errors", []),

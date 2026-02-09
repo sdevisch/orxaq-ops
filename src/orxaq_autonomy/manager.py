@@ -2475,6 +2475,26 @@ def load_lane_specs(config: ManagerConfig) -> list[dict[str, Any]]:
     return lanes
 
 
+def _resolve_requested_lane_id(lanes: list[dict[str, Any]], requested_lane: str) -> str | None:
+    lane_filter = requested_lane.strip()
+    if not lane_filter:
+        return None
+    known_ids: list[str] = []
+    for lane in lanes:
+        lane_id = str(lane.get("id", "")).strip()
+        if lane_id:
+            known_ids.append(lane_id)
+    if lane_filter in known_ids:
+        return lane_filter
+    folded_matches = sorted({lane_id for lane_id in known_ids if lane_id.lower() == lane_filter.lower()})
+    if len(folded_matches) == 1:
+        return folded_matches[0]
+    if len(folded_matches) > 1:
+        joined = ", ".join(repr(item) for item in folded_matches)
+        raise RuntimeError(f"Lane id {lane_filter!r} is ambiguous. Matching ids: {joined}.")
+    return None
+
+
 def _lane_load_error_entries(errors: list[str]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for raw in errors:
@@ -3267,8 +3287,9 @@ def stop_lane_background(
 def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
     requested_lane = lane_id.strip() if isinstance(lane_id, str) and lane_id.strip() else None
     lanes, load_errors = _load_lane_specs_resilient(config)
-    selected = [lane for lane in lanes if lane["enabled"]] if requested_lane is None else [lane for lane in lanes if lane["id"] == requested_lane]
-    if requested_lane is not None and not selected:
+    resolved_lane = _resolve_requested_lane_id(lanes, requested_lane or "") if requested_lane is not None else None
+    selected = [lane for lane in lanes if lane["enabled"]] if resolved_lane is None else [lane for lane in lanes if lane["id"] == resolved_lane]
+    if requested_lane is not None and resolved_lane is None:
         raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
     ensured: list[dict[str, Any]] = []
     started: list[dict[str, Any]] = []
@@ -3313,7 +3334,7 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
 
     return {
         "timestamp": _now_iso(),
-        "requested_lane": requested_lane or "all_enabled",
+        "requested_lane": resolved_lane or "all_enabled",
         "ensured_count": len(ensured),
         "started_count": len(started),
         "restarted_count": len(restarted),
@@ -3333,8 +3354,9 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
 def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
     requested_lane = lane_id.strip() if isinstance(lane_id, str) and lane_id.strip() else None
     lanes, load_errors = _load_lane_specs_resilient(config)
-    selected = [lane for lane in lanes if lane["enabled"]] if requested_lane is None else [lane for lane in lanes if lane["id"] == requested_lane]
-    if requested_lane is not None and not selected:
+    resolved_lane = _resolve_requested_lane_id(lanes, requested_lane or "") if requested_lane is not None else None
+    selected = [lane for lane in lanes if lane["enabled"]] if resolved_lane is None else [lane for lane in lanes if lane["id"] == resolved_lane]
+    if requested_lane is not None and resolved_lane is None:
         raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
     started: list[dict[str, Any]] = []
     config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
@@ -3346,7 +3368,7 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
             failed.append({"id": lane["id"], "owner": lane["owner"], "error": str(err), "source": "lane_runtime"})
     return {
         "timestamp": _now_iso(),
-        "requested_lane": requested_lane or "all_enabled",
+        "requested_lane": resolved_lane or "all_enabled",
         "started_count": len(started),
         "started": started,
         "config_error_count": len(config_failures),
@@ -3361,10 +3383,11 @@ def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> 
     requested_lane = lane_id.strip() if isinstance(lane_id, str) and lane_id.strip() else None
     lanes, load_errors = _load_lane_specs_resilient(config)
     by_lane_id = {str(lane["id"]): lane for lane in lanes}
-    if requested_lane is not None and requested_lane not in by_lane_id:
+    resolved_lane = _resolve_requested_lane_id(lanes, requested_lane or "") if requested_lane is not None else None
+    if requested_lane is not None and resolved_lane is None:
         raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
 
-    selected_ids = [requested_lane] if requested_lane is not None else [str(lane["id"]) for lane in lanes]
+    selected_ids = [resolved_lane] if resolved_lane is not None else [str(lane["id"]) for lane in lanes]
     config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
     skipped: list[dict[str, Any]] = []
     stopped: list[dict[str, Any]] = []
@@ -3402,7 +3425,7 @@ def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> 
             )
     return {
         "timestamp": _now_iso(),
-        "requested_lane": requested_lane or "all",
+        "requested_lane": resolved_lane or "all",
         "stopped_count": len(stopped),
         "stopped": stopped,
         "skipped_count": len(skipped),
