@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -425,6 +426,20 @@ def _dashboard_html(refresh_sec: int) -> str:
         <div id="heartbeatState" class="mono"></div>
       </article>
 
+      <article class="card span-8">
+        <h2>Autonomous PID Watchdog</h2>
+        <div id="watchdogSummary" class="mono">watchdog: loading...</div>
+        <div class="stats">
+          <div class="stat"><div class="k">Processes</div><div id="watchdogProcessTotal" class="v">0</div></div>
+          <div class="stat"><div class="k">Healthy</div><div id="watchdogHealthy" class="v">0</div></div>
+          <div class="stat"><div class="k">Restarted</div><div id="watchdogRestarted" class="v">0</div></div>
+          <div class="stat"><div class="k">Problematic</div><div id="watchdogProblematic" class="v">0</div></div>
+          <div class="stat"><div class="k">Runs</div><div id="watchdogRuns" class="v">0</div></div>
+        </div>
+        <div id="watchdogList" class="repo"></div>
+        <div id="watchdogEvents" class="feed"></div>
+      </article>
+
       <article class="card span-4">
         <h2>Cost &amp; Quality</h2>
         <div id="excitingStat" class="logline">Most exciting stat: loading...</div>
@@ -508,6 +523,7 @@ def _dashboard_html(refresh_sec: int) -> str:
     let lastSuccessfulLanePayload = null;
     let lastSuccessfulConversationPayload = null;
     let lastSuccessfulDawPayload = null;
+    let lastSuccessfulWatchdogPayload = null;
 
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
@@ -541,6 +557,13 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
     function formatNowTimestamp() {{
       return USER_TIMESTAMP_FORMATTER.format(new Date());
+    }}
+    function formatAgeSeconds(value) {{
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return "-";
+      if (seconds < 60) return `${{Math.round(seconds)}}s`;
+      if (seconds < 3600) return `${{Math.round(seconds / 60)}}m`;
+      return `${{(seconds / 3600).toFixed(1)}}h`;
     }}
     function stateBadge(ok) {{ return ok ? '<span class="ok">ok</span>' : '<span class="bad">error</span>'; }}
     function parseTail(value) {{
@@ -938,6 +961,101 @@ def _dashboard_html(refresh_sec: int) -> str:
             ].join("");
           }}).join("")
         : '<div class="feed-item">No recent activity.</div>';
+    }}
+
+    function renderWatchdog(payload) {{
+      const state = (payload && typeof payload === "object") ? payload : {{}};
+      const processes = Array.isArray(state.processes) ? state.processes : [];
+      const recentEvents = Array.isArray(state.recent_events) ? state.recent_events : [];
+      const errors = Array.isArray(state.errors)
+        ? state.errors.filter((item) => String(item || "").trim())
+        : [];
+      const problematic = Array.isArray(state.problematic_ids) ? state.problematic_ids : [];
+
+      const processTotal = Number(state.total_processes || processes.length || 0);
+      const healthyCount = Number(state.healthy_count || 0);
+      const restartedCount = Number(state.restarted_count || 0);
+      const problematicCount = Number(state.problematic_count || problematic.length || 0);
+      const runsTotal = Number(state.runs_total || 0);
+      const partial = Boolean(state.partial);
+      const stateExists = Boolean(state.state_exists);
+      const historyExists = Boolean(state.history_exists);
+      const errorSuffix = errors.length ? ` · errors=${{errors.length}}` : "";
+      const partialSuffix = partial ? " · partial=true" : "";
+      const runAt = formatTimestamp(state.last_run_at || "");
+      const runAge = formatAgeSeconds(state.last_run_age_sec);
+      const stateLabel = stateExists ? "present" : "missing";
+      const historyLabel = historyExists ? "present" : "missing";
+      const summary = [
+        `watchdog_ok=${{yn(Boolean(state.ok))}}`,
+        `processes=${{processTotal}}`,
+        `healthy=${{healthyCount}}`,
+        `restarted=${{restartedCount}}`,
+        `problematic=${{problematicCount}}`,
+        `runs=${{runsTotal}}`,
+        `last_run=${{runAt || "-"}}`,
+        `age=${{runAge}}`,
+        `state=${{stateLabel}}`,
+        `history=${{historyLabel}}`,
+      ].join(" · ");
+
+      byId("watchdogSummary").textContent = `${{summary}}${{partialSuffix}}${{errorSuffix}}`;
+      byId("watchdogProcessTotal").textContent = String(processTotal);
+      byId("watchdogHealthy").textContent = String(healthyCount);
+      byId("watchdogRestarted").textContent = String(restartedCount);
+      byId("watchdogProblematic").textContent = String(problematicCount);
+      byId("watchdogRuns").textContent = String(runsTotal);
+
+      const listRows = [];
+      if (errors.length) {{
+        for (const error of errors) {{
+          listRows.push(`<div class="line bad">error: ${{escapeHtml(String(error || ""))}}</div>`);
+        }}
+      }}
+      if (processes.length) {{
+        for (const process of processes) {{
+          const item = process || {{}};
+          const processId = String(item.id || "unknown");
+          const status = String(item.status || "unknown");
+          const pid = item.pid ?? "-";
+          const checksTotal = Number(item.checks_total || 0);
+          const unhealthyChecks = Number(item.unhealthy_checks || 0);
+          const restarts = Number(item.restart_attempts || 0);
+          const restartSuccesses = Number(item.restart_successes || 0);
+          const restartFailures = Number(item.restart_failures || 0);
+          const checkedAt = formatTimestamp(item.last_checked_at || "");
+          const reason = String(item.reason || item.last_reason || "").trim();
+          const statusClass =
+            status === "healthy" ? "ok" : (status === "restarted" ? "warn" : "bad");
+          listRows.push(
+            `<div class="line"><span class="mono">${{escapeHtml(processId)}}</span> status=<span class="${{statusClass}}">${{escapeHtml(status)}}</span> · pid=${{escapeHtml(String(pid))}} · checks=${{checksTotal}} · unhealthy=${{unhealthyChecks}} · restarts=${{restarts}} (ok=${{restartSuccesses}} fail=${{restartFailures}})</div>`
+          );
+          listRows.push(
+            `<div class="line mono">last_checked=${{escapeHtml(checkedAt || "-")}}${{reason ? ` · reason=${{escapeHtml(reason.slice(0, 180))}}` : ""}}</div>`
+          );
+        }}
+      }} else {{
+        listRows.push('<div class="line">No watchdog process entries yet.</div>');
+      }}
+      byId("watchdogList").innerHTML = listRows.join("");
+
+      byId("watchdogEvents").innerHTML = recentEvents.length
+        ? recentEvents.map((event) => {{
+            const item = event || {{}};
+            const eventTime = formatTimestamp(item.time || item.timestamp || "");
+            const processId = String(item.id || "unknown");
+            const status = String(item.status || "unknown");
+            const pid = item.pid ?? "-";
+            const reason = String(item.reason || "").trim();
+            const restartRc = item.restart_returncode;
+            return [
+              '<div class="feed-item">',
+              `<div class="feed-head"><span>${{escapeHtml(eventTime || "-")}}</span><span>id=${{escapeHtml(processId)}}</span><span>status=${{escapeHtml(status)}}</span><span>pid=${{escapeHtml(String(pid))}}</span><span>restart_rc=${{escapeHtml(String(restartRc ?? "-"))}}</span></div>`,
+              reason ? `<div>${{escapeHtml(reason)}}</div>` : '<div>reason: -</div>',
+              '</div>',
+            ].join("");
+          }}).join("")
+        : '<div class="feed-item">No watchdog history events yet.</div>';
     }}
 
     function buildConversationSourceMap(payload) {{
@@ -1445,11 +1563,12 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
 
     async function refresh() {{
-      const [monitorResult, convResult, laneResult, dawResult] = await Promise.all([
+      const [monitorResult, convResult, laneResult, dawResult, watchdogResult] = await Promise.all([
         fetchJson('/api/monitor'),
         fetchJson(conversationPath()),
         fetchJson(laneStatusPath()),
         fetchJson('/api/daw?window_sec=120'),
+        fetchJson('/api/watchdog?events=40'),
       ]);
 
       if (monitorResult.ok && monitorResult.payload) {{
@@ -1534,12 +1653,49 @@ def _dashboard_html(refresh_sec: int) -> str:
           control_events: 0,
         }});
       }}
+      let effectiveWatchdogPayload = null;
+      if (watchdogResult.ok && watchdogResult.payload) {{
+        effectiveWatchdogPayload = watchdogResult.payload;
+        lastSuccessfulWatchdogPayload = watchdogResult.payload;
+      }} else if (lastSuccessfulWatchdogPayload) {{
+        effectiveWatchdogPayload = {{
+          ...lastSuccessfulWatchdogPayload,
+          partial: true,
+          ok: false,
+          errors: [
+            `watchdog endpoint unavailable: ${{String(watchdogResult.error || "unknown error")}}`,
+            "watchdog data from stale cache",
+          ],
+        }};
+      }} else {{
+        effectiveWatchdogPayload = {{
+          ok: false,
+          partial: true,
+          state_exists: false,
+          history_exists: false,
+          state_file: "",
+          history_file: "",
+          total_processes: 0,
+          healthy_count: 0,
+          restarted_count: 0,
+          problematic_count: 0,
+          runs_total: 0,
+          last_run_at: "",
+          last_run_age_sec: -1,
+          processes: [],
+          recent_events: [],
+          problematic_ids: [],
+          errors: [String(watchdogResult.error || "watchdog endpoint unavailable")],
+        }};
+      }}
+      renderWatchdog(effectiveWatchdogPayload);
 
       const diagnosticsPayload = (snapshotForRender && snapshotForRender.diagnostics) || {{}};
       renderDiagnostics(diagnosticsPayload, {{
         monitor_endpoint: monitorResult.ok ? "" : monitorResult.error,
         conversations_endpoint: convResult.ok ? "" : convResult.error,
         lanes_endpoint: laneResult.ok ? "" : laneResult.error,
+        watchdog_endpoint: watchdogResult.ok ? "" : watchdogResult.error,
       }});
     }}
 
@@ -1694,6 +1850,11 @@ def start_dashboard(
                     window_sec = _parse_bounded_int(query, "window_sec", default=120, minimum=20, maximum=1800)
                     lines = _parse_bounded_int(query, "lines", default=800, minimum=200, maximum=2000)
                     self._send_json(_safe_daw_snapshot(config, window_sec=window_sec, lines=lines))
+                    return
+                if parsed.path == "/api/watchdog":
+                    query = parse_qs(parsed.query)
+                    events = _parse_bounded_int(query, "events", default=40, minimum=1, maximum=500)
+                    self._send_json(_safe_watchdog_snapshot(config, events=events))
                     return
                 if parsed.path == "/api/status":
                     self._send_json(status_snapshot(config))
@@ -3029,6 +3190,180 @@ def _safe_conversations_snapshot(
         contains=contains,
         tail=tail,
     )
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _watchdog_state_path(config: ManagerConfig) -> Path:
+    env_path = os.environ.get("ORXAQ_AUTONOMY_PROCESS_WATCHDOG_STATE_FILE", "").strip()
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+
+    home_default = (Path.home() / ".codex" / "autonomy" / "process-watchdog-state.json").resolve()
+    artifacts_dir = Path(getattr(config, "artifacts_dir", Path.cwd())).resolve()
+    artifacts_default = (artifacts_dir / "process-watchdog-state.json").resolve()
+    if home_default.exists():
+        return home_default
+    if artifacts_default.exists():
+        return artifacts_default
+    return home_default
+
+
+def _watchdog_history_path(config: ManagerConfig, state_path: Path) -> Path:
+    env_path = os.environ.get("ORXAQ_AUTONOMY_PROCESS_WATCHDOG_HISTORY_FILE", "").strip()
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+
+    sibling_default = state_path.with_name("process-watchdog-history.ndjson").resolve()
+    home_default = (Path.home() / ".codex" / "autonomy" / "process-watchdog-history.ndjson").resolve()
+    artifacts_dir = Path(getattr(config, "artifacts_dir", Path.cwd())).resolve()
+    artifacts_default = (artifacts_dir / "process-watchdog-history.ndjson").resolve()
+    for candidate in [sibling_default, home_default, artifacts_default]:
+        if candidate.exists():
+            return candidate
+    return sibling_default
+
+
+def _watchdog_normalize_pid(value: Any) -> int | None:
+    pid = _coerce_int(value, default=-1)
+    if pid <= 0:
+        return None
+    return pid
+
+
+def _watchdog_load_recent_events(history_path: Path, events: int) -> list[dict[str, Any]]:
+    if not history_path.exists() or not history_path.is_file():
+        return []
+    try:
+        lines = history_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for raw_line in lines[-max(1, events) :]:
+        text = raw_line.strip()
+        if not text:
+            continue
+        try:
+            item = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "time": str(item.get("time") or item.get("timestamp") or "").strip(),
+                "id": str(item.get("id") or "").strip(),
+                "status": str(item.get("status") or "").strip(),
+                "pid": _watchdog_normalize_pid(item.get("pid")),
+                "reason": str(item.get("reason") or "").strip(),
+                "restart_returncode": item.get("restart_returncode"),
+            }
+        )
+    return normalized
+
+
+def _safe_watchdog_snapshot(config: ManagerConfig, *, events: int = 40) -> dict[str, Any]:
+    state_path = _watchdog_state_path(config)
+    history_path = _watchdog_history_path(config, state_path)
+    state_exists = state_path.exists() and state_path.is_file()
+    history_exists = history_path.exists() and history_path.is_file()
+
+    critical_errors: list[str] = []
+    warning_errors: list[str] = []
+
+    raw_state: dict[str, Any] = {}
+    if state_exists:
+        try:
+            loaded = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw_state = loaded
+            else:
+                critical_errors.append(f"watchdog state is not an object: {state_path}")
+        except Exception as err:
+            critical_errors.append(f"watchdog state parse error: {err}")
+    else:
+        critical_errors.append(f"watchdog state file not found: {state_path}")
+
+    if not history_exists:
+        warning_errors.append(f"watchdog history file not found: {history_path}")
+
+    process_items: list[dict[str, Any]] = []
+    raw_processes = raw_state.get("processes", {})
+    if isinstance(raw_processes, dict):
+        for process_id, payload in raw_processes.items():
+            process_name = str(process_id).strip()
+            if not process_name:
+                continue
+            item = payload if isinstance(payload, dict) else {}
+            process_items.append(
+                {
+                    "id": process_name,
+                    "pid": _watchdog_normalize_pid(item.get("last_pid")),
+                    "status": str(item.get("last_status") or "unknown").strip() or "unknown",
+                    "last_checked_at": str(item.get("last_checked_at") or "").strip(),
+                    "last_restart_at": str(item.get("last_restart_at") or "").strip(),
+                    "last_restart_rc": item.get("last_restart_rc"),
+                    "reason": str(item.get("last_reason") or "").strip(),
+                    "checks_total": max(0, _coerce_int(item.get("checks_total"), default=0)),
+                    "healthy_checks": max(0, _coerce_int(item.get("healthy_checks"), default=0)),
+                    "unhealthy_checks": max(0, _coerce_int(item.get("unhealthy_checks"), default=0)),
+                    "restart_attempts": max(0, _coerce_int(item.get("restart_attempts"), default=0)),
+                    "restart_successes": max(0, _coerce_int(item.get("restart_successes"), default=0)),
+                    "restart_failures": max(0, _coerce_int(item.get("restart_failures"), default=0)),
+                }
+            )
+    process_items.sort(key=lambda item: item["id"])
+
+    problematic_statuses = {"restart_failed", "down_cooldown", "down_no_restart"}
+    healthy_statuses = {"healthy", "restarted"}
+    healthy_count = sum(1 for item in process_items if str(item.get("status", "")).lower() in healthy_statuses)
+    restarted_count = sum(1 for item in process_items if str(item.get("status", "")).lower() == "restarted")
+    problematic_ids = [
+        str(item.get("id", ""))
+        for item in process_items
+        if str(item.get("status", "")).lower() in problematic_statuses
+    ]
+    restart_attempts_total = sum(_coerce_int(item.get("restart_attempts"), default=0) for item in process_items)
+    restart_successes_total = sum(_coerce_int(item.get("restart_successes"), default=0) for item in process_items)
+    restart_failures_total = sum(_coerce_int(item.get("restart_failures"), default=0) for item in process_items)
+
+    last_run_at = str(raw_state.get("last_run_at") or "").strip()
+    parsed_last_run = _parse_event_timestamp(last_run_at)
+    if parsed_last_run is None:
+        last_run_age_sec = -1
+    else:
+        last_run_age_sec = max(0, int((datetime.now(timezone.utc) - parsed_last_run).total_seconds()))
+
+    recent_events = _watchdog_load_recent_events(history_path, events=events)
+    all_errors = [*critical_errors, *warning_errors]
+    return {
+        "ok": not critical_errors,
+        "partial": bool(all_errors),
+        "errors": all_errors,
+        "state_file": str(state_path),
+        "history_file": str(history_path),
+        "state_exists": state_exists,
+        "history_exists": history_exists,
+        "runs_total": max(0, _coerce_int(raw_state.get("runs_total"), default=0)),
+        "last_run_at": last_run_at,
+        "last_run_age_sec": last_run_age_sec,
+        "total_processes": len(process_items),
+        "healthy_count": healthy_count,
+        "restarted_count": restarted_count,
+        "problematic_count": len(problematic_ids),
+        "problematic_ids": problematic_ids,
+        "restart_attempts_total": restart_attempts_total,
+        "restart_successes_total": restart_successes_total,
+        "restart_failures_total": restart_failures_total,
+        "processes": process_items,
+        "recent_events": recent_events,
+    }
 
 
 def _bind_server_with_port_scan(

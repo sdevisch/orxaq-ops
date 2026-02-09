@@ -25,8 +25,12 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("/api/lanes", html)
         self.assertIn("/api/conversations", html)
         self.assertIn("/api/lanes/action", html)
+        self.assertIn("/api/watchdog", html)
         self.assertIn("Parallel Lanes", html)
         self.assertIn("Conversations", html)
+        self.assertIn("Autonomous PID Watchdog", html)
+        self.assertIn("watchdogSummary", html)
+        self.assertIn("watchdogEvents", html)
         self.assertIn("Cost &amp; Quality", html)
         self.assertIn("metricsSummary", html)
         self.assertIn("excitingStat", html)
@@ -66,6 +70,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("lastSuccessfulLanePayload", html)
         self.assertIn("lastSuccessfulConversationPayload", html)
         self.assertIn("lastSuccessfulDawPayload", html)
+        self.assertIn("lastSuccessfulWatchdogPayload", html)
+        self.assertIn("renderWatchdog", html)
+        self.assertIn("watchdog endpoint unavailable", html)
         self.assertIn("USER_TIMEZONE", html)
         self.assertIn("formatTimestamp", html)
         self.assertIn("stale cache used", html)
@@ -523,6 +530,111 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(payload["sources"][0]["kind"], "primary")
         self.assertFalse(payload["sources"][0]["ok"])
         self.assertEqual(payload["sources"][0]["path"], str(cfg.conversation_log_file))
+
+    def test_safe_watchdog_snapshot_degrades_when_state_file_missing(self):
+        cfg = mock.Mock()
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            cfg.artifacts_dir = root
+            state_file = root / "missing-state.json"
+            history_file = root / "missing-history.ndjson"
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "ORXAQ_AUTONOMY_PROCESS_WATCHDOG_STATE_FILE": str(state_file),
+                    "ORXAQ_AUTONOMY_PROCESS_WATCHDOG_HISTORY_FILE": str(history_file),
+                },
+            ):
+                payload = dashboard._safe_watchdog_snapshot(cfg, events=5)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["partial"])
+        self.assertFalse(payload["state_exists"])
+        self.assertFalse(payload["history_exists"])
+        self.assertEqual(payload["total_processes"], 0)
+        self.assertEqual(payload["problematic_count"], 0)
+        self.assertIn("watchdog state file not found", payload["errors"][0])
+
+    def test_safe_watchdog_snapshot_reads_state_and_recent_events(self):
+        cfg = mock.Mock()
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            cfg.artifacts_dir = root
+            state_file = root / "watchdog-state.json"
+            history_file = root / "watchdog-history.ndjson"
+            state_file.write_text(
+                json.dumps(
+                    {
+                        "runs_total": 7,
+                        "last_run_at": "2026-01-01T00:00:04Z",
+                        "processes": {
+                            "orxaq-dashboard": {
+                                "last_pid": 222,
+                                "last_status": "restart_failed",
+                                "last_checked_at": "2026-01-01T00:00:04Z",
+                                "last_restart_at": "2026-01-01T00:00:03Z",
+                                "last_restart_rc": 1,
+                                "last_reason": "bind error",
+                                "checks_total": 5,
+                                "healthy_checks": 2,
+                                "unhealthy_checks": 3,
+                                "restart_attempts": 3,
+                                "restart_successes": 1,
+                                "restart_failures": 2,
+                            },
+                            "orxaq-supervisor": {
+                                "last_pid": 111,
+                                "last_status": "healthy",
+                                "last_checked_at": "2026-01-01T00:00:04Z",
+                                "checks_total": 5,
+                                "healthy_checks": 5,
+                                "unhealthy_checks": 0,
+                                "restart_attempts": 0,
+                                "restart_successes": 0,
+                                "restart_failures": 0,
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            history_file.write_text(
+                "\n".join(
+                    [
+                        '{"time":"2026-01-01T00:00:02Z","id":"orxaq-supervisor","status":"healthy","pid":111,"reason":"","restart_returncode":null}',
+                        "not-json",
+                        '{"time":"2026-01-01T00:00:03Z","id":"orxaq-dashboard","status":"restarted","pid":333,"reason":"restarted","restart_returncode":0}',
+                        '{"time":"2026-01-01T00:00:04Z","id":"orxaq-dashboard","status":"restart_failed","pid":222,"reason":"bind error","restart_returncode":1}',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "ORXAQ_AUTONOMY_PROCESS_WATCHDOG_STATE_FILE": str(state_file),
+                    "ORXAQ_AUTONOMY_PROCESS_WATCHDOG_HISTORY_FILE": str(history_file),
+                },
+            ):
+                payload = dashboard._safe_watchdog_snapshot(cfg, events=2)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["partial"])
+        self.assertTrue(payload["state_exists"])
+        self.assertTrue(payload["history_exists"])
+        self.assertEqual(payload["runs_total"], 7)
+        self.assertEqual(payload["total_processes"], 2)
+        self.assertEqual(payload["healthy_count"], 1)
+        self.assertEqual(payload["problematic_count"], 1)
+        self.assertEqual(payload["problematic_ids"], ["orxaq-dashboard"])
+        self.assertEqual(payload["restart_attempts_total"], 3)
+        self.assertEqual(payload["restart_successes_total"], 1)
+        self.assertEqual(payload["restart_failures_total"], 2)
+        self.assertEqual(payload["state_file"], str(state_file.resolve()))
+        self.assertEqual(payload["history_file"], str(history_file.resolve()))
+        self.assertEqual(len(payload["recent_events"]), 2)
+        self.assertEqual(payload["recent_events"][0]["status"], "restarted")
+        self.assertEqual(payload["recent_events"][1]["status"], "restart_failed")
 
     def test_filter_conversation_payload_for_lane_suppresses_unrelated_lane_errors(self):
         payload = {

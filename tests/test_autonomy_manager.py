@@ -2436,6 +2436,97 @@ class ManagerTests(unittest.TestCase):
             argv = manager._build_lane_runner_cmd(cfg, lane)
             self.assertIn("--dependency-state-file", argv)
             self.assertIn(str(lane["dependency_state_file"]), argv)
+
+    def test_build_lane_runner_cmd_uses_lane_command_and_model_overrides(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "codex_cmd": "codex-local",
+                                "gemini_cmd": "gemini-local",
+                                "claude_cmd": "claude-local",
+                                "codex_model": "fast-codex-model",
+                                "gemini_model": "gemini-fast",
+                                "claude_model": "claude-fast",
+                                "gemini_fallback_models": ["gemini-fallback-a", "gemini-fallback-b"],
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane = manager.load_lane_specs(cfg)[0]
+            argv = manager._build_lane_runner_cmd(cfg, lane)
+            self.assertIn("--codex-cmd", argv)
+            self.assertIn("codex-local", argv)
+            self.assertIn("--gemini-cmd", argv)
+            self.assertIn("gemini-local", argv)
+            self.assertIn("--claude-cmd", argv)
+            self.assertIn("claude-local", argv)
+            self.assertIn("--codex-model", argv)
+            self.assertIn("fast-codex-model", argv)
+            self.assertIn("--gemini-model", argv)
+            self.assertIn("gemini-fast", argv)
+            self.assertIn("--claude-model", argv)
+            self.assertIn("claude-fast", argv)
+            self.assertEqual(argv.count("--gemini-fallback-model"), 2)
+            self.assertIn("gemini-fallback-a", argv)
+            self.assertIn("gemini-fallback-b", argv)
+
+    def test_start_lane_background_validates_owner_cli_with_lane_override(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "codex_cmd": "codex-local",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager._resolve_binary",
+                side_effect=lambda cmd: "/usr/local/bin/codex-local" if cmd == "codex-local" else None,
+            ) as resolve_binary, mock.patch(
+                "orxaq_autonomy.manager._repo_basic_check",
+                return_value=(True, "ok"),
+            ), mock.patch(
+                "orxaq_autonomy.manager.subprocess.Popen",
+                return_value=mock.Mock(pid=4242),
+            ), mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                return_value=True,
+            ):
+                payload = manager.start_lanes_background(cfg, lane_id="lane-a")
+            lane = manager.load_lane_specs(cfg)[0]
+            argv = manager._build_lane_runner_cmd(cfg, lane)
+            self.assertEqual(payload["started_count"], 1)
+            self.assertIn(mock.call("codex-local"), resolve_binary.call_args_list)
             self.assertIn("--handoff-dir", argv)
             handoff_value = argv[argv.index("--handoff-dir") + 1]
             self.assertEqual(handoff_value, str(lane["handoff_dir"]))

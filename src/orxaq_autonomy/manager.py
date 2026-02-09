@@ -868,10 +868,18 @@ def _lane_build_id(config: ManagerConfig, lane: dict[str, Any]) -> str:
         "routellm_enabled",
         "routellm_url",
         "routellm_timeout_sec",
+        "codex_cmd",
+        "gemini_cmd",
+        "claude_cmd",
+        "codex_model",
+        "gemini_model",
+        "claude_model",
     )
     for key in lane_keys:
         hasher.update(str(key).encode("utf-8"))
         hasher.update(str(lane.get(key, "")).encode("utf-8"))
+    for item in lane.get("gemini_fallback_models", []):
+        hasher.update(str(item).encode("utf-8"))
     for item in lane.get("validate_commands", []):
         hasher.update(str(item).encode("utf-8"))
     return hasher.hexdigest()[:12]
@@ -2600,6 +2608,28 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         routellm_timeout_sec = max(1, int(config.routellm_timeout_sec))
     routellm_enabled = bool(item.get("routellm_enabled", config.routellm_enabled))
     routellm_url = str(item.get("routellm_url", config.routellm_url)).strip()
+    codex_cmd = str(item.get("codex_cmd", config.codex_cmd)).strip() or config.codex_cmd
+    gemini_cmd = str(item.get("gemini_cmd", config.gemini_cmd)).strip() or config.gemini_cmd
+    claude_cmd = str(item.get("claude_cmd", config.claude_cmd)).strip() or config.claude_cmd
+    codex_model_raw = item.get("codex_model", config.codex_model if config.codex_model is not None else "")
+    gemini_model_raw = item.get("gemini_model", config.gemini_model if config.gemini_model is not None else "")
+    claude_model_raw = item.get("claude_model", config.claude_model if config.claude_model is not None else "")
+    codex_model = str(codex_model_raw).strip() or None
+    gemini_model = str(gemini_model_raw).strip() or None
+    claude_model = str(claude_model_raw).strip() or None
+    gemini_fallback_raw = item.get("gemini_fallback_models", config.gemini_fallback_models)
+    if isinstance(gemini_fallback_raw, list):
+        gemini_fallback_models = [str(candidate).strip() for candidate in gemini_fallback_raw if str(candidate).strip()]
+    elif gemini_fallback_raw in (None, ""):
+        gemini_fallback_models = []
+    else:
+        gemini_fallback_models = [
+            candidate.strip()
+            for candidate in re.split(r"[;,]", str(gemini_fallback_raw))
+            if candidate.strip()
+        ]
+    if not gemini_fallback_models:
+        gemini_fallback_models = list(config.gemini_fallback_models)
     mcp_raw = str(item.get("mcp_context_file", "")).strip()
     mcp_default = config.mcp_context_file or (config.root_dir / "config" / "mcp_context.example.json")
     if mcp_raw or config.mcp_context_file is not None:
@@ -2646,6 +2676,13 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         "routellm_enabled": routellm_enabled,
         "routellm_url": routellm_url,
         "routellm_timeout_sec": routellm_timeout_sec,
+        "codex_cmd": codex_cmd,
+        "gemini_cmd": gemini_cmd,
+        "claude_cmd": claude_cmd,
+        "codex_model": codex_model,
+        "gemini_model": gemini_model,
+        "claude_model": claude_model,
+        "gemini_fallback_models": gemini_fallback_models,
         "owner_filter": [owner],
         "validate_commands": [
             str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
@@ -2916,6 +2953,13 @@ def _lane_unavailable_snapshot(
         "routellm_enabled": bool(lane.get("routellm_enabled", False)),
         "routellm_url": str(lane.get("routellm_url", "")),
         "routellm_timeout_sec": _int_value(lane.get("routellm_timeout_sec", 0), 0),
+        "codex_cmd": str(lane.get("codex_cmd", "")),
+        "gemini_cmd": str(lane.get("gemini_cmd", "")),
+        "claude_cmd": str(lane.get("claude_cmd", "")),
+        "codex_model": str(lane.get("codex_model", "") or ""),
+        "gemini_model": str(lane.get("gemini_model", "") or ""),
+        "claude_model": str(lane.get("claude_model", "") or ""),
+        "gemini_fallback_models": [str(model) for model in lane.get("gemini_fallback_models", []) if str(model)],
         "exclusive_paths": [str(path) for path in lane.get("exclusive_paths", []) if str(path)],
         "latest_log_line": "",
         "log_file": str(log_path),
@@ -2984,6 +3028,13 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
                 "routellm_enabled": False,
                 "routellm_url": "",
                 "routellm_timeout_sec": 0,
+                "codex_cmd": "",
+                "gemini_cmd": "",
+                "claude_cmd": "",
+                "codex_model": "",
+                "gemini_model": "",
+                "claude_model": "",
+                "gemini_fallback_models": [],
                 "exclusive_paths": [],
                 "latest_log_line": "",
                 "log_file": str(runtime_dir / "runner.log"),
@@ -3090,6 +3141,13 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "routellm_enabled": bool(lane["routellm_enabled"]),
                     "routellm_url": str(lane["routellm_url"]),
                     "routellm_timeout_sec": int(lane["routellm_timeout_sec"]),
+                    "codex_cmd": str(lane["codex_cmd"]),
+                    "gemini_cmd": str(lane["gemini_cmd"]),
+                    "claude_cmd": str(lane["claude_cmd"]),
+                    "codex_model": str(lane["codex_model"] or ""),
+                    "gemini_model": str(lane["gemini_model"] or ""),
+                    "claude_model": str(lane["claude_model"] or ""),
+                    "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
                     "exclusive_paths": lane["exclusive_paths"],
                     "latest_log_line": latest,
                     "log_file": str(log_path),
@@ -3137,6 +3195,13 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "routellm_enabled": bool(lane["routellm_enabled"]),
                     "routellm_url": str(lane["routellm_url"]),
                     "routellm_timeout_sec": int(lane["routellm_timeout_sec"]),
+                    "codex_cmd": str(lane["codex_cmd"]),
+                    "gemini_cmd": str(lane["gemini_cmd"]),
+                    "claude_cmd": str(lane["claude_cmd"]),
+                    "codex_model": str(lane["codex_model"] or ""),
+                    "gemini_model": str(lane["gemini_model"] or ""),
+                    "claude_model": str(lane["claude_model"] or ""),
+                    "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
                     "exclusive_paths": lane["exclusive_paths"],
                     "latest_log_line": "",
                     "log_file": str(log_path),
@@ -3188,6 +3253,13 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "routellm_enabled": False,
                 "routellm_url": "",
                 "routellm_timeout_sec": 0,
+                "codex_cmd": "",
+                "gemini_cmd": "",
+                "claude_cmd": "",
+                "codex_model": "",
+                "gemini_model": "",
+                "claude_model": "",
+                "gemini_fallback_models": [],
                 "exclusive_paths": [],
                 "latest_log_line": "",
                 "log_file": str(runtime_dir / "runner.log"),
@@ -3243,13 +3315,13 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     }
 
 
-def _lane_command_for_owner(config: ManagerConfig, owner: str) -> str:
+def _lane_command_for_owner(lane: dict[str, Any], owner: str) -> str:
     if owner == "codex":
-        return config.codex_cmd
+        return str(lane.get("codex_cmd", "")).strip() or "codex"
     if owner == "gemini":
-        return config.gemini_cmd
+        return str(lane.get("gemini_cmd", "")).strip() or "gemini"
     if owner == "claude":
-        return config.claude_cmd
+        return str(lane.get("claude_cmd", "")).strip() or "claude"
     raise RuntimeError(f"Unsupported lane owner {owner!r}")
 
 
@@ -3328,11 +3400,11 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         "--skill-protocol-file",
         str(lane["skill_protocol_file"]),
         "--codex-cmd",
-        config.codex_cmd,
+        str(lane["codex_cmd"]),
         "--gemini-cmd",
-        config.gemini_cmd,
+        str(lane["gemini_cmd"]),
         "--claude-cmd",
-        config.claude_cmd,
+        str(lane["claude_cmd"]),
         "--owner-filter",
         lane["owner"],
     ]
@@ -3341,14 +3413,14 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         cmd.extend(["--routellm-url", str(lane["routellm_url"]).strip()])
     if lane["mcp_context_file"] is not None:
         cmd.extend(["--mcp-context-file", str(lane["mcp_context_file"])])
-    if config.codex_model:
-        cmd.extend(["--codex-model", config.codex_model])
-    if config.gemini_model:
-        cmd.extend(["--gemini-model", config.gemini_model])
-    for model in config.gemini_fallback_models:
+    if lane["codex_model"]:
+        cmd.extend(["--codex-model", str(lane["codex_model"])])
+    if lane["gemini_model"]:
+        cmd.extend(["--gemini-model", str(lane["gemini_model"])])
+    for model in lane["gemini_fallback_models"]:
         cmd.extend(["--gemini-fallback-model", model])
-    if config.claude_model:
-        cmd.extend(["--claude-model", config.claude_model])
+    if lane["claude_model"]:
+        cmd.extend(["--claude-model", str(lane["claude_model"])])
     cmd.extend(
         [
             "--auto-push-interval-sec",
@@ -3379,7 +3451,7 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
         raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
     _append_lane_event(config, lane_id, "start_requested", {"owner": lane["owner"]})
 
-    cmd_name = _lane_command_for_owner(config, lane["owner"])
+    cmd_name = _lane_command_for_owner(lane, lane["owner"])
     if _resolve_binary(cmd_name) is None:
         _append_lane_event(config, lane_id, "start_failed", {"reason": f"missing_cli:{cmd_name}"})
         raise RuntimeError(f"{lane['owner']} CLI not found in PATH: {cmd_name}")
@@ -3458,6 +3530,13 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "routellm_enabled": bool(lane["routellm_enabled"]),
             "routellm_url": str(lane["routellm_url"]),
             "routellm_timeout_sec": int(lane["routellm_timeout_sec"]),
+            "codex_cmd": str(lane["codex_cmd"]),
+            "gemini_cmd": str(lane["gemini_cmd"]),
+            "claude_cmd": str(lane["claude_cmd"]),
+            "codex_model": str(lane["codex_model"] or ""),
+            "gemini_model": str(lane["gemini_model"] or ""),
+            "claude_model": str(lane["claude_model"] or ""),
+            "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
             "build_id": _lane_build_id(config, lane),
             "exclusive_paths": lane["exclusive_paths"],
         },
