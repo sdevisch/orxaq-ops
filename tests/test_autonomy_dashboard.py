@@ -141,6 +141,62 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["diagnostics"]["sources"]["conversations"]["ok"])
         self.assertFalse(payload["diagnostics"]["sources"]["monitor"]["ok"])
 
+    def test_safe_monitor_snapshot_preserves_status_when_monitor_source_fails(self):
+        lane_payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "running_count": 0,
+            "total_count": 1,
+            "health_counts": {"idle": 1},
+            "owner_counts": {"codex": {"total": 1, "running": 0, "healthy": 1, "degraded": 0}},
+            "lanes": [
+                {
+                    "id": "lane-a",
+                    "owner": "codex",
+                    "running": False,
+                    "health": "idle",
+                    "state_counts": {"pending": 1, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0},
+                }
+            ],
+        }
+        conv_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "total_events": 0,
+            "owner_counts": {},
+            "events": [],
+            "sources": [],
+        }
+        status_payload = {
+            "supervisor_running": True,
+            "runner_running": True,
+            "heartbeat_age_sec": 14,
+            "heartbeat_stale_threshold_sec": 180,
+            "runner_pid": 321,
+            "supervisor_pid": 654,
+        }
+        with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("monitor unavailable")), mock.patch(
+            "orxaq_autonomy.dashboard.status_snapshot",
+            return_value=status_payload,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._safe_lane_status_snapshot",
+            return_value=lane_payload,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._safe_conversations_snapshot",
+            return_value=conv_payload,
+        ):
+            payload = dashboard._safe_monitor_snapshot(mock.Mock())
+        self.assertTrue(payload["status"]["supervisor_running"])
+        self.assertTrue(payload["status"]["runner_running"])
+        self.assertEqual(payload["status"]["heartbeat_age_sec"], 14)
+        self.assertEqual(payload["status"]["runner_pid"], 321)
+        self.assertTrue(payload["runtime"]["primary_runner_running"])
+        self.assertTrue(payload["runtime"]["effective_agents_running"])
+        self.assertTrue(payload["diagnostics"]["sources"]["status"]["ok"])
+
     def test_safe_lane_status_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()
         cfg.lanes_file = pathlib.Path("/tmp/lanes.json")

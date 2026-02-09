@@ -2498,8 +2498,28 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
         if not isinstance(conversation_owner_counts, dict):
             conversation_owner_counts = {}
 
+        status_payload: dict[str, Any] = {
+            "supervisor_running": False,
+            "runner_running": False,
+            "heartbeat_age_sec": -1,
+            "heartbeat_stale_threshold_sec": 0,
+            "runner_pid": None,
+            "supervisor_pid": None,
+        }
+        status_error = ""
+        try:
+            status_candidate = status_snapshot(config)
+            if isinstance(status_candidate, dict):
+                for key in status_payload:
+                    status_payload[key] = status_candidate.get(key, status_payload[key])
+            else:
+                status_error = f"unexpected status payload type: {type(status_candidate).__name__}"
+        except Exception as status_err:
+            status_error = str(status_err)
+
         diagnostics_sources = {
             "monitor": {"ok": False, "error": message},
+            "status": {"ok": status_error == "", "error": status_error},
             "lanes": {"ok": bool(lane_payload.get("ok", False)), "error": "; ".join(lane_errors)},
             "conversations": {
                 "ok": bool(conversation_payload.get("ok", False)),
@@ -2578,17 +2598,11 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 runtime_operational_count += 1
             else:
                 runtime_degraded_count += 1
+        primary_runner_running = bool(status_payload.get("runner_running", False))
         return {
             "timestamp": "",
             "latest_log_line": f"monitor snapshot error: {message}",
-            "status": {
-                "supervisor_running": False,
-                "runner_running": False,
-                "heartbeat_age_sec": -1,
-                "heartbeat_stale_threshold_sec": 0,
-                "runner_pid": None,
-                "supervisor_pid": None,
-            },
+            "status": status_payload,
             "progress": {
                 "counts": progress_counts,
                 "active_tasks": sorted(set(active_tasks)),
@@ -2597,9 +2611,9 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             },
             "lanes": lanes_snapshot_payload,
             "runtime": {
-                "primary_runner_running": False,
+                "primary_runner_running": primary_runner_running,
                 "lane_agents_running": runtime_running_count > 0,
-                "effective_agents_running": runtime_running_count > 0,
+                "effective_agents_running": primary_runner_running or runtime_running_count > 0,
                 "lane_operational_count": runtime_operational_count,
                 "lane_degraded_count": runtime_degraded_count,
                 "lane_health_counts": runtime_health_counts,
