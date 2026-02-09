@@ -13,14 +13,24 @@ class SkillProtocolSpec:
     """Portable skill contract for agent behavior and recovery expectations."""
 
     name: str = "orxaq-autonomy"
-    version: str = "1"
+    version: str = "2"
     description: str = "Reusable autonomy protocol for multi-agent delivery."
     required_behaviors: list[str] = field(
         default_factory=lambda: [
             "work-non-interactively",
+            "issue-first-workflow",
+            "branch-from-issue",
+            "maintain-clean-synced-environment",
+            "commit-and-push-regularly",
+            "request-cross-model-review",
+            "attach-review-evidence",
+            "resolve-conflicts-in-pr",
+            "avoid-artificial-file-blocks",
             "retry-transient-failures",
             "recover-git-locks",
             "validate-and-report",
+            "continue-after-partial-output",
+            "respect-non-admin-boundaries",
         ]
     )
     filetype_policy: str = (

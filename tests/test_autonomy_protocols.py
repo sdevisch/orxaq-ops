@@ -18,7 +18,12 @@ class ProtocolTests(unittest.TestCase):
     def test_load_skill_protocol_defaults(self):
         protocol = load_skill_protocol(None)
         self.assertEqual(protocol.name, "orxaq-autonomy")
+        self.assertEqual(protocol.version, "2")
         self.assertTrue(protocol.required_behaviors)
+        self.assertIn("issue-first-workflow", protocol.required_behaviors)
+        self.assertIn("request-cross-model-review", protocol.required_behaviors)
+        self.assertIn("attach-review-evidence", protocol.required_behaviors)
+        self.assertIn("resolve-conflicts-in-pr", protocol.required_behaviors)
 
     def test_load_skill_protocol_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,7 +71,12 @@ class ProtocolTests(unittest.TestCase):
             write_default_skill_protocol(out)
             payload = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(payload["name"], "orxaq-autonomy")
+            self.assertEqual(payload["version"], "2")
             self.assertIn("required_behaviors", payload)
+            self.assertIn("issue-first-workflow", payload["required_behaviors"])
+            self.assertIn("branch-from-issue", payload["required_behaviors"])
+            self.assertIn("commit-and-push-regularly", payload["required_behaviors"])
+            self.assertIn("attach-review-evidence", payload["required_behaviors"])
 
 
 if __name__ == "__main__":
