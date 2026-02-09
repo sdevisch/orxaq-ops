@@ -1354,6 +1354,90 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(lane_events[0]["owner"], "gemini")
             self.assertEqual(lane_events[0]["lane_id"], "lane-a")
 
+    def test_conversations_snapshot_infers_owner_from_lane_id_when_primary_owner_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "gemini",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "",
+                        "lane_id": "lane-a",
+                        "event_type": "agent_output",
+                        "content": "main feed update",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 1)
+            self.assertTrue(snapshot["ok"])
+            self.assertFalse(snapshot["partial"])
+            self.assertEqual(snapshot["events"][0]["owner"], "gemini")
+            self.assertEqual(snapshot["owner_counts"], {"gemini": 1})
+
+    def test_conversations_snapshot_preserves_explicit_owner_when_lane_id_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "gemini",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "claude",
+                        "lane_id": "lane-a",
+                        "event_type": "agent_output",
+                        "content": "owner preserved",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 1)
+            self.assertEqual(snapshot["events"][0]["owner"], "claude")
+            self.assertEqual(snapshot["owner_counts"], {"claude": 1})
+
     def test_start_lanes_background_starts_selected_lane(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

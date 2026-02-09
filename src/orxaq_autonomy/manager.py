@@ -3040,6 +3040,7 @@ def _normalize_conversation_event(
     source_kind: str,
     lane_id: str = "",
     owner: str = "",
+    lane_owner_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     event = dict(item)
     event["source"] = str(source_path)
@@ -3048,11 +3049,18 @@ def _normalize_conversation_event(
     normalized_lane = str(event.get("lane_id", "")).strip()
     if lane_id and not normalized_lane:
         event["lane_id"] = lane_id
+        normalized_lane = lane_id
 
     normalized_owner = str(event.get("owner", "")).strip()
     if owner and not normalized_owner:
         event["owner"] = owner
-    if not str(event.get("owner", "")).strip():
+        normalized_owner = owner
+    if not normalized_owner and normalized_lane and lane_owner_map:
+        inferred_owner = str(lane_owner_map.get(normalized_lane, "")).strip()
+        if inferred_owner:
+            event["owner"] = inferred_owner
+            normalized_owner = inferred_owner
+    if not normalized_owner:
         event["owner"] = "unknown"
 
     if source_kind == "lane_events" and not str(event.get("content", "")).strip():
@@ -3063,6 +3071,7 @@ def _normalize_conversation_event(
 
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
     line_limit = max(1, min(2000, int(lines)))
+    lane_owner_map: dict[str, str] = {}
     source_specs: list[dict[str, str]] = [
         {
             "path": str(config.conversation_log_file),
@@ -3097,15 +3106,17 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         for lane in lanes:
             lane_file = Path(lane["conversation_log_file"])
             lane_path = str(lane_file)
+            lane_id = str(lane["id"])
+            lane_owner = str(lane["owner"]).strip() or "unknown"
+            lane_owner_map[lane_id] = lane_owner
             exists = any(item["path"] == lane_path for item in source_specs)
             if not exists:
-                lane_id = str(lane["id"])
                 source_specs.append(
                     {
                         "path": lane_path,
                         "kind": "lane",
                         "lane_id": lane_id,
-                        "owner": str(lane["owner"]),
+                        "owner": lane_owner,
                         "fallback_path": str(_lane_events_file(config, lane_id)),
                     }
                 )
@@ -3167,6 +3178,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                     source_kind=source_kind,
                     lane_id=source_lane_id,
                     owner=source_owner,
+                    lane_owner_map=lane_owner_map,
                 )
             )
         source_reports.append(
