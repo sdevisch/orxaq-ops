@@ -669,6 +669,60 @@ def _dashboard_html(refresh_sec: int) -> str:
         unfiltered_total_events: allEvents.length,
       }};
     }}
+    function filterFallbackConversationSources(sources, filters) {{
+      const laneFilter = String((filters && filters.lane) || "").trim();
+      const allSources = Array.isArray(sources) ? sources.filter((item) => item && typeof item === "object") : [];
+      if (!laneFilter) {{
+        return {{
+          sources: allSources,
+          suppressed_sources: [],
+          suppressed_source_count: 0,
+          suppressed_source_errors: [],
+          suppressed_source_error_count: 0,
+        }};
+      }}
+      const retained = [];
+      const suppressed = [];
+      for (const source of allSources) {{
+        const sourceLane = String(source.lane_id || "").trim();
+        if (sourceLane && sourceLane !== laneFilter) {{
+          suppressed.push(source);
+          continue;
+        }}
+        retained.push(source);
+      }}
+      const laneSourceHealthy = retained.some((source) => {{
+        const sourceLane = String(source.lane_id || "").trim();
+        return sourceLane === laneFilter && Boolean(source.ok);
+      }});
+      let scoped = retained;
+      if (laneSourceHealthy) {{
+        scoped = [];
+        for (const source of retained) {{
+          const sourceLane = String(source.lane_id || "").trim();
+          if (sourceLane) {{
+            scoped.push(source);
+            continue;
+          }}
+          const sourceKind = String(source.resolved_kind || source.kind || "").trim().toLowerCase();
+          if (Boolean(source.ok) || sourceKind !== "primary") {{
+            scoped.push(source);
+            continue;
+          }}
+          suppressed.push(source);
+        }}
+      }}
+      const suppressedSourceErrors = suppressed
+        .map((source) => String(source.error || "").trim())
+        .filter((message) => Boolean(message));
+      return {{
+        sources: scoped,
+        suppressed_sources: suppressed,
+        suppressed_source_count: suppressed.length,
+        suppressed_source_errors: suppressedSourceErrors,
+        suppressed_source_error_count: suppressedSourceErrors.length,
+      }};
+    }}
     function fallbackConversationPayloadFromMonitor(monitorPayload, endpointError) {{
       const monitorRecentEvents = (
         monitorPayload &&
@@ -691,13 +745,23 @@ def _dashboard_html(refresh_sec: int) -> str:
         tail: conversationFilters.tail,
       }};
       const filteredFallback = filterFallbackConversationEvents(fallbackEvents, fallbackFilters);
+      const sourceFallback = filterFallbackConversationSources(
+        monitorPayload && monitorPayload.conversations
+          ? monitorPayload.conversations.sources
+          : [],
+        fallbackFilters,
+      );
       const errorText = String(endpointError || "conversation endpoint unavailable");
       if (monitorPayload && monitorPayload.conversations) {{
         return {{
           total_events: filteredFallback.total_events,
           owner_counts: filteredFallback.owner_counts,
           events: filteredFallback.events,
-          sources: Array.isArray(monitorPayload.conversations.sources) ? monitorPayload.conversations.sources : [],
+          sources: sourceFallback.sources,
+          suppressed_sources: sourceFallback.suppressed_sources,
+          suppressed_source_count: sourceFallback.suppressed_source_count,
+          suppressed_source_errors: sourceFallback.suppressed_source_errors,
+          suppressed_source_error_count: sourceFallback.suppressed_source_error_count,
           partial: true,
           ok: false,
           errors: [errorText],
@@ -710,6 +774,10 @@ def _dashboard_html(refresh_sec: int) -> str:
         owner_counts: {{}},
         events: [],
         sources: [],
+        suppressed_sources: [],
+        suppressed_source_count: 0,
+        suppressed_source_errors: [],
+        suppressed_source_error_count: 0,
         partial: true,
         ok: false,
         errors: [errorText],
@@ -728,12 +796,20 @@ def _dashboard_html(refresh_sec: int) -> str:
       }};
       const cachedEvents = Array.isArray(cached.events) ? cached.events : [];
       const filteredFallback = filterFallbackConversationEvents(cachedEvents, fallbackFilters);
+      const sourceFallback = filterFallbackConversationSources(
+        Array.isArray(cached.sources) ? cached.sources : [],
+        fallbackFilters,
+      );
       const errors = [String(endpointError || "conversation endpoint unavailable"), "conversation data from stale cache"];
       return {{
         total_events: filteredFallback.total_events,
         owner_counts: filteredFallback.owner_counts,
         events: filteredFallback.events,
-        sources: Array.isArray(cached.sources) ? cached.sources : [],
+        sources: sourceFallback.sources,
+        suppressed_sources: sourceFallback.suppressed_sources,
+        suppressed_source_count: sourceFallback.suppressed_source_count,
+        suppressed_source_errors: sourceFallback.suppressed_source_errors,
+        suppressed_source_error_count: sourceFallback.suppressed_source_error_count,
         partial: true,
         ok: false,
         errors,
