@@ -572,12 +572,26 @@ def _dashboard_html(refresh_sec: int) -> str:
         monitorPayload.lanes &&
         typeof monitorPayload.lanes === "object"
       ) ? monitorPayload.lanes : {{}};
-      const requestedLane = String(laneTarget || "").trim();
+      const requestedLaneRaw = String(laneTarget || "").trim();
       const laneItemsRaw = Array.isArray(monitorLanes.lanes)
         ? monitorLanes.lanes.filter((item) => item && typeof item === "object")
         : [];
-      const laneItems = requestedLane
-        ? laneItemsRaw.filter((lane) => String(lane.id || "").trim() === requestedLane)
+      const requestedLaneLower = requestedLaneRaw.toLowerCase();
+      let resolvedRequestedLane = requestedLaneRaw;
+      if (requestedLaneRaw) {{
+        const exactMatch = laneItemsRaw.some((lane) => String(lane.id || "").trim() === requestedLaneRaw);
+        if (!exactMatch) {{
+          const foldedMatches = laneItemsRaw.filter(
+            (lane) => String(lane.id || "").trim().toLowerCase() === requestedLaneLower
+          );
+          if (foldedMatches.length === 1) {{
+            resolvedRequestedLane = String(foldedMatches[0].id || "").trim() || requestedLaneRaw;
+          }}
+        }}
+      }}
+      const resolvedRequestedLaneLower = resolvedRequestedLane.toLowerCase();
+      const laneItems = resolvedRequestedLane
+        ? laneItemsRaw.filter((lane) => String(lane.id || "").trim().toLowerCase() === resolvedRequestedLaneLower)
         : laneItemsRaw;
 
       const healthCounts = {{}};
@@ -609,18 +623,18 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (laneEndpointError) {{
         errors.push(`lane endpoint: ${{String(laneEndpointError).trim()}}`);
       }}
-      if (requestedLane && laneItems.length === 0) {{
+      if (resolvedRequestedLane && laneItems.length === 0) {{
         const lanesFile = String(monitorLanes.lanes_file || "").trim();
         if (lanesFile) {{
-          errors.push(`Unknown lane id '${{requestedLane}}'. Update ${{lanesFile}}.`);
+          errors.push(`Unknown lane id '${{resolvedRequestedLane}}'. Update ${{lanesFile}}.`);
         }} else {{
-          errors.push(`Unknown lane id '${{requestedLane}}'.`);
+          errors.push(`Unknown lane id '${{resolvedRequestedLane}}'.`);
         }}
       }}
 
       return {{
         ...monitorLanes,
-        requested_lane: requestedLane || "all",
+        requested_lane: resolvedRequestedLane || "all",
         lanes: laneItems,
         total_count: laneItems.length,
         running_count: laneItems.filter((lane) => Boolean(lane.running)).length,
@@ -683,11 +697,12 @@ def _dashboard_html(refresh_sec: int) -> str:
           suppressed_source_error_count: 0,
         }};
       }}
+      const laneFilterLower = laneFilter.toLowerCase();
       const retained = [];
       const suppressed = [];
       for (const source of allSources) {{
         const sourceLane = String(source.lane_id || "").trim();
-        if (sourceLane && sourceLane !== laneFilter) {{
+        if (sourceLane && sourceLane.toLowerCase() !== laneFilterLower) {{
           suppressed.push(source);
           continue;
         }}
@@ -695,7 +710,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       }}
       const laneSourceHealthy = retained.some((source) => {{
         const sourceLane = String(source.lane_id || "").trim();
-        return sourceLane === laneFilter && Boolean(source.ok);
+        return sourceLane.toLowerCase() === laneFilterLower && Boolean(source.ok);
       }});
       let scoped = retained;
       if (laneSourceHealthy) {{

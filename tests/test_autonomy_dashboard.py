@@ -84,6 +84,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("completed_24h", html)
         self.assertIn("completed24hSummary", html)
 
+    def test_dashboard_html_fallback_lane_filters_match_case_insensitively(self):
+        html = dashboard._dashboard_html(7)
+        self.assertIn("const requestedLaneLower = requestedLaneRaw.toLowerCase();", html)
+        self.assertIn("toLowerCase() === resolvedRequestedLaneLower", html)
+        self.assertIn("const laneFilterLower = laneFilter.toLowerCase();", html)
+        self.assertIn("sourceLane.toLowerCase() !== laneFilterLower", html)
+        self.assertIn("sourceLane.toLowerCase() === laneFilterLower", html)
+
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):
             payload = dashboard._safe_monitor_snapshot(mock.Mock())
