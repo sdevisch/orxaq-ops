@@ -1165,6 +1165,50 @@ class CliTests(unittest.TestCase):
             self.assertEqual(kwargs["lines"], 200)
             self.assertTrue(kwargs["include_lanes"])
 
+    def test_lanes_status_with_conversations_uses_event_sequence_for_invalid_timestamps(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "lanes_file": "config/lanes.json",
+                "running_count": 1,
+                "total_count": 1,
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "pid": 123, "health": "ok"}],
+            }
+            conversation_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "events": [
+                    {
+                        "timestamp": "z-invalid",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "older-invalid",
+                    },
+                    {
+                        "timestamp": "a-invalid",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "newer-invalid",
+                    },
+                ],
+                "sources": [{"lane_id": "lane-a", "ok": True, "error": "", "event_count": 2}],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conversation_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--with-conversations"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            lane = data["lanes"][0]
+            self.assertEqual(lane["latest_conversation_event"]["content"], "newer-invalid")
+
     def test_lanes_status_text_with_conversations_formats_latest_timestamp_in_local_tz(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

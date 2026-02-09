@@ -637,7 +637,8 @@ def _lane_conversation_rollup(payload: dict[str, Any]) -> dict[str, dict[str, An
         existing_ts = _parse_event_timestamp(existing.get("timestamp")) if isinstance(existing, dict) else None
         candidate_ts = _parse_event_timestamp(candidate.get("timestamp"))
         if existing_ts is None and candidate_ts is None:
-            should_replace = str(candidate.get("timestamp", "")) >= str(existing.get("timestamp", "")) if isinstance(existing, dict) else True
+            # Preserve event sequence when timestamps are malformed.
+            should_replace = True
         elif existing_ts is None:
             should_replace = True
         elif candidate_ts is None:

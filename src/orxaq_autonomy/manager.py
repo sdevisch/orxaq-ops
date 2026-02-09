@@ -1565,6 +1565,14 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     normalized_conv_events = [item for item in conv_events if isinstance(item, dict)]
     normalized_conv_events = sorted(normalized_conv_events, key=_conversation_event_sort_key)
     recent_conversations = normalized_conv_events[-20:]
+    conv_sources = conv.get("sources", [])
+    if not isinstance(conv_sources, list):
+        conv_sources = []
+    normalized_conv_sources = [item for item in conv_sources if isinstance(item, dict)]
+    source_error_count = sum(1 for item in normalized_conv_sources if str(item.get("error", "")).strip())
+    source_missing_count = sum(1 for item in normalized_conv_sources if bool(item.get("missing", False)))
+    source_recoverable_missing_count = sum(1 for item in normalized_conv_sources if bool(item.get("recoverable_missing", False)))
+    source_fallback_count = sum(1 for item in normalized_conv_sources if bool(item.get("fallback_used", False)))
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
     try:
         response_metrics = _response_metrics_snapshot(config, lane_items)
@@ -1658,7 +1666,11 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "recent_events": recent_conversations,
             "partial": bool(conv.get("partial", False)),
             "errors": conv.get("errors", []),
-            "sources": conv.get("sources", []),
+            "sources": normalized_conv_sources,
+            "source_error_count": source_error_count,
+            "source_missing_count": source_missing_count,
+            "source_recoverable_missing_count": source_recoverable_missing_count,
+            "source_fallback_count": source_fallback_count,
         },
         "repos": {
             "implementation": impl_repo,
@@ -3132,8 +3144,9 @@ def _conversation_event_sort_key(item: dict[str, Any]) -> tuple[int, float, str]
     raw = str(item.get("timestamp", "")).strip()
     parsed = _parse_iso_timestamp(raw)
     if parsed is None:
-        return (0, float("-inf"), raw)
-    return (1, parsed.timestamp(), raw)
+        # Keep invalid timestamps ordered by source sequence (stable sort).
+        return (0, float("-inf"), "")
+    return (1, parsed.timestamp(), "")
 
 
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:

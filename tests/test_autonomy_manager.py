@@ -729,6 +729,98 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["conversations"]["recent_events"][-1]["content"], "later")
             self.assertEqual(snapshot["conversations"]["latest"]["content"], "later")
 
+    def test_monitor_snapshot_handles_invalid_timestamps_and_conversation_source_counters(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"ok": True, "errors": [], "running_count": 0, "total_count": 0, "lanes": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 4,
+                    "events": [
+                        {
+                            "timestamp": "definitely-invalid-z",
+                            "owner": "codex",
+                            "lane_id": "lane-a",
+                            "content": "invalid-first",
+                        },
+                        {
+                            "timestamp": "2026-01-01T01:30:00+01:00",
+                            "owner": "codex",
+                            "lane_id": "lane-a",
+                            "content": "earlier",
+                        },
+                        {
+                            "timestamp": "2026-01-01T00:45:00+00:00",
+                            "owner": "gemini",
+                            "lane_id": "lane-a",
+                            "content": "later",
+                        },
+                        {
+                            "timestamp": "abc-invalid-a",
+                            "owner": "claude",
+                            "lane_id": "lane-a",
+                            "content": "invalid-last",
+                        },
+                    ],
+                    "owner_counts": {"codex": 2, "gemini": 1, "claude": 1},
+                    "partial": True,
+                    "ok": False,
+                    "errors": ["primary conversation stream degraded"],
+                    "sources": [
+                        {
+                            "kind": "primary",
+                            "resolved_kind": "primary",
+                            "lane_id": "",
+                            "owner": "",
+                            "ok": False,
+                            "missing": False,
+                            "recoverable_missing": False,
+                            "fallback_used": False,
+                            "error": "primary stream unavailable",
+                            "event_count": 0,
+                        },
+                        {
+                            "kind": "lane",
+                            "resolved_kind": "lane_events",
+                            "lane_id": "lane-a",
+                            "owner": "codex",
+                            "ok": True,
+                            "missing": True,
+                            "recoverable_missing": True,
+                            "fallback_used": True,
+                            "error": "",
+                            "event_count": 3,
+                        },
+                    ],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(snapshot["conversations"]["recent_events"][-1]["content"], "later")
+            self.assertEqual(snapshot["conversations"]["latest"]["content"], "later")
+            self.assertEqual(snapshot["conversations"]["source_error_count"], 1)
+            self.assertEqual(snapshot["conversations"]["source_missing_count"], 1)
+            self.assertEqual(snapshot["conversations"]["source_recoverable_missing_count"], 1)
+            self.assertEqual(snapshot["conversations"]["source_fallback_count"], 1)
+
     def test_monitor_snapshot_counts_idle_lane_as_operational(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

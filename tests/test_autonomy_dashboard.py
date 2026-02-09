@@ -718,6 +718,30 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(lane_rollup["latest_event"]["event_type"], "message")
         self.assertEqual(lane_rollup["latest_event"]["content"], "newer")
 
+    def test_lane_conversation_rollup_uses_event_sequence_when_timestamps_invalid(self):
+        payload = {
+            "events": [
+                {
+                    "timestamp": "z-invalid",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "older-invalid",
+                },
+                {
+                    "timestamp": "a-invalid",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "newer-invalid",
+                },
+            ],
+            "sources": [],
+        }
+        rollup = dashboard._lane_conversation_rollup(payload)
+        self.assertIn("lane-a", rollup)
+        self.assertEqual(rollup["lane-a"]["latest_event"]["content"], "newer-invalid")
+
     def test_lane_conversation_rollup_infers_owner_from_source_when_events_missing_owner(self):
         payload = {
             "events": [],
