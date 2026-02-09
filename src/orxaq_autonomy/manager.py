@@ -255,6 +255,12 @@ class ManagerConfig:
     routellm_enabled: bool
     routellm_url: str
     routellm_timeout_sec: int
+    scaling_enabled: bool
+    scaling_decision_file: Path
+    scaling_min_marginal_npv_usd: float
+    scaling_daily_budget_usd: float
+    scaling_max_parallel_agents: int
+    scaling_max_subagents_per_agent: int
     auto_push_guard: bool
     auto_push_interval_sec: int
 
@@ -284,6 +290,15 @@ class ManagerConfig:
             if raw is None:
                 return default
             return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+        def _float(key: str, default: float) -> float:
+            raw = merged.get(key)
+            if raw is None:
+                return default
+            try:
+                return float(raw)
+            except ValueError:
+                return default
 
         artifacts = _path("ORXAQ_AUTONOMY_ARTIFACTS_DIR", root / "artifacts" / "autonomy")
         skill_protocol = _path("ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE", root / "config" / "skill_protocol.json")
@@ -322,6 +337,35 @@ class ManagerConfig:
         routellm_enabled = _bool("ORXAQ_AUTONOMY_ROUTELLM_ENABLED", False)
         routellm_url = merged.get("ORXAQ_AUTONOMY_ROUTELLM_URL", "").strip()
         routellm_timeout_sec = max(1, _int("ORXAQ_AUTONOMY_ROUTELLM_TIMEOUT_SEC", 5))
+        default_scale_enabled = _bool("ORXAQ_ROUTELLM_SCALE_ENABLED", False)
+        default_scale_min_npv = _float(
+            "ORXAQ_ROUTELLM_SCALE_MIN_NPV_USD",
+            _float("ORXAQ_ROUTELLM_MIN_NPV_USD", 0.0),
+        )
+        default_scale_daily_budget = _float("ORXAQ_ROUTELLM_DAILY_BUDGET_USD", 0.0)
+        default_scale_max_parallel = max(1, _int("ORXAQ_ROUTELLM_MAX_PARALLEL_AGENTS", 1))
+        default_scale_max_subagents = max(1, _int("ORXAQ_ROUTELLM_MAX_SUBAGENTS_PER_AGENT", 1))
+        scaling_enabled = _bool("ORXAQ_AUTONOMY_SCALING_ENABLED", default_scale_enabled)
+        scaling_decision_file = _path(
+            "ORXAQ_AUTONOMY_SCALING_DECISION_FILE",
+            artifacts / "scaling_decision.json",
+        )
+        scaling_min_marginal_npv_usd = max(
+            0.0,
+            _float("ORXAQ_AUTONOMY_SCALING_MIN_NPV_USD", default_scale_min_npv),
+        )
+        scaling_daily_budget_usd = max(
+            0.0,
+            _float("ORXAQ_AUTONOMY_SCALING_DAILY_BUDGET_USD", default_scale_daily_budget),
+        )
+        scaling_max_parallel_agents = max(
+            1,
+            _int("ORXAQ_AUTONOMY_SCALING_MAX_PARALLEL_AGENTS", default_scale_max_parallel),
+        )
+        scaling_max_subagents_per_agent = max(
+            1,
+            _int("ORXAQ_AUTONOMY_SCALING_MAX_SUBAGENTS_PER_AGENT", default_scale_max_subagents),
+        )
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
         validate_commands = [chunk.strip() for chunk in validate_raw.split(";") if chunk.strip()]
@@ -388,6 +432,12 @@ class ManagerConfig:
             routellm_enabled=routellm_enabled,
             routellm_url=routellm_url,
             routellm_timeout_sec=routellm_timeout_sec,
+            scaling_enabled=scaling_enabled,
+            scaling_decision_file=scaling_decision_file,
+            scaling_min_marginal_npv_usd=scaling_min_marginal_npv_usd,
+            scaling_daily_budget_usd=scaling_daily_budget_usd,
+            scaling_max_parallel_agents=scaling_max_parallel_agents,
+            scaling_max_subagents_per_agent=scaling_max_subagents_per_agent,
             auto_push_guard=_bool("ORXAQ_AUTONOMY_AUTO_PUSH_GUARD", True),
             auto_push_interval_sec=_int("ORXAQ_AUTONOMY_AUTO_PUSH_INTERVAL_SEC", 180),
         )
@@ -797,6 +847,8 @@ def ensure_background(config: ManagerConfig) -> None:
             f"ensured={lane_payload['ensured_count']} "
             f"started={lane_payload['started_count']} "
             f"restarted={lane_payload['restarted_count']} "
+            f"scaled_up={lane_payload.get('scaled_up_count', 0)} "
+            f"scaled_down={lane_payload.get('scaled_down_count', 0)} "
             f"failed={lane_payload['failed_count']}"
         )
 
@@ -874,6 +926,14 @@ def _lane_build_id(config: ManagerConfig, lane: dict[str, Any]) -> str:
         "codex_model",
         "gemini_model",
         "claude_model",
+        "scaling_mode",
+        "scaling_group",
+        "scaling_rank",
+        "scaling_decision_file",
+        "scaling_min_marginal_npv_usd",
+        "scaling_daily_budget_usd",
+        "scaling_max_parallel_agents",
+        "scaling_max_subagents_per_agent",
     )
     for key in lane_keys:
         hasher.update(str(key).encode("utf-8"))
@@ -1913,6 +1973,19 @@ def _augment_lane_payload_with_conversation_rollup(
                     "build_current": False,
                     "error": "lane status missing; derived from conversation logs",
                     "conversation_lane_fallback": True,
+                    "scaling_mode": "static",
+                    "scaling_group": "",
+                    "scaling_rank": 1,
+                    "scaling_decision_file": "",
+                    "scaling_min_marginal_npv_usd": 0.0,
+                    "scaling_daily_budget_usd": 0.0,
+                    "scaling_max_parallel_agents": 1,
+                    "scaling_max_subagents_per_agent": 1,
+                    "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
+                    "scale_up_events": 0,
+                    "scale_down_events": 0,
+                    "scale_hold_events": 0,
+                    "latest_scale_event": {},
                     "conversation_event_count": _int_value(lane_rollup.get("event_count", 0), 0),
                     "conversation_source_count": _int_value(lane_rollup.get("source_count", 0), 0),
                     "conversation_source_state": str(lane_rollup.get("source_state", "unreported")),
@@ -1951,6 +2024,13 @@ def _augment_lane_payload_with_conversation_rollup(
                 combined_lane_errors.append(warning)
 
     health_counts, owner_counts = _lane_health_owner_counts(enriched_lanes)
+    scaling_event_counts = {"scale_up": 0, "scale_down": 0, "scale_hold": 0}
+    for lane in enriched_lanes:
+        counts = lane.get("scaling_event_counts", {})
+        if not isinstance(counts, dict):
+            continue
+        for key in scaling_event_counts:
+            scaling_event_counts[key] += _int_value(counts.get(key, 0), 0)
     running_count = sum(1 for lane in enriched_lanes if bool(lane.get("running", False)))
     lane_partial = bool(lane_payload.get("partial", False))
     conversation_partial = bool(conversation_payload.get("partial", False))
@@ -1963,6 +2043,7 @@ def _augment_lane_payload_with_conversation_rollup(
     result["total_count"] = len(enriched_lanes)
     result["health_counts"] = health_counts
     result["owner_counts"] = owner_counts
+    result["scaling_event_counts"] = scaling_event_counts
     result["errors"] = combined_lane_errors
     result["partial"] = partial
     result["ok"] = ok
@@ -2157,6 +2238,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         handoff_errors.append(f"to_gemini: {err}")
     _mark_source("handoffs", len(handoff_errors) == 0, "; ".join(handoff_errors))
     lane_running_count = max(0, _int_value(lanes.get("running_count", 0), 0))
+    lane_scaling_counts = lanes.get("scaling_event_counts", {}) if isinstance(lanes.get("scaling_event_counts", {}), dict) else {}
 
     snapshot = {
         "timestamp": _now_iso(),
@@ -2169,6 +2251,9 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "lane_degraded_count": len(degraded_lanes),
             "lane_health_counts": lanes.get("health_counts", {}),
             "lane_owner_health": lanes.get("owner_counts", {}),
+            "lane_scale_up_events": _int_value(lane_scaling_counts.get("scale_up", 0), 0),
+            "lane_scale_down_events": _int_value(lane_scaling_counts.get("scale_down", 0), 0),
+            "lane_scale_hold_events": _int_value(lane_scaling_counts.get("scale_hold", 0), 0),
         },
         "progress": progress,
         "lanes": lanes,
@@ -2236,6 +2321,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
         )
     impl = repos.get("implementation", {})
     tests = repos.get("tests", {})
+    scaling_counts = lanes.get("scaling_event_counts", {}) if isinstance(lanes.get("scaling_event_counts", {}), dict) else {}
     latest_log_line = str(snapshot.get("latest_log_line", "")).strip()
 
     def _repo_line(label: str, payload: dict[str, Any]) -> str:
@@ -2269,6 +2355,11 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
             f"{lanes.get('total_count', 0)}"
         ),
         f"lane_owners: {' | '.join(owner_summary_parts) if owner_summary_parts else 'none'}",
+        (
+            f"scaling_events: up={_int_value(scaling_counts.get('scale_up', 0), 0)} "
+            f"down={_int_value(scaling_counts.get('scale_down', 0), 0)} "
+            f"hold={_int_value(scaling_counts.get('scale_hold', 0), 0)}"
+        ),
         (
             f"conversations: events={conversations.get('total_events', 0)} "
             f"owners={conversations.get('owner_counts', {})}"
@@ -2636,6 +2727,50 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         mcp_context_file: Path | None = _resolve_path(config.root_dir, mcp_raw, mcp_default)
     else:
         mcp_context_file = None
+    scaling_mode_raw = str(item.get("scaling_mode", "static")).strip().lower()
+    scaling_mode = scaling_mode_raw if scaling_mode_raw in {"static", "npv"} else "static"
+    scaling_group = str(item.get("scaling_group", "")).strip()
+    scaling_rank_raw = item.get("scaling_rank", 1)
+    try:
+        scaling_rank = max(1, int(scaling_rank_raw))
+    except (TypeError, ValueError):
+        scaling_rank = 1
+    scaling_decision_file = _resolve_path(
+        config.root_dir,
+        str(item.get("scaling_decision_file", "")),
+        config.scaling_decision_file,
+    )
+
+    def _lane_float(name: str, default: float) -> float:
+        raw = item.get(name, default)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _lane_int(name: str, default: int) -> int:
+        raw = item.get(name, default)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return int(default)
+
+    scaling_min_marginal_npv_usd = max(
+        0.0,
+        _lane_float("scaling_min_marginal_npv_usd", config.scaling_min_marginal_npv_usd),
+    )
+    scaling_daily_budget_usd = max(
+        0.0,
+        _lane_float("scaling_daily_budget_usd", config.scaling_daily_budget_usd),
+    )
+    scaling_max_parallel_agents = max(
+        1,
+        _lane_int("scaling_max_parallel_agents", config.scaling_max_parallel_agents),
+    )
+    scaling_max_subagents_per_agent = max(
+        1,
+        _lane_int("scaling_max_subagents_per_agent", config.scaling_max_subagents_per_agent),
+    )
 
     return {
         "id": lane_id,
@@ -2688,6 +2823,14 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
             str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
         ],
         "exclusive_paths": [str(path).strip() for path in item.get("exclusive_paths", []) if str(path).strip()],
+        "scaling_mode": scaling_mode,
+        "scaling_group": scaling_group,
+        "scaling_rank": scaling_rank,
+        "scaling_decision_file": scaling_decision_file,
+        "scaling_min_marginal_npv_usd": scaling_min_marginal_npv_usd,
+        "scaling_daily_budget_usd": scaling_daily_budget_usd,
+        "scaling_max_parallel_agents": scaling_max_parallel_agents,
+        "scaling_max_subagents_per_agent": scaling_max_subagents_per_agent,
         "runtime_dir": runtime_dir,
     }
 
@@ -2784,6 +2927,290 @@ def _append_lane_event(config: ManagerConfig, lane_id: str, event_type: str, pay
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def _lane_scaling_event_summary(events_path: Path, *, limit: int = 400) -> dict[str, Any]:
+    entries = _tail_ndjson(events_path, max(1, limit))
+    counts = {"scale_up": 0, "scale_down": 0, "scale_hold": 0}
+    latest_scale_event: dict[str, Any] = {}
+    for entry in entries:
+        event_type = str(entry.get("event_type", "")).strip().lower()
+        if event_type in {"scale_up", "scaled_up"}:
+            counts["scale_up"] += 1
+            latest_scale_event = entry
+        elif event_type in {"scale_down", "scaled_down"}:
+            counts["scale_down"] += 1
+            latest_scale_event = entry
+        elif event_type in {"scale_hold", "scale_blocked"}:
+            counts["scale_hold"] += 1
+            latest_scale_event = entry
+    return {
+        "counts": counts,
+        "latest_scale_event": latest_scale_event,
+    }
+
+
+def _coerce_bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _evaluate_lane_scaling_plan(
+    config: ManagerConfig,
+    lanes: list[dict[str, Any]],
+    *,
+    requested_lane: str | None = None,
+) -> dict[str, Any]:
+    by_lane: dict[str, dict[str, Any]] = {}
+    group_payloads: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    npv_groups: dict[str, list[dict[str, Any]]] = {}
+
+    for lane in lanes:
+        lane_id = str(lane.get("id", "")).strip()
+        if not lane_id:
+            continue
+        lane_mode = str(lane.get("scaling_mode", "static")).strip().lower()
+        if lane_mode not in {"static", "npv"}:
+            lane_mode = "static"
+        lane_group = str(lane.get("scaling_group", "")).strip() or f"{lane.get('owner', 'unknown')}:default"
+        lane_rank = max(1, _int_value(lane.get("scaling_rank", 1), 1))
+        by_lane[lane_id] = {
+            "lane_id": lane_id,
+            "mode": lane_mode,
+            "group": lane_group,
+            "rank": lane_rank,
+            "slot": 1,
+            "allowed": True,
+            "allowed_parallel_lanes": 1,
+            "reason": "static",
+            "reasons": [],
+            "decision": {},
+        }
+        if lane_mode != "npv":
+            continue
+        if not bool(lane.get("enabled", False)) and lane_id != (requested_lane or ""):
+            continue
+        npv_groups.setdefault(lane_group, []).append(lane)
+
+    for group_id, group_lanes in npv_groups.items():
+        ordered = sorted(
+            group_lanes,
+            key=lambda item: (
+                max(1, _int_value(item.get("scaling_rank", 1), 1)),
+                str(item.get("id", "")).strip(),
+            ),
+        )
+        if not ordered:
+            continue
+        decision_paths = sorted(
+            {
+                str(Path(item.get("scaling_decision_file", config.scaling_decision_file)).resolve())
+                for item in ordered
+            }
+        )
+        decision_file = Path(decision_paths[0])
+        if len(decision_paths) > 1:
+            errors.append(
+                f"scaling_group={group_id!r} has conflicting decision files; using {decision_file}."
+            )
+        min_npv_threshold = max(
+            0.0,
+            max(_float_value(item.get("scaling_min_marginal_npv_usd", 0.0), 0.0) for item in ordered),
+        )
+        budget_caps = [
+            max(0.0, _float_value(item.get("scaling_daily_budget_usd", 0.0), 0.0))
+            for item in ordered
+            if _float_value(item.get("scaling_daily_budget_usd", 0.0), 0.0) > 0.0
+        ]
+        configured_budget_cap = min(budget_caps) if budget_caps else 0.0
+        configured_max_parallel = min(
+            max(1, _int_value(item.get("scaling_max_parallel_agents", 1), 1))
+            for item in ordered
+        )
+        configured_max_subagents = min(
+            max(1, _int_value(item.get("scaling_max_subagents_per_agent", 1), 1))
+            for item in ordered
+        )
+        decision_payload = {
+            "group": group_id,
+            "decision_file": str(decision_file),
+            "marginal_npv_usd": 0.0,
+            "requested_parallel_agents": 1,
+            "requested_subagents_per_agent": 1,
+            "projected_daily_spend_usd": 0.0,
+            "configured_min_marginal_npv_usd": min_npv_threshold,
+            "configured_daily_budget_usd": configured_budget_cap,
+            "configured_max_parallel_agents": configured_max_parallel,
+            "configured_max_subagents_per_agent": configured_max_subagents,
+            "constraint_daily_budget_usd": 0.0,
+            "constraint_max_parallel_agents": configured_max_parallel,
+            "constraint_max_subagents_per_agent": configured_max_subagents,
+            "decision": "hold",
+        }
+        reasons: list[str] = []
+
+        if not bool(config.scaling_enabled):
+            reasons.append("scaling_disabled")
+        else:
+            raw_decision = _read_json_file(decision_file) if decision_file.exists() else {}
+            if not decision_file.exists():
+                reasons.append("decision_file_missing")
+            elif not isinstance(raw_decision, dict) or not raw_decision:
+                reasons.append("decision_file_invalid")
+            else:
+                decision_name = str(raw_decision.get("decision", "")).strip().lower() or "hold"
+                should_scale = _coerce_bool(raw_decision.get("should_scale"), decision_name == "scale_up")
+                raw_reasons = [
+                    str(item).strip()
+                    for item in raw_decision.get("reasons", [])
+                    if str(item).strip()
+                ] if isinstance(raw_decision.get("reasons", []), list) else []
+                capacity = raw_decision.get("capacity", {})
+                if not isinstance(capacity, dict):
+                    capacity = {}
+                constraints = raw_decision.get("constraints", {})
+                if not isinstance(constraints, dict):
+                    constraints = {}
+                requested_parallel = max(
+                    1,
+                    _int_value(
+                        capacity.get("requested_parallel_agents", raw_decision.get("requested_parallel_agents", 1)),
+                        1,
+                    ),
+                )
+                requested_subagents = max(
+                    1,
+                    _int_value(
+                        capacity.get(
+                            "requested_subagents_per_agent",
+                            raw_decision.get("requested_subagents_per_agent", 1),
+                        ),
+                        1,
+                    ),
+                )
+                marginal_npv_usd = _float_value(raw_decision.get("marginal_npv_usd", 0.0), 0.0)
+                projected_daily_spend_usd = max(
+                    0.0,
+                    _float_value(
+                        constraints.get(
+                            "projected_daily_spend_usd",
+                            raw_decision.get("projected_daily_spend_usd", 0.0),
+                        ),
+                        0.0,
+                    ),
+                )
+                constraint_daily_budget = max(
+                    0.0,
+                    _float_value(
+                        constraints.get("daily_budget_usd", raw_decision.get("daily_budget_usd", 0.0)),
+                        0.0,
+                    ),
+                )
+                constraint_max_parallel = max(
+                    1,
+                    _int_value(
+                        constraints.get("max_parallel_agents", raw_decision.get("max_parallel_agents", configured_max_parallel)),
+                        configured_max_parallel,
+                    ),
+                )
+                constraint_max_subagents = max(
+                    1,
+                    _int_value(
+                        constraints.get(
+                            "max_subagents_per_agent",
+                            raw_decision.get("max_subagents_per_agent", configured_max_subagents),
+                        ),
+                        configured_max_subagents,
+                    ),
+                )
+                decision_payload.update(
+                    {
+                        "decision": decision_name,
+                        "marginal_npv_usd": marginal_npv_usd,
+                        "requested_parallel_agents": requested_parallel,
+                        "requested_subagents_per_agent": requested_subagents,
+                        "projected_daily_spend_usd": projected_daily_spend_usd,
+                        "constraint_daily_budget_usd": constraint_daily_budget,
+                        "constraint_max_parallel_agents": constraint_max_parallel,
+                        "constraint_max_subagents_per_agent": constraint_max_subagents,
+                    }
+                )
+
+                effective_budget_cap = configured_budget_cap if configured_budget_cap > 0.0 else constraint_daily_budget
+                effective_max_parallel = min(configured_max_parallel, constraint_max_parallel, len(ordered))
+                effective_max_subagents = min(configured_max_subagents, constraint_max_subagents)
+
+                if not should_scale:
+                    reasons.append("decision_not_approved")
+                if marginal_npv_usd <= min_npv_threshold:
+                    reasons.append("marginal_npv_below_threshold")
+                if requested_parallel > effective_max_parallel:
+                    reasons.append("max_parallel_agents_exceeded")
+                if requested_subagents > effective_max_subagents:
+                    reasons.append("max_subagents_per_agent_exceeded")
+                if effective_budget_cap > 0.0 and projected_daily_spend_usd > effective_budget_cap:
+                    reasons.append("daily_budget_exceeded")
+                if _coerce_bool(raw_decision.get("stop_loss_triggered"), False):
+                    reasons.append("stop_loss_triggered")
+                for unhealthy_reason in ("router_unhealthy", "reliability_unhealthy", "quality_unhealthy"):
+                    if unhealthy_reason in raw_reasons and unhealthy_reason not in reasons:
+                        reasons.append(unhealthy_reason)
+
+                if not reasons:
+                    decision_payload["allowed_parallel_lanes"] = max(1, min(requested_parallel, effective_max_parallel))
+                else:
+                    decision_payload["allowed_parallel_lanes"] = 1
+
+        allowed_parallel_lanes = max(1, _int_value(decision_payload.get("allowed_parallel_lanes", 1), 1))
+        reason = reasons[0] if reasons else "approved"
+        for slot, lane in enumerate(ordered, start=1):
+            lane_id = str(lane.get("id", "")).strip()
+            if not lane_id:
+                continue
+            allowed = slot <= allowed_parallel_lanes
+            lane_plan = by_lane.get(lane_id, {})
+            lane_plan.update(
+                {
+                    "mode": "npv",
+                    "group": group_id,
+                    "rank": max(1, _int_value(lane.get("scaling_rank", 1), 1)),
+                    "slot": slot,
+                    "allowed": allowed,
+                    "allowed_parallel_lanes": allowed_parallel_lanes,
+                    "reason": reason if not allowed else ("approved" if allowed_parallel_lanes > 1 else reason),
+                    "reasons": list(reasons),
+                    "decision": dict(decision_payload),
+                }
+            )
+            by_lane[lane_id] = lane_plan
+        group_payloads[group_id] = {
+            "group": group_id,
+            "mode": "npv",
+            "decision_file": str(decision_file),
+            "lane_count": len(ordered),
+            "allowed_parallel_lanes": allowed_parallel_lanes,
+            "reason": reason,
+            "reasons": list(reasons),
+            "decision": dict(decision_payload),
+        }
+
+    return {
+        "enabled": bool(config.scaling_enabled),
+        "groups": group_payloads,
+        "by_lane": by_lane,
+        "errors": errors,
+        "ok": len(errors) == 0,
+    }
 
 
 def _read_lane_state_counts(state_file: Path) -> dict[str, int]:
@@ -2933,6 +3360,7 @@ def _lane_unavailable_snapshot(
     events_path = _lane_events_file(config, lane_id)
     pause_path = _lane_pause_file(config, lane_id)
     heartbeat_file = Path(lane.get("heartbeat_file", runtime_dir / "heartbeat.json"))
+    scaling_summary = _lane_scaling_event_summary(events_path)
     return {
         "id": lane_id,
         "enabled": bool(lane.get("enabled", False)),
@@ -2961,6 +3389,23 @@ def _lane_unavailable_snapshot(
         "claude_model": str(lane.get("claude_model", "") or ""),
         "gemini_fallback_models": [str(model) for model in lane.get("gemini_fallback_models", []) if str(model)],
         "exclusive_paths": [str(path) for path in lane.get("exclusive_paths", []) if str(path)],
+        "scaling_mode": str(lane.get("scaling_mode", "static")).strip() or "static",
+        "scaling_group": str(lane.get("scaling_group", "")).strip(),
+        "scaling_rank": max(1, _int_value(lane.get("scaling_rank", 1), 1)),
+        "scaling_decision_file": str(lane.get("scaling_decision_file", "")),
+        "scaling_min_marginal_npv_usd": _float_value(lane.get("scaling_min_marginal_npv_usd", 0.0), 0.0),
+        "scaling_daily_budget_usd": _float_value(lane.get("scaling_daily_budget_usd", 0.0), 0.0),
+        "scaling_max_parallel_agents": max(1, _int_value(lane.get("scaling_max_parallel_agents", 1), 1)),
+        "scaling_max_subagents_per_agent": max(1, _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1)),
+        "scaling_event_counts": scaling_summary.get("counts", {}),
+        "scale_up_events": _int_value(scaling_summary.get("counts", {}).get("scale_up", 0), 0),
+        "scale_down_events": _int_value(scaling_summary.get("counts", {}).get("scale_down", 0), 0),
+        "scale_hold_events": _int_value(scaling_summary.get("counts", {}).get("scale_hold", 0), 0),
+        "latest_scale_event": (
+            scaling_summary.get("latest_scale_event", {})
+            if isinstance(scaling_summary.get("latest_scale_event", {}), dict)
+            else {}
+        ),
         "latest_log_line": "",
         "log_file": str(log_path),
         "pid_file": str(pid_path),
@@ -3036,6 +3481,19 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
                 "claude_model": "",
                 "gemini_fallback_models": [],
                 "exclusive_paths": [],
+                "scaling_mode": "static",
+                "scaling_group": "",
+                "scaling_rank": 1,
+                "scaling_decision_file": "",
+                "scaling_min_marginal_npv_usd": 0.0,
+                "scaling_daily_budget_usd": 0.0,
+                "scaling_max_parallel_agents": 1,
+                "scaling_max_subagents_per_agent": 1,
+                "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
+                "scale_up_events": 0,
+                "scale_down_events": 0,
+                "scale_hold_events": 0,
+                "latest_scale_event": {},
                 "latest_log_line": "",
                 "log_file": str(runtime_dir / "runner.log"),
                 "pid_file": str(runtime_dir / "lane.pid"),
@@ -3064,6 +3522,13 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
         errors.append(lane_error)
 
     health_counts, owner_counts = _lane_health_owner_counts(snapshots)
+    scaling_event_counts = {"scale_up": 0, "scale_down": 0, "scale_hold": 0}
+    for lane in snapshots:
+        scaling_counts = lane.get("scaling_event_counts", {})
+        if not isinstance(scaling_counts, dict):
+            continue
+        for key in scaling_event_counts:
+            scaling_event_counts[key] += _int_value(scaling_counts.get(key, 0), 0)
     return {
         "timestamp": _now_iso(),
         "lanes_file": str(config.lanes_file),
@@ -3072,6 +3537,7 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
         "lanes": snapshots,
         "health_counts": health_counts,
         "owner_counts": owner_counts,
+        "scaling_event_counts": scaling_event_counts,
         "partial": True,
         "ok": False,
         "errors": errors,
@@ -3107,6 +3573,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
             state_progress = _read_lane_state_progress(Path(lane["state_file"]), Path(lane["tasks_file"]))
             state_counts = state_progress["counts"]
             last_event = _tail_ndjson(events_path, 1)
+            scaling_summary = _lane_scaling_event_summary(events_path)
             latest = ""
             if log_path.exists():
                 lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -3149,6 +3616,32 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "claude_model": str(lane["claude_model"] or ""),
                     "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
                     "exclusive_paths": lane["exclusive_paths"],
+                    "scaling_mode": str(lane.get("scaling_mode", "static")).strip() or "static",
+                    "scaling_group": str(lane.get("scaling_group", "")).strip(),
+                    "scaling_rank": max(1, _int_value(lane.get("scaling_rank", 1), 1)),
+                    "scaling_decision_file": str(lane.get("scaling_decision_file", "")),
+                    "scaling_min_marginal_npv_usd": _float_value(
+                        lane.get("scaling_min_marginal_npv_usd", 0.0),
+                        0.0,
+                    ),
+                    "scaling_daily_budget_usd": _float_value(lane.get("scaling_daily_budget_usd", 0.0), 0.0),
+                    "scaling_max_parallel_agents": max(
+                        1,
+                        _int_value(lane.get("scaling_max_parallel_agents", 1), 1),
+                    ),
+                    "scaling_max_subagents_per_agent": max(
+                        1,
+                        _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1),
+                    ),
+                    "scaling_event_counts": scaling_summary.get("counts", {}),
+                    "scale_up_events": _int_value(scaling_summary.get("counts", {}).get("scale_up", 0), 0),
+                    "scale_down_events": _int_value(scaling_summary.get("counts", {}).get("scale_down", 0), 0),
+                    "scale_hold_events": _int_value(scaling_summary.get("counts", {}).get("scale_hold", 0), 0),
+                    "latest_scale_event": (
+                        scaling_summary.get("latest_scale_event", {})
+                        if isinstance(scaling_summary.get("latest_scale_event", {}), dict)
+                        else {}
+                    ),
                     "latest_log_line": latest,
                     "log_file": str(log_path),
                     "pid_file": str(pid_path),
@@ -3203,6 +3696,28 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "claude_model": str(lane["claude_model"] or ""),
                     "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
                     "exclusive_paths": lane["exclusive_paths"],
+                    "scaling_mode": str(lane.get("scaling_mode", "static")).strip() or "static",
+                    "scaling_group": str(lane.get("scaling_group", "")).strip(),
+                    "scaling_rank": max(1, _int_value(lane.get("scaling_rank", 1), 1)),
+                    "scaling_decision_file": str(lane.get("scaling_decision_file", "")),
+                    "scaling_min_marginal_npv_usd": _float_value(
+                        lane.get("scaling_min_marginal_npv_usd", 0.0),
+                        0.0,
+                    ),
+                    "scaling_daily_budget_usd": _float_value(lane.get("scaling_daily_budget_usd", 0.0), 0.0),
+                    "scaling_max_parallel_agents": max(
+                        1,
+                        _int_value(lane.get("scaling_max_parallel_agents", 1), 1),
+                    ),
+                    "scaling_max_subagents_per_agent": max(
+                        1,
+                        _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1),
+                    ),
+                    "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
+                    "scale_up_events": 0,
+                    "scale_down_events": 0,
+                    "scale_hold_events": 0,
+                    "latest_scale_event": {},
                     "latest_log_line": "",
                     "log_file": str(log_path),
                     "pid_file": str(pid_path),
@@ -3261,6 +3776,19 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "claude_model": "",
                 "gemini_fallback_models": [],
                 "exclusive_paths": [],
+                "scaling_mode": "static",
+                "scaling_group": "",
+                "scaling_rank": 1,
+                "scaling_decision_file": "",
+                "scaling_min_marginal_npv_usd": 0.0,
+                "scaling_daily_budget_usd": 0.0,
+                "scaling_max_parallel_agents": 1,
+                "scaling_max_subagents_per_agent": 1,
+                "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
+                "scale_up_events": 0,
+                "scale_down_events": 0,
+                "scale_hold_events": 0,
+                "latest_scale_event": {},
                 "latest_log_line": "",
                 "log_file": str(runtime_dir / "runner.log"),
                 "pid_file": str(runtime_dir / "lane.pid"),
@@ -3301,6 +3829,13 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
             owner_entry["healthy"] += 1
         else:
             owner_entry["degraded"] += 1
+    scaling_event_counts = {"scale_up": 0, "scale_down": 0, "scale_hold": 0}
+    for lane in snapshots:
+        scaling_counts = lane.get("scaling_event_counts", {})
+        if not isinstance(scaling_counts, dict):
+            continue
+        for key in scaling_event_counts:
+            scaling_event_counts[key] += _int_value(scaling_counts.get(key, 0), 0)
     return {
         "timestamp": _now_iso(),
         "lanes_file": str(config.lanes_file),
@@ -3309,6 +3844,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "lanes": snapshots,
         "health_counts": health_counts,
         "owner_counts": owner_counts,
+        "scaling_event_counts": scaling_event_counts,
         "partial": len(errors) > 0,
         "ok": len(errors) == 0,
         "errors": errors,
@@ -3539,6 +4075,17 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
             "build_id": _lane_build_id(config, lane),
             "exclusive_paths": lane["exclusive_paths"],
+            "scaling_mode": str(lane.get("scaling_mode", "static")),
+            "scaling_group": str(lane.get("scaling_group", "")),
+            "scaling_rank": max(1, _int_value(lane.get("scaling_rank", 1), 1)),
+            "scaling_decision_file": str(lane.get("scaling_decision_file", "")),
+            "scaling_min_marginal_npv_usd": _float_value(lane.get("scaling_min_marginal_npv_usd", 0.0), 0.0),
+            "scaling_daily_budget_usd": _float_value(lane.get("scaling_daily_budget_usd", 0.0), 0.0),
+            "scaling_max_parallel_agents": max(1, _int_value(lane.get("scaling_max_parallel_agents", 1), 1)),
+            "scaling_max_subagents_per_agent": max(
+                1,
+                _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1),
+            ),
         },
     )
     _append_lane_event(
@@ -3609,9 +4156,12 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
     selected = [lane for lane in lanes if lane["enabled"]] if resolved_lane is None else [lane for lane in lanes if lane["id"] == resolved_lane]
     if requested_lane is not None and resolved_lane is None:
         raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
+    scaling_plan = _evaluate_lane_scaling_plan(config, lanes, requested_lane=resolved_lane)
     ensured: list[dict[str, Any]] = []
     started: list[dict[str, Any]] = []
     restarted: list[dict[str, Any]] = []
+    scaled_up: list[dict[str, Any]] = []
+    scaled_down: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
     failed: list[dict[str, Any]] = list(config_failures)
@@ -3629,6 +4179,43 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
         running = bool(current.get("running", False))
         stale = bool(current.get("heartbeat_stale", False))
         build_current = bool(current.get("build_current", False))
+        lane_scaling = scaling_plan.get("by_lane", {}).get(current_lane_id, {})
+        lane_allowed = bool(lane_scaling.get("allowed", True))
+        lane_scale_reason = str(lane_scaling.get("reason", "npv_gate_hold")).strip() or "npv_gate_hold"
+        scale_payload = {
+            "group": str(lane_scaling.get("group", "")).strip(),
+            "slot": _int_value(lane_scaling.get("slot", 1), 1),
+            "allowed_parallel_lanes": _int_value(lane_scaling.get("allowed_parallel_lanes", 1), 1),
+            "reason": lane_scale_reason,
+            "reasons": lane_scaling.get("reasons", []),
+            "decision": lane_scaling.get("decision", {}),
+        }
+        if not lane_allowed:
+            if running:
+                stop_lane_background(
+                    config,
+                    current_lane_id,
+                    reason="scale_down_npv_gate",
+                    pause=False,
+                )
+                scaled_down.append(
+                    {
+                        "id": current_lane_id,
+                        "status": "scaled_down",
+                        "reason": lane_scale_reason,
+                        "group": scale_payload["group"],
+                    }
+                )
+                _append_lane_event(config, current_lane_id, "scale_down", scale_payload)
+            else:
+                skipped.append(
+                    {
+                        "id": current_lane_id,
+                        "reason": lane_scale_reason,
+                        "group": scale_payload["group"],
+                    }
+                )
+            continue
         if pause_file.exists():
             skipped.append({"id": current_lane_id, "reason": "manually_paused"})
             continue
@@ -3646,6 +4233,20 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
                 started_lane = start_lane_background(config, current_lane_id)
                 started.append({"id": current_lane_id, "status": "started", "pid": started_lane.get("pid")})
                 _append_lane_event(config, current_lane_id, "auto_started", {"reason": "not_running"})
+                if (
+                    str(lane_scaling.get("mode", "static")).strip().lower() == "npv"
+                    and _int_value(lane_scaling.get("slot", 1), 1) > 1
+                    and _int_value(lane_scaling.get("allowed_parallel_lanes", 1), 1) > 1
+                ):
+                    scaled_up.append(
+                        {
+                            "id": current_lane_id,
+                            "status": "scaled_up",
+                            "group": str(lane_scaling.get("group", "")).strip(),
+                            "slot": _int_value(lane_scaling.get("slot", 1), 1),
+                        }
+                    )
+                    _append_lane_event(config, current_lane_id, "scale_up", scale_payload)
         except Exception as err:
             failed.append({"id": current_lane_id, "error": str(err), "source": "lane_runtime"})
             _append_lane_event(config, current_lane_id, "ensure_failed", {"error": str(err)})
@@ -3656,13 +4257,18 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
         "ensured_count": len(ensured),
         "started_count": len(started),
         "restarted_count": len(restarted),
+        "scaled_up_count": len(scaled_up),
+        "scaled_down_count": len(scaled_down),
         "skipped_count": len(skipped),
         "config_error_count": len(config_failures),
         "config_errors": [item["error"] for item in config_failures],
         "failed_count": len(failed),
+        "scaling": scaling_plan,
         "ensured": ensured,
         "started": started,
         "restarted": restarted,
+        "scaled_up": scaled_up,
+        "scaled_down": scaled_down,
         "skipped": skipped,
         "failed": failed,
         "ok": len(failed) == 0,
@@ -3676,22 +4282,64 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
     selected = [lane for lane in lanes if lane["enabled"]] if resolved_lane is None else [lane for lane in lanes if lane["id"] == resolved_lane]
     if requested_lane is not None and resolved_lane is None:
         raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
+    scaling_plan = _evaluate_lane_scaling_plan(config, lanes, requested_lane=resolved_lane)
     started: list[dict[str, Any]] = []
+    scaled_up: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
     failed: list[dict[str, Any]] = list(config_failures)
     for lane in selected:
+        lane_scaling = scaling_plan.get("by_lane", {}).get(str(lane.get("id", "")).strip(), {})
+        if not bool(lane_scaling.get("allowed", True)):
+            skipped.append(
+                {
+                    "id": str(lane.get("id", "")).strip(),
+                    "owner": str(lane.get("owner", "unknown")).strip() or "unknown",
+                    "reason": str(lane_scaling.get("reason", "npv_gate_hold")).strip() or "npv_gate_hold",
+                    "group": str(lane_scaling.get("group", "")).strip(),
+                }
+            )
+            continue
         try:
-            started.append(start_lane_background(config, lane["id"]))
+            lane_payload = start_lane_background(config, lane["id"])
+            started.append(lane_payload)
+            if (
+                str(lane_scaling.get("mode", "static")).strip().lower() == "npv"
+                and _int_value(lane_scaling.get("slot", 1), 1) > 1
+                and _int_value(lane_scaling.get("allowed_parallel_lanes", 1), 1) > 1
+            ):
+                scale_payload = {
+                    "group": str(lane_scaling.get("group", "")).strip(),
+                    "slot": _int_value(lane_scaling.get("slot", 1), 1),
+                    "allowed_parallel_lanes": _int_value(lane_scaling.get("allowed_parallel_lanes", 1), 1),
+                    "reason": str(lane_scaling.get("reason", "approved")).strip() or "approved",
+                    "reasons": lane_scaling.get("reasons", []),
+                    "decision": lane_scaling.get("decision", {}),
+                }
+                _append_lane_event(config, lane["id"], "scale_up", scale_payload)
+                scaled_up.append(
+                    {
+                        "id": lane["id"],
+                        "status": "scaled_up",
+                        "group": scale_payload["group"],
+                        "slot": scale_payload["slot"],
+                    }
+                )
         except Exception as err:
             failed.append({"id": lane["id"], "owner": lane["owner"], "error": str(err), "source": "lane_runtime"})
     return {
         "timestamp": _now_iso(),
         "requested_lane": resolved_lane or "all_enabled",
         "started_count": len(started),
+        "scaled_up_count": len(scaled_up),
+        "skipped_count": len(skipped),
         "started": started,
+        "scaled_up": scaled_up,
+        "skipped": skipped,
         "config_error_count": len(config_failures),
         "config_errors": [item["error"] for item in config_failures],
         "failed_count": len(failed),
+        "scaling": scaling_plan,
         "failed": failed,
         "ok": len(failed) == 0,
     }

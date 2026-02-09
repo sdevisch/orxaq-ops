@@ -124,6 +124,34 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--routellm-enabled", argv)
             self.assertIn("--routellm-url", argv)
 
+    def test_manager_config_reads_scaling_env(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            decision_file = root / "artifacts" / "autonomy" / "scaling.json"
+            env_file.write_text(
+                (
+                    "OPENAI_API_KEY=test\n"
+                    "GEMINI_API_KEY=test\n"
+                    f"ORXAQ_IMPL_REPO={root / 'impl_repo'}\n"
+                    f"ORXAQ_TEST_REPO={root / 'test_repo'}\n"
+                    "ORXAQ_AUTONOMY_SCALING_ENABLED=1\n"
+                    f"ORXAQ_AUTONOMY_SCALING_DECISION_FILE={decision_file}\n"
+                    "ORXAQ_AUTONOMY_SCALING_MIN_NPV_USD=1.25\n"
+                    "ORXAQ_AUTONOMY_SCALING_DAILY_BUDGET_USD=45\n"
+                    "ORXAQ_AUTONOMY_SCALING_MAX_PARALLEL_AGENTS=4\n"
+                    "ORXAQ_AUTONOMY_SCALING_MAX_SUBAGENTS_PER_AGENT=3\n"
+                ),
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            self.assertTrue(cfg.scaling_enabled)
+            self.assertEqual(cfg.scaling_decision_file, decision_file.resolve())
+            self.assertAlmostEqual(cfg.scaling_min_marginal_npv_usd, 1.25, places=4)
+            self.assertAlmostEqual(cfg.scaling_daily_budget_usd, 45.0, places=4)
+            self.assertEqual(cfg.scaling_max_parallel_agents, 4)
+            self.assertEqual(cfg.scaling_max_subagents_per_agent, 3)
+
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -2290,6 +2318,91 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--metrics-summary-file", argv)
             self.assertIn("--pricing-file", argv)
 
+    def test_start_lanes_background_applies_npv_scaling_gate(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8")
+                + "ORXAQ_AUTONOMY_SCALING_ENABLED=1\n",
+                encoding="utf-8",
+            )
+            decision_file = root / "artifacts" / "autonomy" / "scaling_decision.json"
+            decision_file.parent.mkdir(parents=True, exist_ok=True)
+            decision_file.write_text(
+                json.dumps(
+                    {
+                        "decision": "scale_up",
+                        "should_scale": True,
+                        "marginal_npv_usd": 2.6,
+                        "capacity": {
+                            "requested_parallel_agents": 2,
+                            "requested_subagents_per_agent": 1,
+                        },
+                        "constraints": {
+                            "projected_daily_spend_usd": 3.1,
+                            "daily_budget_usd": 12.0,
+                            "max_parallel_agents": 2,
+                            "max_subagents_per_agent": 2,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 1,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_max_parallel_agents": 2,
+                                "scaling_max_subagents_per_agent": 2,
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 2,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_max_parallel_agents": 2,
+                                "scaling_max_subagents_per_agent": 2,
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.start_lane_background",
+                side_effect=lambda _cfg, lane_id: {"id": lane_id, "pid": 99},
+            ) as start:
+                payload = manager.start_lanes_background(cfg)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["started_count"], 2)
+            self.assertEqual(payload["scaled_up_count"], 1)
+            self.assertEqual(payload["scaled_up"][0]["id"], "lane-b")
+            self.assertEqual(payload["scaling"]["groups"]["codex-core"]["allowed_parallel_lanes"], 2)
+            self.assertEqual(start.call_count, 2)
+
     def test_start_lanes_background_keeps_valid_lane_when_another_lane_is_invalid(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -2332,6 +2445,98 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("lane-b", payload["config_errors"][0])
             self.assertEqual(payload["failed"][0]["source"], "lane_config")
             start.assert_called_once_with(cfg, "lane-a")
+
+    def test_ensure_lanes_background_scales_down_when_npv_gate_holds(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8")
+                + "ORXAQ_AUTONOMY_SCALING_ENABLED=1\n",
+                encoding="utf-8",
+            )
+            decision_file = root / "artifacts" / "autonomy" / "scaling_decision.json"
+            decision_file.parent.mkdir(parents=True, exist_ok=True)
+            decision_file.write_text(
+                json.dumps(
+                    {
+                        "decision": "hold",
+                        "should_scale": False,
+                        "marginal_npv_usd": -0.2,
+                        "capacity": {
+                            "requested_parallel_agents": 2,
+                            "requested_subagents_per_agent": 1,
+                        },
+                        "constraints": {
+                            "projected_daily_spend_usd": 1.0,
+                            "daily_budget_usd": 20.0,
+                            "max_parallel_agents": 2,
+                            "max_subagents_per_agent": 2,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 1,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_max_parallel_agents": 2,
+                                "scaling_max_subagents_per_agent": 2,
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 2,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_max_parallel_agents": 2,
+                                "scaling_max_subagents_per_agent": 2,
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "lanes": [
+                        {"id": "lane-a", "running": True, "heartbeat_stale": False, "build_current": True},
+                        {"id": "lane-b", "running": True, "heartbeat_stale": False, "build_current": True},
+                    ]
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.stop_lane_background",
+                return_value={"id": "lane-b", "running": False},
+            ) as stop, mock.patch("orxaq_autonomy.manager.start_lane_background") as start:
+                payload = manager.ensure_lanes_background(cfg)
+            self.assertEqual(payload["ensured_count"], 1)
+            self.assertEqual(payload["scaled_down_count"], 1)
+            self.assertEqual(payload["scaled_down"][0]["id"], "lane-b")
+            stop.assert_called_once_with(cfg, "lane-b", reason="scale_down_npv_gate", pause=False)
+            start.assert_not_called()
 
     def test_lane_spec_rebases_legacy_artifact_paths_when_artifacts_dir_overridden(self):
         with tempfile.TemporaryDirectory() as td:
@@ -3314,6 +3519,75 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["health_counts"]["stale"], 1)
             self.assertEqual(snapshot["owner_counts"]["codex"]["total"], 1)
             self.assertEqual(snapshot["owner_counts"]["codex"]["degraded"], 1)
+
+    def test_lane_status_snapshot_includes_scaling_event_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            decision_file = root / "artifacts" / "autonomy" / "scaling_decision.json"
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 2,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_min_marginal_npv_usd": 1.0,
+                                "scaling_daily_budget_usd": 15.0,
+                                "scaling_max_parallel_agents": 3,
+                                "scaling_max_subagents_per_agent": 2,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane_runtime = root / "artifacts" / "autonomy" / "lanes" / "lane-a"
+            lane_runtime.mkdir(parents=True, exist_ok=True)
+            (lane_runtime / "events.ndjson").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": "2026-01-01T00:00:01+00:00",
+                                "lane_id": "lane-a",
+                                "event_type": "scale_up",
+                                "payload": {"reason": "approved"},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": "2026-01-01T00:00:02+00:00",
+                                "lane_id": "lane-a",
+                                "event_type": "scale_down",
+                                "payload": {"reason": "stop_loss_triggered"},
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.lane_status_snapshot(cfg)
+            lane = snapshot["lanes"][0]
+            self.assertEqual(lane["scaling_mode"], "npv")
+            self.assertEqual(lane["scaling_group"], "codex-core")
+            self.assertEqual(lane["scaling_rank"], 2)
+            self.assertEqual(lane["scale_up_events"], 1)
+            self.assertEqual(lane["scale_down_events"], 1)
+            self.assertEqual(lane["latest_scale_event"]["event_type"], "scale_down")
+            self.assertEqual(snapshot["scaling_event_counts"]["scale_up"], 1)
+            self.assertEqual(snapshot["scaling_event_counts"]["scale_down"], 1)
 
     def test_lane_status_fallback_snapshot_preserves_lane_owner_identity(self):
         with tempfile.TemporaryDirectory() as td:

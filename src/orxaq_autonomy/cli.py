@@ -1455,6 +1455,18 @@ def main(argv: list[str] | None = None) -> int:
                         f"healthy={stats.get('healthy', 0)},degraded={stats.get('degraded', 0)})"
                     )
                 print(f"owner_counts: {' | '.join(owner_parts)}")
+            scaling_counts = (
+                filtered.get("scaling_event_counts", {})
+                if isinstance(filtered.get("scaling_event_counts", {}), dict)
+                else {}
+            )
+            if scaling_counts:
+                print(
+                    "scaling_events: "
+                    f"up={_safe_int(scaling_counts.get('scale_up', 0), 0)} "
+                    f"down={_safe_int(scaling_counts.get('scale_down', 0), 0)} "
+                    f"hold={_safe_int(scaling_counts.get('scale_hold', 0), 0)}"
+                )
             if filtered.get("errors"):
                 print(f"errors: {' | '.join(str(item) for item in filtered['errors'])}")
             if filtered.get("conversation_errors"):
@@ -1486,6 +1498,23 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 if lane.get("error"):
                     print(f"  error: {lane['error']}")
+                if str(lane.get("scaling_mode", "static")).strip().lower() == "npv" or any(
+                    _safe_int(lane.get(key, 0), 0) > 0
+                    for key in ("scale_up_events", "scale_down_events", "scale_hold_events")
+                ):
+                    latest_scale = lane.get("latest_scale_event", {})
+                    if not isinstance(latest_scale, dict):
+                        latest_scale = {}
+                    print(
+                        "  scaling: "
+                        f"mode={str(lane.get('scaling_mode', 'static')).strip() or 'static'} "
+                        f"group={str(lane.get('scaling_group', '')).strip() or '-'} "
+                        f"rank={_safe_int(lane.get('scaling_rank', 1), 1)} "
+                        f"up={_safe_int(lane.get('scale_up_events', 0), 0)} "
+                        f"down={_safe_int(lane.get('scale_down_events', 0), 0)} "
+                        f"hold={_safe_int(lane.get('scale_hold_events', 0), 0)} "
+                        f"latest_type={str(latest_scale.get('event_type', '')).strip() or '-'}"
+                    )
             return 0
         if args.command in {"lanes-start", "lane-start"}:
             lane_id = args.lane.strip() or None
