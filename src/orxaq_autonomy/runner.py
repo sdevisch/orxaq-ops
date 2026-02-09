@@ -68,6 +68,7 @@ GEMINI_CAPACITY_ERROR_PATTERNS = (
     "resource has been exhausted",
     "model is overloaded",
     "quota",
+    "rate limit",
     "429",
     "503",
     "unavailable",
@@ -1217,6 +1218,7 @@ def build_agent_prompt(
         "- Use non-interactive commands only (never wait for terminal prompts).\n"
         "- Handle new/unknown file types safely: preserve binary formats, avoid destructive rewrites, and add `.gitattributes` entries when needed.\n"
         "- If git locks or in-progress git states are detected, recover safely and continue.\n"
+        "- Merge/rebase operations are allowed when there are no unresolved conflicts (`git diff --name-only --diff-filter=U` is empty).\n"
         "- If you are implementation-owner: provide explicit test requests for Gemini in next_actions.\n"
         "- If you are test-owner: when you find implementation issues, provide concrete fix feedback and hints for Codex in blocker/next_actions.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
@@ -1232,6 +1234,7 @@ def run_command(
     progress_callback: Callable[[int], None] | None = None,
     progress_interval_sec: int = 15,
     extra_env: dict[str, str] | None = None,
+    stdin_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = build_subprocess_env(extra_env)
     try:
@@ -1239,7 +1242,7 @@ def run_command(
             cmd,
             cwd=str(cwd),
             text=True,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -1254,6 +1257,7 @@ def run_command(
         )
     start = time.monotonic()
     last_progress = start
+    communicate_input = stdin_text
 
     while True:
         elapsed = int(time.monotonic() - start)
@@ -1261,9 +1265,11 @@ def run_command(
             progress_callback(elapsed)
             last_progress = time.monotonic()
         try:
-            stdout, stderr = process.communicate(timeout=1)
+            stdout, stderr = process.communicate(timeout=1, input=communicate_input)
+            communicate_input = None
             return subprocess.CompletedProcess(cmd, returncode=process.returncode or 0, stdout=stdout, stderr=stderr)
         except subprocess.TimeoutExpired:
+            communicate_input = None
             if elapsed >= timeout_sec:
                 process.kill()
                 stdout, stderr = process.communicate()
@@ -1730,13 +1736,15 @@ def run_codex_task(
     handoff_context: str,
     conversation_log_file: Path | None,
     cycle: int,
+    role: str = "implementation-owner",
+    role_constraints: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{task.id}_codex_result.json"
     prompt = build_agent_prompt(
         task,
         objective_text,
-        role="implementation-owner",
+        role=role,
         repo_path=repo,
         retry_context=retry_context,
         repo_context=repo_context,
@@ -1746,6 +1754,8 @@ def run_codex_task(
         startup_instructions=startup_instructions,
         handoff_context=handoff_context,
     )
+    if role_constraints.strip():
+        prompt += f"\n{role_constraints.strip()}\n"
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -1876,6 +1886,14 @@ def run_gemini_task(
     handoff_context: str,
     conversation_log_file: Path | None,
     cycle: int,
+    claude_fallback_cmd: str | None = None,
+    claude_fallback_model: str | None = None,
+    claude_fallback_startup_instructions: str = "",
+    codex_fallback_cmd: str | None = None,
+    codex_fallback_model: str | None = None,
+    codex_schema_path: Path | None = None,
+    codex_output_dir: Path | None = None,
+    codex_fallback_startup_instructions: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     prompt = build_agent_prompt(
         task,
@@ -1904,6 +1922,132 @@ def run_gemini_task(
         content=prompt,
         meta={"agent": "gemini"},
     )
+
+    def attempt_cross_provider_fallback(
+        *,
+        fail_text: str,
+        telemetry: dict[str, Any],
+        reason: str,
+    ) -> tuple[bool, dict[str, Any]] | None:
+        fallback_failures: list[str] = []
+        attempted = False
+
+        if claude_fallback_cmd:
+            attempted = True
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="agent_provider_fallback",
+                content=reason,
+                meta={"from": "gemini", "to": "claude"},
+            )
+            claude_ok, claude_outcome = run_claude_task(
+                task=task,
+                repo=repo,
+                objective_text=objective_text,
+                claude_cmd=claude_fallback_cmd,
+                claude_model=claude_fallback_model,
+                timeout_sec=timeout_sec,
+                retry_context=retry_context,
+                progress_callback=progress_callback,
+                repo_context=repo_context,
+                repo_hints=repo_hints,
+                skill_protocol=skill_protocol,
+                mcp_context=mcp_context,
+                startup_instructions=claude_fallback_startup_instructions,
+                handoff_context=handoff_context,
+                conversation_log_file=conversation_log_file,
+                cycle=cycle,
+                role="test-owner",
+                role_constraints=(
+                    "Testing-owner constraints:\n"
+                    "- Focus on tests/specs/benchmarks and validation depth.\n"
+                    "- Avoid production code edits unless strictly required to keep tests executable.\n"
+                    "- You are acting as a fallback provider for a Gemini-owned task."
+                ),
+            )
+            if claude_ok:
+                fallback_outcome = normalize_outcome(claude_outcome)
+                summary = str(fallback_outcome.get("summary", "")).strip()
+                fallback_outcome["summary"] = (
+                    f"Claude fallback succeeded after Gemini failure. {summary}".strip()
+                    if summary
+                    else "Claude fallback succeeded after Gemini failure."
+                )
+                return True, fallback_outcome
+            fallback_failures.append(
+                "Claude fallback failed:\n"
+                + str(claude_outcome.get("blocker", "") or claude_outcome.get("summary", "unknown error")).strip()
+            )
+
+        if codex_fallback_cmd and codex_schema_path is not None and codex_output_dir is not None:
+            attempted = True
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="agent_provider_fallback",
+                content="Claude fallback unavailable/failed; attempting OpenAI fallback provider.",
+                meta={"from": "gemini", "to": "codex"},
+            )
+            codex_ok, codex_outcome = run_codex_task(
+                task=task,
+                repo=repo,
+                objective_text=objective_text,
+                schema_path=codex_schema_path,
+                output_dir=codex_output_dir,
+                codex_cmd=codex_fallback_cmd,
+                codex_model=codex_fallback_model,
+                timeout_sec=timeout_sec,
+                retry_context=retry_context,
+                progress_callback=progress_callback,
+                repo_context=repo_context,
+                repo_hints=repo_hints,
+                skill_protocol=skill_protocol,
+                mcp_context=mcp_context,
+                startup_instructions=codex_fallback_startup_instructions,
+                handoff_context=handoff_context,
+                conversation_log_file=conversation_log_file,
+                cycle=cycle,
+                role="test-owner",
+                role_constraints=(
+                    "Testing-owner constraints:\n"
+                    "- Focus on tests/specs/benchmarks and validation depth.\n"
+                    "- Avoid production code edits unless strictly required to keep tests executable.\n"
+                    "- You are acting as a fallback provider for a Gemini-owned task."
+                ),
+            )
+            if codex_ok:
+                fallback_outcome = normalize_outcome(codex_outcome)
+                summary = str(fallback_outcome.get("summary", "")).strip()
+                fallback_outcome["summary"] = (
+                    f"OpenAI fallback succeeded after Gemini failure. {summary}".strip()
+                    if summary
+                    else "OpenAI fallback succeeded after Gemini failure."
+                )
+                return True, fallback_outcome
+            fallback_failures.append(
+                "OpenAI fallback failed:\n"
+                + str(codex_outcome.get("blocker", "") or codex_outcome.get("summary", "unknown error")).strip()
+            )
+
+        if not attempted:
+            return None
+
+        blocker_sections = [f"Gemini failure:\n{fail_text or 'Gemini command failed with unknown error.'}"]
+        blocker_sections.extend(fallback_failures)
+        return False, normalize_outcome(
+            {
+                "status": STATUS_BLOCKED,
+                "summary": "Gemini and fallback providers failed",
+                "blocker": "\n\n".join(section.strip() for section in blocker_sections if section.strip()),
+                "next_actions": [],
+                "_telemetry": telemetry,
+            }
+        )
 
     model_candidates = gemini_model_candidates(gemini_model, gemini_fallback_models)
     attempt_errors: list[str] = []
@@ -1979,6 +2123,13 @@ def run_gemini_task(
             content=fail_text,
             meta={"agent": "gemini", "returncode": (result.returncode if result else -1)},
         )
+        fallback_result = attempt_cross_provider_fallback(
+            fail_text=fail_text,
+            telemetry=telemetry,
+            reason="Gemini failed; attempting Claude fallback provider.",
+        )
+        if fallback_result is not None:
+            return fallback_result
         return False, normalize_outcome(
             {
                 "status": STATUS_BLOCKED,
@@ -2016,7 +2167,37 @@ def run_gemini_task(
         content=result.stdout.strip(),
         meta={"agent": "gemini"},
     )
-    return True, normalize_outcome(parsed)
+    normalized = normalize_outcome(parsed)
+    combined_signal_text = "\n".join(
+        [
+            str(normalized.get("summary", "")),
+            str(normalized.get("blocker", "")),
+            str(normalized.get("raw_output", "")),
+            result.stdout.strip(),
+            result.stderr.strip(),
+        ]
+    ).strip()
+    status = str(normalized.get("status", "")).strip().lower()
+    commit_ref = str(normalized.get("commit", "")).strip()
+    if status in {STATUS_PARTIAL, STATUS_BLOCKED} and not commit_ref and is_gemini_capacity_error(combined_signal_text):
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_retry_fallback",
+            content="Gemini returned a capacity-like partial/blocked outcome; escalating to cross-provider fallback.",
+            meta={"agent": "gemini"},
+        )
+        telemetry_payload = normalized.get("_telemetry", {}) if isinstance(normalized.get("_telemetry", {}), dict) else {}
+        fallback_result = attempt_cross_provider_fallback(
+            fail_text=combined_signal_text,
+            telemetry=telemetry_payload,
+            reason="Gemini returned a capacity-like partial/blocked outcome; attempting Claude fallback provider.",
+        )
+        if fallback_result is not None:
+            return fallback_result
+    return True, normalized
 
 
 def run_claude_task(
@@ -2037,11 +2218,13 @@ def run_claude_task(
     handoff_context: str,
     conversation_log_file: Path | None,
     cycle: int,
+    role: str = "review-owner",
+    role_constraints: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     prompt = build_agent_prompt(
         task,
         objective_text,
-        role="review-owner",
+        role=role,
         repo_path=repo,
         retry_context=retry_context,
         repo_context=repo_context,
@@ -2051,11 +2234,15 @@ def run_claude_task(
         startup_instructions=startup_instructions,
         handoff_context=handoff_context,
     )
-    prompt += (
-        "\nReview-owner constraints:\n"
-        "- Focus on governance, architecture, and collaboration safety constraints.\n"
-        "- Keep changes production-grade and verify with tests where applicable.\n"
-    )
+    constraints = role_constraints.strip()
+    if not constraints and role == "review-owner":
+        constraints = (
+            "Review-owner constraints:\n"
+            "- Focus on governance, architecture, and collaboration safety constraints.\n"
+            "- Keep changes production-grade and verify with tests where applicable."
+        )
+    if constraints:
+        prompt += f"\n{constraints}\n"
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -2068,7 +2255,6 @@ def run_claude_task(
 
     cmd = [
         claude_cmd,
-        "-p",
         "--print",
         "--permission-mode",
         "bypassPermissions",
@@ -2078,12 +2264,38 @@ def run_claude_task(
     ]
     if claude_model:
         cmd.extend(["--model", claude_model])
-    cmd.append(prompt)
 
     _print(f"Running Claude task {task.id}")
     started = time.monotonic()
-    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
+    result = run_command(
+        cmd,
+        cwd=repo,
+        timeout_sec=timeout_sec,
+        progress_callback=progress_callback,
+        stdin_text=prompt,
+    )
     latency = time.monotonic() - started
+    missing_prompt_error = "input must be provided either through stdin or as a prompt argument when using --print"
+    combined_stream = (result.stdout + "\n" + result.stderr).strip()
+    if result.returncode != 0 and missing_prompt_error in combined_stream.lower():
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_retry_fallback",
+            content="Claude reported missing stdin prompt; retrying with prompt argument fallback.",
+            meta={"agent": "claude"},
+        )
+        retry_cmd = list(cmd)
+        retry_cmd.append(prompt)
+        result = run_command(
+            retry_cmd,
+            cwd=repo,
+            timeout_sec=timeout_sec,
+            progress_callback=progress_callback,
+        )
+        latency = time.monotonic() - started
     model_name = claude_model or claude_cmd
     if result.returncode != 0:
         usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
@@ -2680,6 +2892,14 @@ def main(argv: list[str] | None = None) -> int:
                 handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
+                claude_fallback_cmd=args.claude_cmd,
+                claude_fallback_model=args.claude_model,
+                claude_fallback_startup_instructions=claude_startup_instructions,
+                codex_fallback_cmd=args.codex_cmd,
+                codex_fallback_model=args.codex_model,
+                codex_schema_path=schema_file,
+                codex_output_dir=artifacts_dir,
+                codex_fallback_startup_instructions=codex_startup_instructions,
             )
         else:
             task_progress = lambda elapsed: write_heartbeat(

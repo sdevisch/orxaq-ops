@@ -360,6 +360,7 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertIn("MCP context", prompt)
         self.assertIn("Scope boundary: complete only the current autonomous task listed above.", prompt)
         self.assertIn("Do not start another task in this run", prompt)
+        self.assertIn("Merge/rebase operations are allowed when there are no unresolved conflicts", prompt)
 
     def test_prompt_includes_startup_instructions(self):
         task = runner.Task(
@@ -829,6 +830,201 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertIn("--model", calls[1])
         self.assertIn("gemini-2.5-flash", calls[1])
 
+    def test_run_gemini_task_falls_back_to_claude_provider(self):
+        task = runner.Task(
+            id="task-gf-claude",
+            owner="gemini",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+
+        def gemini_failure(cmd, **kwargs):  # noqa: ANN001
+            return runner.subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="429 too many requests")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch.object(runner, "run_command", side_effect=gemini_failure), mock.patch.object(
+                runner,
+                "run_claude_task",
+                return_value=(
+                    True,
+                    {
+                        "status": "done",
+                        "summary": "claude fallback outcome",
+                        "commit": "",
+                        "validations": [],
+                        "next_actions": [],
+                        "blocker": "",
+                    },
+                ),
+            ) as run_claude_task, mock.patch.object(runner, "run_codex_task") as run_codex_task:
+                ok, outcome = runner.run_gemini_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    gemini_cmd="gemini",
+                    gemini_model=None,
+                    gemini_fallback_models=[],
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                    claude_fallback_cmd="claude",
+                    claude_fallback_model=None,
+                )
+        self.assertTrue(ok)
+        self.assertIn("Claude fallback succeeded after Gemini failure.", outcome["summary"])
+        run_claude_task.assert_called_once()
+        run_codex_task.assert_not_called()
+
+    def test_run_gemini_task_falls_back_to_openai_after_claude_failure(self):
+        task = runner.Task(
+            id="task-gf-codex",
+            owner="gemini",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+
+        def gemini_failure(cmd, **kwargs):  # noqa: ANN001
+            return runner.subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="429 too many requests")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            schema_path = repo / "schema.json"
+            schema_path.write_text("{}", encoding="utf-8")
+            output_dir = repo / "artifacts"
+            with mock.patch.object(runner, "run_command", side_effect=gemini_failure), mock.patch.object(
+                runner,
+                "run_claude_task",
+                return_value=(
+                    False,
+                    {
+                        "status": "blocked",
+                        "summary": "claude failed",
+                        "commit": "",
+                        "validations": [],
+                        "next_actions": [],
+                        "blocker": "claude blocked",
+                    },
+                ),
+            ) as run_claude_task, mock.patch.object(
+                runner,
+                "run_codex_task",
+                return_value=(
+                    True,
+                    {
+                        "status": "done",
+                        "summary": "openai fallback outcome",
+                        "commit": "",
+                        "validations": [],
+                        "next_actions": [],
+                        "blocker": "",
+                    },
+                ),
+            ) as run_codex_task:
+                ok, outcome = runner.run_gemini_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    gemini_cmd="gemini",
+                    gemini_model=None,
+                    gemini_fallback_models=[],
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                    claude_fallback_cmd="claude",
+                    codex_fallback_cmd="codex",
+                    codex_schema_path=schema_path,
+                    codex_output_dir=output_dir,
+                )
+        self.assertTrue(ok)
+        self.assertIn("OpenAI fallback succeeded after Gemini failure.", outcome["summary"])
+        run_claude_task.assert_called_once()
+        run_codex_task.assert_called_once()
+
+    def test_run_gemini_task_falls_back_after_capacity_partial_output(self):
+        task = runner.Task(
+            id="task-gf-capacity-partial",
+            owner="gemini",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+
+        partial_capacity_output = (
+            '{"status":"partial","summary":"Rate limit reached, retrying later.",'
+            '"commit":"","validations":[],"next_actions":[],"blocker":""}'
+        )
+
+        def gemini_partial(cmd, **kwargs):  # noqa: ANN001
+            return runner.subprocess.CompletedProcess(cmd, returncode=0, stdout=partial_capacity_output, stderr="")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch.object(runner, "run_command", side_effect=gemini_partial), mock.patch.object(
+                runner,
+                "run_claude_task",
+                return_value=(
+                    True,
+                    {
+                        "status": "done",
+                        "summary": "claude recovered",
+                        "commit": "",
+                        "validations": [],
+                        "next_actions": [],
+                        "blocker": "",
+                    },
+                ),
+            ) as run_claude_task, mock.patch.object(runner, "run_codex_task") as run_codex_task:
+                ok, outcome = runner.run_gemini_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    gemini_cmd="gemini",
+                    gemini_model=None,
+                    gemini_fallback_models=[],
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                    claude_fallback_cmd="claude",
+                    claude_fallback_model=None,
+                )
+        self.assertTrue(ok)
+        self.assertIn("Claude fallback succeeded after Gemini failure.", outcome["summary"])
+        run_claude_task.assert_called_once()
+        run_codex_task.assert_not_called()
+
     def test_run_claude_task_uses_bypass_permissions_flags(self):
         task = runner.Task(
             id="task-c",
@@ -839,10 +1035,10 @@ class AgentExecutionHardeningTests(unittest.TestCase):
             depends_on=[],
             acceptance=["a"],
         )
-        captured: list[list[str]] = []
+        captured: list[tuple[list[str], dict[str, object]]] = []
 
         def fake_run_command(cmd, **kwargs):  # noqa: ANN001
-            captured.append(list(cmd))
+            captured.append((list(cmd), dict(kwargs)))
             return runner.subprocess.CompletedProcess(
                 cmd,
                 returncode=0,
@@ -874,13 +1070,73 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(outcome["status"], "done")
         self.assertEqual(len(captured), 1)
-        cmd = captured[0]
-        self.assertIn("-p", cmd)
+        cmd, kwargs = captured[0]
+        self.assertNotIn("-p", cmd)
         self.assertIn("--print", cmd)
         self.assertIn("--permission-mode", cmd)
         self.assertIn("bypassPermissions", cmd)
         self.assertIn("--dangerously-skip-permissions", cmd)
         self.assertIn("--add-dir", cmd)
+        self.assertIsInstance(kwargs.get("stdin_text"), str)
+        self.assertIn("Current autonomous task:", str(kwargs.get("stdin_text", "")))
+
+    def test_run_claude_task_retries_with_prompt_argument_when_stdin_not_detected(self):
+        task = runner.Task(
+            id="task-c-retry",
+            owner="claude",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        captured: list[tuple[list[str], dict[str, object]]] = []
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            captured.append((list(cmd), dict(kwargs)))
+            if len(captured) == 1:
+                return runner.subprocess.CompletedProcess(
+                    cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="Error: Input must be provided either through stdin or as a prompt argument when using --print",
+                )
+            return runner.subprocess.CompletedProcess(
+                cmd,
+                returncode=0,
+                stdout='{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_claude_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    claude_cmd="claude",
+                    claude_model=None,
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(captured), 2)
+        first_cmd, first_kwargs = captured[0]
+        second_cmd, second_kwargs = captured[1]
+        self.assertIsInstance(first_kwargs.get("stdin_text"), str)
+        self.assertGreater(len(second_cmd), len(first_cmd))
+        self.assertNotIn("stdin_text", second_kwargs)
 
     def test_auto_push_repo_if_ahead_pushes(self):
         with mock.patch.object(
