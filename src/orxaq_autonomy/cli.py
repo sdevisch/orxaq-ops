@@ -1245,6 +1245,62 @@ def main(argv: list[str] | None = None) -> int:
                     "conversation_source_fallback_count": int(lane_conv_fallback.get("fallback_count", 0)),
                     "latest_conversation_event": latest_event,
                 }
+            lane_entry = dict(lane_entry)
+            latest_event = lane_conv_fallback.get("latest_event", {})
+            if not isinstance(latest_event, dict):
+                latest_event = {}
+            rollup_owner = str(lane_conv_fallback.get("owner", "")).strip() or "unknown"
+            current_owner = str(lane_entry.get("owner", "")).strip() or "unknown"
+            if current_owner == "unknown" and rollup_owner != "unknown":
+                lane_entry["owner"] = rollup_owner
+            if latest_event:
+                lane_entry["latest_conversation_event"] = latest_event
+            elif not isinstance(lane_entry.get("latest_conversation_event"), dict):
+                lane_entry["latest_conversation_event"] = {}
+            lane_entry["conversation_event_count"] = _safe_int(
+                lane_conv_fallback.get("event_count", lane_entry.get("conversation_event_count", 0)),
+                0,
+            )
+            lane_entry["conversation_source_count"] = _safe_int(
+                lane_conv_fallback.get("source_count", lane_entry.get("conversation_source_count", 0)),
+                0,
+            )
+            lane_entry["conversation_source_state"] = (
+                str(
+                    lane_conv_fallback.get(
+                        "source_state",
+                        lane_entry.get("conversation_source_state", "unreported"),
+                    )
+                ).strip()
+                or "unreported"
+            )
+            source_ok = lane_conv_fallback.get("source_ok")
+            if isinstance(source_ok, bool):
+                lane_entry["conversation_source_ok"] = source_ok
+            elif "conversation_source_ok" not in lane_entry:
+                lane_entry["conversation_source_ok"] = None
+            lane_entry["conversation_source_error_count"] = _safe_int(
+                lane_conv_fallback.get("source_error_count", lane_entry.get("conversation_source_error_count", 0)),
+                0,
+            )
+            lane_entry["conversation_source_missing_count"] = _safe_int(
+                lane_conv_fallback.get("missing_count", lane_entry.get("conversation_source_missing_count", 0)),
+                0,
+            )
+            lane_entry["conversation_source_recoverable_missing_count"] = _safe_int(
+                lane_conv_fallback.get(
+                    "recoverable_missing_count",
+                    lane_entry.get("conversation_source_recoverable_missing_count", 0),
+                ),
+                0,
+            )
+            lane_entry["conversation_source_fallback_count"] = _safe_int(
+                lane_conv_fallback.get("fallback_count", lane_entry.get("conversation_source_fallback_count", 0)),
+                0,
+            )
+            lane_entry["conversation_lane_fallback"] = bool(
+                lane_entry.get("conversation_lane_fallback", not selected and lane_signal_available)
+            )
             lane_payload_ok = bool(lane_payload.get("ok", not lane_errors))
             lane_health = str(lane_entry.get("health", "")).strip().lower()
             conversation_source_health = _lane_conversation_source_health(

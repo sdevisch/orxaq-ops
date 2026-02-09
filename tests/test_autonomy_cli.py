@@ -666,6 +666,119 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["suppressed_lane_errors"], ["lane-b: heartbeat stale"])
             self.assertEqual(payload["lane"]["id"], "lane-a")
 
+    def test_lane_inspect_existing_lane_includes_conversation_rollup_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 4,
+                "events": [
+                    {
+                        "timestamp": "abc-invalid-a",
+                        "owner": "claude",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "invalid-first",
+                    },
+                    {
+                        "timestamp": "2026-01-01T01:30:00+01:00",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "earlier",
+                    },
+                    {
+                        "timestamp": "2026-01-01T00:45:00+00:00",
+                        "owner": "gemini",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "later",
+                    },
+                    {
+                        "timestamp": "definitely-invalid-z",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "invalid-last",
+                    },
+                ],
+                "owner_counts": {"codex": 2, "gemini": 1, "claude": 1},
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "sources": [
+                    {
+                        "lane_id": "lane-a",
+                        "ok": True,
+                        "missing": True,
+                        "recoverable_missing": True,
+                        "fallback_used": True,
+                        "error": "",
+                        "event_count": 3,
+                    }
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            lane = payload["lane"]
+            self.assertEqual(lane["conversation_source_state"], "ok")
+            self.assertEqual(lane["conversation_event_count"], 4)
+            self.assertEqual(lane["conversation_source_count"], 1)
+            self.assertEqual(lane["conversation_source_missing_count"], 1)
+            self.assertEqual(lane["conversation_source_recoverable_missing_count"], 1)
+            self.assertEqual(lane["conversation_source_fallback_count"], 1)
+            self.assertEqual(lane["latest_conversation_event"]["content"], "later")
+
+    def test_lane_inspect_existing_lane_infers_owner_from_conversation_rollup(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"unknown": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "unknown", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 0,
+                "events": [],
+                "owner_counts": {},
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "sources": [
+                    {"lane_id": "lane-a", "owner": "gemini", "ok": True, "error": "", "event_count": 0},
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["lane"]["owner"], "gemini")
+            self.assertEqual(payload["lane"]["conversation_source_state"], "ok")
+
     def test_lane_inspect_suppresses_unrelated_conversation_source_failures(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
