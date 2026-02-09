@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,6 +35,7 @@ AGENT_SESSION_ENV_KEYS = (
     "ORXAQ_AGENT_SESSION",
     "CURSOR_AGENT",
 )
+SESSION_BRANCH_STATE_FILE = "agent_session_branch_map.json"
 
 
 def _env_true(name: str) -> bool:
@@ -41,8 +44,11 @@ def _env_true(name: str) -> bool:
 
 
 def _run_git(repo_root: Path, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    git_bin = shutil.which("git")
+    if not git_bin:
+        raise RuntimeError("git executable not found in PATH")
     return subprocess.run(
-        ["git", *args],
+        [git_bin, *args],
         cwd=str(repo_root),
         text=True,
         capture_output=True,
@@ -66,6 +72,96 @@ def _agent_session_active() -> bool:
         if str(os.environ.get(key, "")).strip():
             return True
     return False
+
+
+def _active_agent_session_token() -> str:
+    parts: list[str] = []
+    for key in AGENT_SESSION_ENV_KEYS:
+        value = str(os.environ.get(key, "")).strip()
+        if value:
+            parts.append(f"{key}:{value}")
+    return "|".join(parts)
+
+
+def _git_common_dir(repo_root: Path) -> Path:
+    result = _run_git(repo_root, ["rev-parse", "--git-common-dir"])
+    git_common = Path(result.stdout.strip())
+    if not git_common.is_absolute():
+        git_common = (repo_root / git_common).resolve()
+    return git_common
+
+
+def _load_session_branch_state(state_path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    if not state_path.exists():
+        return ({}, {})
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ({}, {})
+    if not isinstance(payload, dict):
+        return ({}, {})
+    raw_sessions = payload.get("sessions")
+    raw_branches = payload.get("branches")
+    if not isinstance(raw_sessions, dict) or not isinstance(raw_branches, dict):
+        return ({}, {})
+    sessions = {str(key): str(value) for key, value in raw_sessions.items() if str(key).strip() and str(value).strip()}
+    branches = {str(key): str(value) for key, value in raw_branches.items() if str(key).strip() and str(value).strip()}
+    return (sessions, branches)
+
+
+def _write_session_branch_state(state_path: Path, *, sessions: dict[str, str], branches: dict[str, str]) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "sessions": sessions,
+        "branches": branches,
+    }
+    state_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _check_agent_branch_freshness(
+    *,
+    repo_root: Path,
+    branch: str,
+    agent_prefixes: tuple[str, ...],
+    problems: list[str],
+) -> None:
+    if _env_true("ORXAQ_ALLOW_AGENT_BRANCH_REUSE"):
+        return
+    session_token = _active_agent_session_token()
+    if not session_token:
+        return
+    if not branch.startswith(agent_prefixes):
+        return
+
+    state_path = _git_common_dir(repo_root) / SESSION_BRANCH_STATE_FILE
+    session_map, branch_map = _load_session_branch_state(state_path)
+
+    branch_owner = branch_map.get(branch, "")
+    if branch_owner and branch_owner != session_token:
+        problems.append(
+            "Agent branch reuse detected across sessions. "
+            f"Current branch {branch!r} is already bound to {branch_owner!r}. "
+            "Create a new `codex/*` branch for this session. "
+            "Set ORXAQ_ALLOW_AGENT_BRANCH_REUSE=1 only for approved emergencies."
+        )
+        return
+
+    dirty = False
+    if session_map.get(session_token, "") != branch:
+        session_map[session_token] = branch
+        dirty = True
+    if branch_map.get(branch, "") != session_token:
+        branch_map[branch] = session_token
+        dirty = True
+    if not dirty:
+        return
+    try:
+        _write_session_branch_state(state_path, sessions=session_map, branches=branch_map)
+    except Exception as err:
+        problems.append(
+            "Unable to persist agent session/branch mapping for enforcement: "
+            f"{err}"
+        )
 
 
 def _check_branch_policy(
@@ -214,6 +310,12 @@ def main() -> int:
         branch=branch,
         protected_branches=protected_branches,
         allowed_prefixes=allowed_prefixes,
+        agent_prefixes=agent_prefixes,
+        problems=problems,
+    )
+    _check_agent_branch_freshness(
+        repo_root=repo_root,
+        branch=branch,
         agent_prefixes=agent_prefixes,
         problems=problems,
     )
