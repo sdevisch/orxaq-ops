@@ -909,6 +909,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         }}
         return lane && lane.conversation_source_ok === false;
       }}).length;
+      const recoveredLanes = Number(lanePayload.recovered_lane_count || 0);
       const runningLanes = Number(lanePayload.running_count || 0);
       const totalLanes = Number(lanePayload.total_count || 0);
       const laneHealthCounts = lanePayload.health_counts || {{}};
@@ -946,7 +947,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         }})
         .join(" · ");
       byId("laneSummary").textContent =
-        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}} · source_errors: ${{laneErrors.length}} · conversation_source_errors: ${{laneSourceErrorCount}}`;
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}} · source_errors: ${{laneErrors.length}} · conversation_source_errors: ${{laneSourceErrorCount}} · recovered: ${{recoveredLanes}}`;
       byId("laneOwnerSummary").textContent = `owners: ${{ownerSummary || "none"}}`;
       const laneErrorMarkup = laneErrors.length
         ? laneErrors.map((item) => `<div class="line bad">source_error: ${{escapeHtml(String(item || ""))}}</div>`).join("")
@@ -1306,9 +1307,10 @@ def _dashboard_html(refresh_sec: int) -> str:
         ? payload.errors.filter((item) => String(item || "").trim())
         : [];
       const partial = Boolean(payload.partial);
+      const recovered = Number(payload.recovered_lane_count || 0);
       const suffix = laneTarget ? ` lane=${{laneTarget}}` : "";
       setLaneActionStatus(
-        `status${{suffix}} running=${{running}}/${{total}} degraded=${{degraded}} errors=${{errors.length}} partial=${{yn(partial)}}`,
+        `status${{suffix}} running=${{running}}/${{total}} degraded=${{degraded}} errors=${{errors.length}} partial=${{yn(partial)}} recovered=${{recovered}}`,
         partial || errors.length > 0,
       );
       await refresh();

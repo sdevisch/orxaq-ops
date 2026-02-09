@@ -119,6 +119,7 @@ Dashboard operator controls:
 - Lane runtime panel reports owner-attributed health breakdown (`total/running/healthy/degraded`) and lane health-state totals.
 - Lane runtime panel surfaces lane source error counts/messages when lane metadata is partially unavailable.
 - Lane status views recover missing lanes from conversation streams during partial lane-source failures, marking `conversation_lane_fallback=true`.
+- Lane runtime summary includes recovered lane count so operators can verify fallback coverage at a glance.
 - Conversation feed supports owner/lane/type/text filters and tail-limited inspection without leaving the UI.
 - API equivalents:
   - `GET /api/lanes/action?action=ensure|start|stop&lane=<optional-lane-id>`
@@ -159,6 +160,8 @@ make lanes-plan
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-status --json --with-conversations
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-status --lane codex-governance --json --with-conversations --conversation-lines 120
 ```
+
+`lanes-status --with-conversations` text output now includes `conversation_recovery` with recovered lane count and conversation source partial/ok signals.
 
 - Operate lanes directly:
 

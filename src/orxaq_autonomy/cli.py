@@ -1320,6 +1320,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"errors: {' | '.join(str(item) for item in filtered['errors'])}")
             if filtered.get("conversation_errors"):
                 print(f"conversation_errors: {' | '.join(str(item) for item in filtered['conversation_errors'])}")
+            if getattr(args, "with_conversations", False):
+                print(
+                    "conversation_recovery: "
+                    f"recovered_lanes={_safe_int(filtered.get('recovered_lane_count', 0), 0)} "
+                    f"conversation_partial={bool(filtered.get('conversation_partial', False))} "
+                    f"conversation_ok={bool(filtered.get('conversation_ok', False))}"
+                )
             for lane in filtered["lanes"]:
                 state = "running" if lane["running"] else "stopped"
                 print(
