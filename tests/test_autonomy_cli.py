@@ -1132,6 +1132,47 @@ class CliTests(unittest.TestCase):
                 ["Lane status missing for 'missing'; using conversation-derived fallback."],
             )
 
+    def test_lanes_status_recovers_owner_from_source_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "lanes_file": "config/lanes.json",
+                "errors": [],
+                "running_count": 1,
+                "total_count": 1,
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"}],
+            }
+            conversation_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "events": [],
+                "sources": [{"lane_id": "missing", "owner": "gemini", "ok": True, "error": "", "event_count": 0}],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conversation_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(
+                        [
+                            "--root",
+                            str(root),
+                            "lanes-status",
+                            "--json",
+                            "--lane",
+                            "missing",
+                            "--with-conversations",
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertEqual(data["recovered_lane_count"], 1)
+            self.assertEqual(data["lanes"][0]["id"], "missing")
+            self.assertEqual(data["lanes"][0]["owner"], "gemini")
+
     def test_lanes_status_recovery_clears_requested_lane_unavailable_error(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

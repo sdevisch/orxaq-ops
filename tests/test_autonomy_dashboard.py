@@ -512,6 +512,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(lane_rollup["latest_event"]["event_type"], "message")
         self.assertEqual(lane_rollup["latest_event"]["content"], "newer")
 
+    def test_lane_conversation_rollup_infers_owner_from_source_when_events_missing_owner(self):
+        payload = {
+            "events": [],
+            "sources": [
+                {"lane_id": "lane-a", "owner": "codex", "ok": True, "error": "", "event_count": 0},
+            ],
+        }
+        rollup = dashboard._lane_conversation_rollup(payload)
+        self.assertIn("lane-a", rollup)
+        self.assertEqual(rollup["lane-a"]["owner"], "codex")
+
     def test_augment_lane_payload_with_conversation_rollup_embeds_lane_fields(self):
         lane_payload = {
             "lanes": [
@@ -591,6 +602,30 @@ class DashboardTests(unittest.TestCase):
         )
         self.assertTrue(enriched["partial"])
         self.assertFalse(enriched["ok"])
+
+    def test_augment_lane_payload_with_conversation_rollup_recovers_owner_from_source_metadata(self):
+        lane_payload = {
+            "requested_lane": "lane-a",
+            "errors": ["Unknown lane id 'lane-a'. Update /tmp/lanes.json."],
+            "lanes": [],
+            "health_counts": {},
+            "owner_counts": {},
+            "ok": False,
+            "partial": True,
+        }
+        conversation_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "events": [],
+            "sources": [
+                {"lane_id": "lane-a", "owner": "codex", "ok": True, "error": "", "event_count": 0},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        self.assertEqual(enriched["recovered_lane_count"], 1)
+        self.assertEqual(enriched["lanes"][0]["id"], "lane-a")
+        self.assertEqual(enriched["lanes"][0]["owner"], "codex")
 
     def test_augment_lane_payload_with_conversation_rollup_clears_unavailable_error_for_recovered_lane(self):
         lane_payload = {

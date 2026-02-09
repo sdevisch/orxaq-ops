@@ -1911,6 +1911,7 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
             lane_id,
             {
                 "lane_id": lane_id,
+                "owner_hints": {},
                 "source_count": 0,
                 "source_ok": None,
                 "source_event_count": 0,
@@ -1936,6 +1937,13 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
         if not lane_key:
             continue
         current = _entry(lane_key)
+        source_owner = str(item.get("owner", "")).strip() or "unknown"
+        if source_owner != "unknown":
+            owner_hints = current.get("owner_hints")
+            if not isinstance(owner_hints, dict):
+                owner_hints = {}
+                current["owner_hints"] = owner_hints
+            owner_hints[source_owner] = _safe_int(owner_hints.get(source_owner, 0)) + 1
         current["source_count"] += 1
         current_ok = bool(item.get("ok", False))
         if current["source_ok"] is None:
@@ -1960,9 +1968,16 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
             continue
         current = _entry(lane_key)
         current["observed_event_count"] += 1
+        event_owner = str(item.get("owner", "")).strip() or "unknown"
+        if event_owner != "unknown":
+            owner_hints = current.get("owner_hints")
+            if not isinstance(owner_hints, dict):
+                owner_hints = {}
+                current["owner_hints"] = owner_hints
+            owner_hints[event_owner] = _safe_int(owner_hints.get(event_owner, 0)) + 1
         candidate = {
             "timestamp": str(item.get("timestamp", "")).strip(),
-            "owner": str(item.get("owner", "unknown")).strip() or "unknown",
+            "owner": event_owner,
             "lane_id": lane_key,
             "task_id": str(item.get("task_id", "")).strip(),
             "event_type": str(item.get("event_type", "")).strip(),
@@ -1992,8 +2007,23 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
             source_state = "ok"
         elif source_ok is False:
             source_state = "error"
+        latest_event = item.get("latest_event", {}) if isinstance(item.get("latest_event", {}), dict) else {}
+        owner = str(latest_event.get("owner", "")).strip() or "unknown"
+        owner_hints = item.get("owner_hints", {})
+        if owner == "unknown" and isinstance(owner_hints, dict):
+            ordered_hints = sorted(
+                (
+                    (str(name).strip(), _safe_int(count))
+                    for name, count in owner_hints.items()
+                    if str(name).strip() and str(name).strip() != "unknown"
+                ),
+                key=lambda pair: (-pair[1], pair[0]),
+            )
+            if ordered_hints:
+                owner = ordered_hints[0][0]
         rollup[lane_key] = {
             "lane_id": lane_key,
+            "owner": owner,
             "source_count": _safe_int(item.get("source_count", 0)),
             "source_ok": source_ok,
             "source_state": source_state,
@@ -2005,7 +2035,7 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
             "missing_count": _safe_int(item.get("missing_count", 0)),
             "recoverable_missing_count": _safe_int(item.get("recoverable_missing_count", 0)),
             "fallback_count": _safe_int(item.get("fallback_count", 0)),
-            "latest_event": item.get("latest_event", {}) if isinstance(item.get("latest_event", {}), dict) else {},
+            "latest_event": latest_event,
         }
     return rollup
 
@@ -2075,6 +2105,9 @@ def _augment_lane_payload_with_conversation_rollup(
             seen_lanes.add(lane_id)
         lane_rollup = rollup.get(lane_id, {})
         lane_copy = dict(lane)
+        rollup_owner = str(lane_rollup.get("owner", "")).strip() or "unknown"
+        if (str(lane_copy.get("owner", "")).strip() or "unknown") == "unknown" and rollup_owner != "unknown":
+            lane_copy["owner"] = rollup_owner
         lane_copy["conversation_event_count"] = int(lane_rollup.get("event_count", 0))
         lane_copy["conversation_source_count"] = int(lane_rollup.get("source_count", 0))
         lane_copy["conversation_source_state"] = str(lane_rollup.get("source_state", "unreported"))
@@ -2110,7 +2143,9 @@ def _augment_lane_payload_with_conversation_rollup(
         latest_event = lane_rollup.get("latest_event", {})
         if not isinstance(latest_event, dict):
             latest_event = {}
-        owner = str(latest_event.get("owner", "unknown")).strip() or "unknown"
+        owner = str(latest_event.get("owner", "")).strip() or ""
+        if not owner or owner == "unknown":
+            owner = str(lane_rollup.get("owner", "unknown")).strip() or "unknown"
         lane_copy = {
             "id": lane_id,
             "owner": owner,
