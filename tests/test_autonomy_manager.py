@@ -26,6 +26,7 @@ class ManagerTests(unittest.TestCase):
         (tmp / "config" / "objective.md").write_text("objective\n", encoding="utf-8")
         (tmp / "config" / "codex_result.schema.json").write_text("{}\n", encoding="utf-8")
         (tmp / "config" / "pricing.json").write_text('{"version":1,"currency":"USD","models":{}}\n', encoding="utf-8")
+        (tmp / "config" / "routellm_policy.json").write_text('{"version":1,"enabled":false}\n', encoding="utf-8")
         (tmp / "config" / "skill_protocol.json").write_text("{}\n", encoding="utf-8")
         (tmp / "config" / "prompts" / "codex_impl_prompt.md").write_text("codex prompt\n", encoding="utf-8")
         (tmp / "config" / "prompts" / "gemini_test_prompt.md").write_text("gemini prompt\n", encoding="utf-8")
@@ -47,6 +48,9 @@ class ManagerTests(unittest.TestCase):
             cfg = manager.ManagerConfig.from_root(root)
             self.assertEqual(cfg.root_dir, root.resolve())
             self.assertTrue(str(cfg.skill_protocol_file).endswith("skill_protocol.json"))
+            self.assertTrue(str(cfg.routellm_policy_file).endswith("routellm_policy.json"))
+            self.assertFalse(cfg.routellm_enabled)
+            self.assertEqual(cfg.routellm_timeout_sec, 5)
 
     def test_load_env_file_supports_export_prefix(self):
         with tempfile.TemporaryDirectory() as td:
@@ -89,9 +93,36 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("--metrics-file", argv)
             self.assertIn("--metrics-summary-file", argv)
             self.assertIn("--pricing-file", argv)
+            self.assertIn("--routellm-policy-file", argv)
+            self.assertIn("--routellm-timeout-sec", argv)
+            self.assertIn("--no-routellm-enabled", argv)
             self.assertIn("--gemini-fallback-model", argv)
             self.assertIn("--auto-push-guard", argv)
             self.assertIn("--auto-push-interval-sec", argv)
+
+    def test_manager_config_reads_routellm_env(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                (
+                    "OPENAI_API_KEY=test\n"
+                    "GEMINI_API_KEY=test\n"
+                    f"ORXAQ_IMPL_REPO={root / 'impl_repo'}\n"
+                    f"ORXAQ_TEST_REPO={root / 'test_repo'}\n"
+                    "ORXAQ_AUTONOMY_ROUTELLM_ENABLED=1\n"
+                    "ORXAQ_AUTONOMY_ROUTELLM_URL=http://127.0.0.1:9000/route\n"
+                    "ORXAQ_AUTONOMY_ROUTELLM_TIMEOUT_SEC=13\n"
+                ),
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            self.assertTrue(cfg.routellm_enabled)
+            self.assertEqual(cfg.routellm_url, "http://127.0.0.1:9000/route")
+            self.assertEqual(cfg.routellm_timeout_sec, 13)
+            argv = manager.runner_argv(cfg)
+            self.assertIn("--routellm-enabled", argv)
+            self.assertIn("--routellm-url", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -111,6 +142,64 @@ class ManagerTests(unittest.TestCase):
             snap = manager.status_snapshot(cfg)
             self.assertIn("heartbeat_age_sec", snap)
             self.assertIn("supervisor_running", snap)
+
+    def test_monitor_snapshot_includes_routing_metrics(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.metrics_summary_file.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 2,
+                        "quality_score_avg": 0.9,
+                        "latency_sec_avg": 1.2,
+                        "prompt_difficulty_score_avg": 33.0,
+                        "first_time_pass_count": 2,
+                        "first_time_pass_rate": 1.0,
+                        "acceptance_pass_count": 2,
+                        "acceptance_pass_rate": 1.0,
+                        "exact_cost_count": 2,
+                        "exact_cost_coverage": 1.0,
+                        "cost_usd_total": 0.03,
+                        "cost_usd_avg": 0.015,
+                        "tokens_total": 300,
+                        "tokens_input_total": 210,
+                        "tokens_output_total": 90,
+                        "tokens_avg": 150.0,
+                        "token_exact_count": 2,
+                        "token_exact_coverage": 1.0,
+                        "token_rate_per_minute": 25.0,
+                        "routing_decisions_total": 2,
+                        "routing_routellm_count": 1,
+                        "routing_routellm_rate": 0.5,
+                        "routing_fallback_count": 1,
+                        "routing_fallback_rate": 0.5,
+                        "routing_router_error_count": 1,
+                        "routing_router_error_rate": 0.5,
+                        "routing_router_latency_sum": 0.4,
+                        "routing_router_latency_avg": 0.2,
+                        "routing_by_provider": {
+                            "codex": {
+                                "responses": 2,
+                                "routellm_count": 1,
+                                "fallback_count": 1,
+                                "router_error_count": 1,
+                            }
+                        },
+                        "currency": "USD",
+                        "by_owner": {},
+                        "latest_metric": {},
+                        "optimization_recommendations": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            snapshot = manager.monitor_snapshot(cfg)
+            metrics = snapshot["response_metrics"]
+            self.assertEqual(metrics["routing_decisions_total"], 2)
+            self.assertEqual(metrics["routing_routellm_count"], 1)
+            self.assertEqual(metrics["routing_fallback_count"], 1)
+            self.assertEqual(metrics["routing_router_error_count"], 1)
 
     def test_install_keepalive_windows_command_is_user_space(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1650,7 +1739,11 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(pathlib.Path(payload["startup_packet"]).exists())
             self.assertFalse(payload["workspace_reused"])
             startup_packet_text = pathlib.Path(payload["startup_packet"]).read_text(encoding="utf-8")
-            self.assertIn("codex prompt", startup_packet_text)
+            self.assertIn("Codex prompt source", startup_packet_text)
+            self.assertTrue(
+                "codex prompt" in startup_packet_text
+                or "technical owner for RouteLLM" in startup_packet_text
+            )
             self.assertIn("gemini prompt", startup_packet_text)
             self.assertTrue(payload["keepalive"]["active"])
 

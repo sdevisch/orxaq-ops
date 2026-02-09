@@ -215,6 +215,7 @@ class ManagerConfig:
     metrics_file: Path
     metrics_summary_file: Path
     pricing_file: Path
+    routellm_policy_file: Path
     runner_pid_file: Path
     supervisor_pid_file: Path
     dashboard_pid_file: Path
@@ -251,6 +252,9 @@ class ManagerConfig:
     gemini_model: str | None
     gemini_fallback_models: list[str]
     claude_model: str | None
+    routellm_enabled: bool
+    routellm_url: str
+    routellm_timeout_sec: int
     auto_push_guard: bool
     auto_push_interval_sec: int
 
@@ -315,6 +319,9 @@ class ManagerConfig:
             if item.strip()
         ]
         claude_model = merged.get("ORXAQ_AUTONOMY_CLAUDE_MODEL", "").strip() or None
+        routellm_enabled = _bool("ORXAQ_AUTONOMY_ROUTELLM_ENABLED", False)
+        routellm_url = merged.get("ORXAQ_AUTONOMY_ROUTELLM_URL", "").strip()
+        routellm_timeout_sec = max(1, _int("ORXAQ_AUTONOMY_ROUTELLM_TIMEOUT_SEC", 5))
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
         validate_commands = [chunk.strip() for chunk in validate_raw.split(";") if chunk.strip()]
@@ -341,6 +348,7 @@ class ManagerConfig:
                 artifacts / "response_metrics_summary.json",
             ),
             pricing_file=_path("ORXAQ_AUTONOMY_PRICING_FILE", root / "config" / "pricing.json"),
+            routellm_policy_file=_path("ORXAQ_AUTONOMY_ROUTELLM_POLICY_FILE", root / "config" / "routellm_policy.json"),
             runner_pid_file=_path("ORXAQ_AUTONOMY_RUNNER_PID_FILE", artifacts / "runner.pid"),
             supervisor_pid_file=_path("ORXAQ_AUTONOMY_SUPERVISOR_PID_FILE", artifacts / "supervisor.pid"),
             log_file=_path("ORXAQ_AUTONOMY_LOG_FILE", artifacts / "runner.log"),
@@ -377,6 +385,9 @@ class ManagerConfig:
             gemini_model=gemini_model,
             gemini_fallback_models=gemini_fallback_models,
             claude_model=claude_model,
+            routellm_enabled=routellm_enabled,
+            routellm_url=routellm_url,
+            routellm_timeout_sec=routellm_timeout_sec,
             auto_push_guard=_bool("ORXAQ_AUTONOMY_AUTO_PUSH_GUARD", True),
             auto_push_interval_sec=_int("ORXAQ_AUTONOMY_AUTO_PUSH_INTERVAL_SEC", 180),
         )
@@ -603,8 +614,15 @@ def runner_argv(config: ManagerConfig) -> list[str]:
             str(config.metrics_summary_file),
             "--pricing-file",
             str(config.pricing_file),
+            "--routellm-policy-file",
+            str(config.routellm_policy_file),
+            "--routellm-timeout-sec",
+            str(config.routellm_timeout_sec),
         ]
     )
+    args.append("--routellm-enabled" if config.routellm_enabled else "--no-routellm-enabled")
+    if config.routellm_url.strip():
+        args.extend(["--routellm-url", config.routellm_url.strip()])
     if config.codex_model:
         args.extend(["--codex-model", config.codex_model])
     if config.gemini_model:
@@ -846,6 +864,10 @@ def _lane_build_id(config: ManagerConfig, lane: dict[str, Any]) -> str:
         "metrics_file",
         "metrics_summary_file",
         "pricing_file",
+        "routellm_policy_file",
+        "routellm_enabled",
+        "routellm_url",
+        "routellm_timeout_sec",
     )
     for key in lane_keys:
         hasher.update(str(key).encode("utf-8"))
@@ -1246,6 +1268,16 @@ def _empty_response_metrics(error: str = "") -> dict[str, Any]:
         "token_exact_count": 0,
         "token_exact_coverage": 0.0,
         "token_rate_per_minute": 0.0,
+        "routing_decisions_total": 0,
+        "routing_routellm_count": 0,
+        "routing_routellm_rate": 0.0,
+        "routing_fallback_count": 0,
+        "routing_fallback_rate": 0.0,
+        "routing_router_error_count": 0,
+        "routing_router_error_rate": 0.0,
+        "routing_router_latency_sum": 0.0,
+        "routing_router_latency_avg": 0.0,
+        "routing_by_provider": {},
         "currency": "USD",
         "by_owner": {},
         "latest_metric": {},
@@ -1297,6 +1329,12 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
     tokens_input_total = 0
     tokens_output_total = 0
     token_exact_count = 0
+    routing_decisions_total = 0
+    routing_routellm_count = 0
+    routing_fallback_count = 0
+    routing_router_error_count = 0
+    routing_router_latency_sum = 0.0
+    routing_by_provider: dict[str, dict[str, Any]] = {}
     currency = "USD"
 
     for path in paths:
@@ -1364,6 +1402,35 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             summary.get("token_exact_count", round(_float_value(summary.get("token_exact_coverage", 0.0), 0.0) * source_responses)),
             0,
         )
+        source_routing_decisions = _int_value(summary.get("routing_decisions_total", source_responses), source_responses)
+        source_routing_routellm = _int_value(
+            summary.get(
+                "routing_routellm_count",
+                round(_float_value(summary.get("routing_routellm_rate", 0.0), 0.0) * source_routing_decisions),
+            ),
+            0,
+        )
+        source_routing_fallback = _int_value(
+            summary.get(
+                "routing_fallback_count",
+                round(_float_value(summary.get("routing_fallback_rate", 0.0), 0.0) * source_routing_decisions),
+            ),
+            0,
+        )
+        source_routing_router_error = _int_value(
+            summary.get(
+                "routing_router_error_count",
+                round(_float_value(summary.get("routing_router_error_rate", 0.0), 0.0) * source_routing_decisions),
+            ),
+            0,
+        )
+        source_routing_latency_sum = _float_value(
+            summary.get(
+                "routing_router_latency_sum",
+                _float_value(summary.get("routing_router_latency_avg", 0.0), 0.0) * source_routing_decisions,
+            ),
+            0.0,
+        )
 
         responses_total += source_responses
         quality_sum += source_quality_sum
@@ -1377,6 +1444,11 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         tokens_input_total += source_tokens_input_total
         tokens_output_total += source_tokens_output_total
         token_exact_count += source_token_exact_count
+        routing_decisions_total += source_routing_decisions
+        routing_routellm_count += source_routing_routellm
+        routing_fallback_count += source_routing_fallback
+        routing_router_error_count += source_routing_router_error
+        routing_router_latency_sum += source_routing_latency_sum
 
         report["responses_total"] = source_responses
         report["cost_usd_total"] = round(source_cost, 8)
@@ -1397,6 +1469,9 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
                         "validation_passed": 0,
                         "cost_usd_total": 0.0,
                         "tokens_total": 0,
+                        "routing_routellm_count": 0,
+                        "routing_fallback_count": 0,
+                        "routing_router_error_count": 0,
                     },
                 )
                 aggregate_owner["responses"] = _int_value(aggregate_owner.get("responses", 0), 0) + _int_value(
@@ -1419,7 +1494,52 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
                     owner_payload.get("tokens_total", 0),
                     0,
                 )
+                aggregate_owner["routing_routellm_count"] = _int_value(
+                    aggregate_owner.get("routing_routellm_count", 0),
+                    0,
+                ) + _int_value(owner_payload.get("routing_routellm_count", 0), 0)
+                aggregate_owner["routing_fallback_count"] = _int_value(
+                    aggregate_owner.get("routing_fallback_count", 0),
+                    0,
+                ) + _int_value(owner_payload.get("routing_fallback_count", 0), 0)
+                aggregate_owner["routing_router_error_count"] = _int_value(
+                    aggregate_owner.get("routing_router_error_count", 0),
+                    0,
+                ) + _int_value(owner_payload.get("routing_router_error_count", 0), 0)
                 by_owner[owner] = aggregate_owner
+
+        provider_map = summary.get("routing_by_provider", {})
+        if isinstance(provider_map, dict):
+            for provider_name, provider_payload in provider_map.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                provider = str(provider_name).strip() or "unknown"
+                aggregate_provider = routing_by_provider.get(
+                    provider,
+                    {
+                        "responses": 0,
+                        "routellm_count": 0,
+                        "fallback_count": 0,
+                        "router_error_count": 0,
+                    },
+                )
+                aggregate_provider["responses"] = _int_value(aggregate_provider.get("responses", 0), 0) + _int_value(
+                    provider_payload.get("responses", 0),
+                    0,
+                )
+                aggregate_provider["routellm_count"] = _int_value(
+                    aggregate_provider.get("routellm_count", 0),
+                    0,
+                ) + _int_value(provider_payload.get("routellm_count", 0), 0)
+                aggregate_provider["fallback_count"] = _int_value(
+                    aggregate_provider.get("fallback_count", 0),
+                    0,
+                ) + _int_value(provider_payload.get("fallback_count", 0), 0)
+                aggregate_provider["router_error_count"] = _int_value(
+                    aggregate_provider.get("router_error_count", 0),
+                    0,
+                ) + _int_value(provider_payload.get("router_error_count", 0), 0)
+                routing_by_provider[provider] = aggregate_provider
 
         latest = summary.get("latest_metric", {})
         if isinstance(latest, dict):
@@ -1462,6 +1582,33 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             _int_value(owner_payload.get("tokens_total", 0), 0) / owner_responses,
             6,
         )
+        owner_payload["routing_routellm_rate"] = round(
+            _int_value(owner_payload.get("routing_routellm_count", 0), 0) / owner_responses,
+            6,
+        )
+        owner_payload["routing_fallback_rate"] = round(
+            _int_value(owner_payload.get("routing_fallback_count", 0), 0) / owner_responses,
+            6,
+        )
+        owner_payload["routing_router_error_rate"] = round(
+            _int_value(owner_payload.get("routing_router_error_count", 0), 0) / owner_responses,
+            6,
+        )
+
+    for provider_payload in routing_by_provider.values():
+        provider_responses = max(1, _int_value(provider_payload.get("responses", 0), 0))
+        provider_payload["routellm_rate"] = round(
+            _int_value(provider_payload.get("routellm_count", 0), 0) / provider_responses,
+            6,
+        )
+        provider_payload["fallback_rate"] = round(
+            _int_value(provider_payload.get("fallback_count", 0), 0) / provider_responses,
+            6,
+        )
+        provider_payload["router_error_rate"] = round(
+            _int_value(provider_payload.get("router_error_count", 0), 0) / provider_responses,
+            6,
+        )
 
     coverage = round(exact_cost_count / max(1, responses_total), 6)
     token_exact_coverage = round(token_exact_count / max(1, responses_total), 6)
@@ -1494,6 +1641,16 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         "token_exact_count": token_exact_count,
         "token_exact_coverage": token_exact_coverage,
         "token_rate_per_minute": round(token_rate_per_minute, 6),
+        "routing_decisions_total": routing_decisions_total,
+        "routing_routellm_count": routing_routellm_count,
+        "routing_routellm_rate": round(routing_routellm_count / max(1, routing_decisions_total), 6),
+        "routing_fallback_count": routing_fallback_count,
+        "routing_fallback_rate": round(routing_fallback_count / max(1, routing_decisions_total), 6),
+        "routing_router_error_count": routing_router_error_count,
+        "routing_router_error_rate": round(routing_router_error_count / max(1, routing_decisions_total), 6),
+        "routing_router_latency_sum": round(routing_router_latency_sum, 6),
+        "routing_router_latency_avg": round(routing_router_latency_sum / max(1, routing_decisions_total), 6),
+        "routing_by_provider": routing_by_provider,
         "currency": currency,
         "by_owner": by_owner,
         "latest_metric": latest_metric,
@@ -2120,7 +2277,10 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
             f"response_metrics: responses={response_metrics.get('responses_total', 0)} "
             f"first_time_pass_rate={response_metrics.get('first_time_pass_rate', 0.0)} "
             f"latency_avg={response_metrics.get('latency_sec_avg', 0.0)}s "
-            f"cost_total=${response_metrics.get('cost_usd_total', 0.0)}"
+            f"cost_total=${response_metrics.get('cost_usd_total', 0.0)} "
+            f"routed={response_metrics.get('routing_routellm_count', 0)}/"
+            f"{response_metrics.get('routing_decisions_total', 0)} "
+            f"fallback={response_metrics.get('routing_fallback_count', 0)}"
         ),
         (
             f"exciting_stat: {exciting_stat.get('label', 'n/a')}={exciting_stat.get('value', 'n/a')} "
@@ -2428,6 +2588,18 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         str(item.get("pricing_file", "")),
         config.pricing_file,
     )
+    routellm_policy_file = _resolve_path(
+        config.root_dir,
+        str(item.get("routellm_policy_file", "")),
+        config.routellm_policy_file,
+    )
+    route_timeout_raw = item.get("routellm_timeout_sec", config.routellm_timeout_sec)
+    try:
+        routellm_timeout_sec = max(1, int(route_timeout_raw))
+    except (TypeError, ValueError):
+        routellm_timeout_sec = max(1, int(config.routellm_timeout_sec))
+    routellm_enabled = bool(item.get("routellm_enabled", config.routellm_enabled))
+    routellm_url = str(item.get("routellm_url", config.routellm_url)).strip()
     mcp_raw = str(item.get("mcp_context_file", "")).strip()
     mcp_default = config.mcp_context_file or (config.root_dir / "config" / "mcp_context.example.json")
     if mcp_raw or config.mcp_context_file is not None:
@@ -2470,6 +2642,10 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         "metrics_file": metrics_file,
         "metrics_summary_file": metrics_summary_file,
         "pricing_file": pricing_file,
+        "routellm_policy_file": routellm_policy_file,
+        "routellm_enabled": routellm_enabled,
+        "routellm_url": routellm_url,
+        "routellm_timeout_sec": routellm_timeout_sec,
         "owner_filter": [owner],
         "validate_commands": [
             str(cmd).strip() for cmd in item.get("validate_commands", config.validate_commands) if str(cmd).strip()
@@ -2736,6 +2912,10 @@ def _lane_unavailable_snapshot(
         "metrics_file": str(lane.get("metrics_file", "")),
         "metrics_summary_file": str(lane.get("metrics_summary_file", "")),
         "pricing_file": str(lane.get("pricing_file", "")),
+        "routellm_policy_file": str(lane.get("routellm_policy_file", "")),
+        "routellm_enabled": bool(lane.get("routellm_enabled", False)),
+        "routellm_url": str(lane.get("routellm_url", "")),
+        "routellm_timeout_sec": _int_value(lane.get("routellm_timeout_sec", 0), 0),
         "exclusive_paths": [str(path) for path in lane.get("exclusive_paths", []) if str(path)],
         "latest_log_line": "",
         "log_file": str(log_path),
@@ -2800,6 +2980,10 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
                 "metrics_file": "",
                 "metrics_summary_file": "",
                 "pricing_file": "",
+                "routellm_policy_file": "",
+                "routellm_enabled": False,
+                "routellm_url": "",
+                "routellm_timeout_sec": 0,
                 "exclusive_paths": [],
                 "latest_log_line": "",
                 "log_file": str(runtime_dir / "runner.log"),
@@ -2902,6 +3086,10 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "metrics_file": str(lane["metrics_file"]),
                     "metrics_summary_file": str(lane["metrics_summary_file"]),
                     "pricing_file": str(lane["pricing_file"]),
+                    "routellm_policy_file": str(lane["routellm_policy_file"]),
+                    "routellm_enabled": bool(lane["routellm_enabled"]),
+                    "routellm_url": str(lane["routellm_url"]),
+                    "routellm_timeout_sec": int(lane["routellm_timeout_sec"]),
                     "exclusive_paths": lane["exclusive_paths"],
                     "latest_log_line": latest,
                     "log_file": str(log_path),
@@ -2945,6 +3133,10 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "metrics_file": str(lane["metrics_file"]),
                     "metrics_summary_file": str(lane["metrics_summary_file"]),
                     "pricing_file": str(lane["pricing_file"]),
+                    "routellm_policy_file": str(lane["routellm_policy_file"]),
+                    "routellm_enabled": bool(lane["routellm_enabled"]),
+                    "routellm_url": str(lane["routellm_url"]),
+                    "routellm_timeout_sec": int(lane["routellm_timeout_sec"]),
                     "exclusive_paths": lane["exclusive_paths"],
                     "latest_log_line": "",
                     "log_file": str(log_path),
@@ -2992,6 +3184,10 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "metrics_file": "",
                 "metrics_summary_file": "",
                 "pricing_file": "",
+                "routellm_policy_file": "",
+                "routellm_enabled": False,
+                "routellm_url": "",
+                "routellm_timeout_sec": 0,
                 "exclusive_paths": [],
                 "latest_log_line": "",
                 "log_file": str(runtime_dir / "runner.log"),
@@ -3102,6 +3298,10 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         str(lane["metrics_summary_file"]),
         "--pricing-file",
         str(lane["pricing_file"]),
+        "--routellm-policy-file",
+        str(lane["routellm_policy_file"]),
+        "--routellm-timeout-sec",
+        str(lane["routellm_timeout_sec"]),
         "--max-cycles",
         str(config.max_cycles),
         "--max-attempts",
@@ -3136,6 +3336,9 @@ def _build_lane_runner_cmd(config: ManagerConfig, lane: dict[str, Any]) -> list[
         "--owner-filter",
         lane["owner"],
     ]
+    cmd.append("--routellm-enabled" if lane["routellm_enabled"] else "--no-routellm-enabled")
+    if str(lane["routellm_url"]).strip():
+        cmd.extend(["--routellm-url", str(lane["routellm_url"]).strip()])
     if lane["mcp_context_file"] is not None:
         cmd.extend(["--mcp-context-file", str(lane["mcp_context_file"])])
     if config.codex_model:
@@ -3251,6 +3454,10 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "metrics_file": str(lane["metrics_file"]),
             "metrics_summary_file": str(lane["metrics_summary_file"]),
             "pricing_file": str(lane["pricing_file"]),
+            "routellm_policy_file": str(lane["routellm_policy_file"]),
+            "routellm_enabled": bool(lane["routellm_enabled"]),
+            "routellm_url": str(lane["routellm_url"]),
+            "routellm_timeout_sec": int(lane["routellm_timeout_sec"]),
             "build_id": _lane_build_id(config, lane),
             "exclusive_paths": lane["exclusive_paths"],
         },

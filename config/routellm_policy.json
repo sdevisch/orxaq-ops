@@ -1,0 +1,25 @@
+{
+  "enabled": false,
+  "providers": {
+    "claude": {
+      "allowed_models": [],
+      "enabled": true,
+      "fallback_model": ""
+    },
+    "codex": {
+      "allowed_models": [],
+      "enabled": true,
+      "fallback_model": ""
+    },
+    "gemini": {
+      "allowed_models": [],
+      "enabled": true,
+      "fallback_model": ""
+    }
+  },
+  "router": {
+    "timeout_sec": 5,
+    "url": ""
+  },
+  "version": 1
+}

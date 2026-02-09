@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,6 +145,31 @@ DEFAULT_PRICING_PAYLOAD = {
         "codex": {"input_per_million": 0.0, "output_per_million": 0.0},
         "gemini": {"input_per_million": 0.0, "output_per_million": 0.0},
         "claude": {"input_per_million": 0.0, "output_per_million": 0.0},
+    },
+}
+DEFAULT_ROUTELLM_POLICY_PAYLOAD = {
+    "version": 1,
+    "enabled": False,
+    "router": {
+        "url": "",
+        "timeout_sec": 5,
+    },
+    "providers": {
+        "codex": {
+            "enabled": True,
+            "fallback_model": "",
+            "allowed_models": [],
+        },
+        "gemini": {
+            "enabled": True,
+            "fallback_model": "",
+            "allowed_models": [],
+        },
+        "claude": {
+            "enabled": True,
+            "fallback_model": "",
+            "allowed_models": [],
+        },
     },
 }
 
@@ -366,6 +393,180 @@ def load_pricing(path: Path | None) -> dict[str, Any]:
     return raw
 
 
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _normalize_model_candidates(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        values = [str(item).strip() for item in raw]
+    elif raw in (None, ""):
+        values = []
+    else:
+        values = [part.strip() for part in re.split(r"[;,]", str(raw))]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def load_routellm_policy(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return dict(DEFAULT_ROUTELLM_POLICY_PAYLOAD)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(path, DEFAULT_ROUTELLM_POLICY_PAYLOAD)
+        return dict(DEFAULT_ROUTELLM_POLICY_PAYLOAD)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return dict(DEFAULT_ROUTELLM_POLICY_PAYLOAD)
+    if not isinstance(raw, dict):
+        return dict(DEFAULT_ROUTELLM_POLICY_PAYLOAD)
+    return raw
+
+
+def _provider_routellm_policy(routellm_policy: dict[str, Any], provider: str) -> dict[str, Any]:
+    providers = routellm_policy.get("providers", {})
+    provider_key = provider.strip().lower()
+    raw: dict[str, Any] = {}
+    if isinstance(providers, dict):
+        for key in (provider_key, provider, provider_key.upper()):
+            value = providers.get(key)
+            if isinstance(value, dict):
+                raw = value
+                break
+    fallback_model = str(raw.get("fallback_model", "")).strip() or None
+    allowed_models = _normalize_model_candidates(raw.get("allowed_models", []))
+    return {
+        "enabled": _safe_bool(raw.get("enabled", True), True),
+        "fallback_model": fallback_model,
+        "allowed_models": allowed_models,
+    }
+
+
+def resolve_routed_model(
+    *,
+    provider: str,
+    requested_model: str | None,
+    prompt: str,
+    routellm_enabled: bool,
+    routellm_policy: dict[str, Any],
+    router_url_override: str = "",
+    router_timeout_sec_override: int | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    provider_key = provider.strip().lower() or "unknown"
+    requested = (requested_model or "").strip() or None
+    provider_policy = _provider_routellm_policy(routellm_policy, provider_key)
+    fallback_model = requested or provider_policy.get("fallback_model")
+
+    router_cfg = routellm_policy.get("router", {}) if isinstance(routellm_policy.get("router", {}), dict) else {}
+    router_url = router_url_override.strip() or str(router_cfg.get("url", "")).strip()
+    timeout_candidate: Any
+    if router_timeout_sec_override is not None:
+        timeout_candidate = router_timeout_sec_override
+    else:
+        timeout_candidate = router_cfg.get("timeout_sec", 5)
+    try:
+        router_timeout_sec = max(1, int(float(timeout_candidate)))
+    except (TypeError, ValueError):
+        router_timeout_sec = 5
+
+    decision: dict[str, Any] = {
+        "provider": provider_key,
+        "requested_model": requested or "",
+        "selected_model": (fallback_model or ""),
+        "strategy": "static_fallback",
+        "router_enabled": bool(routellm_enabled),
+        "router_url": router_url,
+        "router_timeout_sec": router_timeout_sec,
+        "fallback_used": False,
+        "reason": "router_disabled",
+        "router_error": "",
+        "router_latency_sec": 0.0,
+    }
+    if not bool(routellm_enabled):
+        return fallback_model, decision
+    if not _safe_bool(routellm_policy.get("enabled", False), False):
+        decision["reason"] = "policy_disabled"
+        return fallback_model, decision
+    if not _safe_bool(provider_policy.get("enabled", True), True):
+        decision["reason"] = "provider_disabled"
+        return fallback_model, decision
+    if not router_url:
+        decision["reason"] = "router_url_missing"
+        return fallback_model, decision
+
+    payload = {
+        "provider": provider_key,
+        "requested_model": requested or "",
+        "prompt": prompt,
+        "prompt_tokens_est": estimate_token_count(prompt),
+        "prompt_difficulty_score": prompt_difficulty_score(prompt),
+    }
+    started = time.monotonic()
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            router_url,
+            data=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=router_timeout_sec) as response:
+            raw_text = response.read().decode("utf-8", errors="replace")
+            status_code = int(response.getcode() or 200)
+        latency_sec = max(0.0, time.monotonic() - started)
+        decision["router_latency_sec"] = round(latency_sec, 6)
+        if status_code >= 400:
+            raise RuntimeError(f"router_http_{status_code}")
+        parsed = json.loads(raw_text)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("router_response_not_object")
+        selected = ""
+        for key in ("selected_model", "model", "target_model"):
+            candidate = str(parsed.get(key, "")).strip()
+            if candidate:
+                selected = candidate
+                break
+        if not selected:
+            raise RuntimeError("router_response_missing_model")
+        allowed_models = _normalize_model_candidates(provider_policy.get("allowed_models", []))
+        if allowed_models and selected.lower() not in {item.lower() for item in allowed_models}:
+            raise RuntimeError(f"router_model_not_allowed:{selected}")
+        decision["selected_model"] = selected
+        decision["strategy"] = "routellm"
+        decision["reason"] = "router_selected_model"
+        decision["fallback_used"] = False
+        return selected, decision
+    except Exception as err:
+        latency_sec = max(0.0, time.monotonic() - started)
+        decision["router_latency_sec"] = round(latency_sec, 6)
+        decision["fallback_used"] = True
+        decision["reason"] = "router_unavailable"
+        decision["router_error"] = str(err).strip()
+        decision["selected_model"] = fallback_model or ""
+        return fallback_model, decision
+
+
 def _resolve_pricing_entry(pricing: dict[str, Any], *, owner: str, model: str) -> dict[str, float]:
     models = pricing.get("models", {}) if isinstance(pricing.get("models", {}), dict) else {}
     candidates = [
@@ -472,6 +673,52 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     token_exact_count = int(summary.get("token_exact_count", 0) or 0) + (
         1 if metric.get("token_count_exact", False) else 0
     )
+    routing_strategy = str(metric.get("routing_strategy", "static_fallback")).strip() or "static_fallback"
+    routing_fallback_used = bool(metric.get("routing_fallback_used", False))
+    routing_router_error = str(metric.get("routing_router_error", "")).strip()
+    routing_router_latency = float(metric.get("routing_router_latency_sec", 0.0) or 0.0)
+    routing_decisions_total = int(summary.get("routing_decisions_total", 0) or 0) + 1
+    routing_routellm_count = int(summary.get("routing_routellm_count", 0) or 0) + (
+        1 if routing_strategy == "routellm" else 0
+    )
+    routing_fallback_count = int(summary.get("routing_fallback_count", 0) or 0) + (
+        1 if routing_fallback_used else 0
+    )
+    routing_router_error_count = int(summary.get("routing_router_error_count", 0) or 0) + (
+        1 if routing_router_error else 0
+    )
+    routing_router_latency_sum = float(summary.get("routing_router_latency_sum", 0.0) or 0.0) + routing_router_latency
+    routing_by_provider = summary.get("routing_by_provider", {})
+    if not isinstance(routing_by_provider, dict):
+        routing_by_provider = {}
+    routing_provider = str(metric.get("routing_provider", metric.get("owner", "unknown"))).strip() or "unknown"
+    provider_counts = routing_by_provider.get(routing_provider, {})
+    if not isinstance(provider_counts, dict):
+        provider_counts = {}
+    provider_counts["responses"] = int(provider_counts.get("responses", 0) or 0) + 1
+    provider_counts["routellm_count"] = int(provider_counts.get("routellm_count", 0) or 0) + (
+        1 if routing_strategy == "routellm" else 0
+    )
+    provider_counts["fallback_count"] = int(provider_counts.get("fallback_count", 0) or 0) + (
+        1 if routing_fallback_used else 0
+    )
+    provider_counts["router_error_count"] = int(provider_counts.get("router_error_count", 0) or 0) + (
+        1 if routing_router_error else 0
+    )
+    provider_responses = int(provider_counts.get("responses", 0) or 0)
+    provider_counts["routellm_rate"] = round(
+        float(provider_counts.get("routellm_count", 0) or 0) / max(1, provider_responses),
+        6,
+    )
+    provider_counts["fallback_rate"] = round(
+        float(provider_counts.get("fallback_count", 0) or 0) / max(1, provider_responses),
+        6,
+    )
+    provider_counts["router_error_rate"] = round(
+        float(provider_counts.get("router_error_count", 0) or 0) / max(1, provider_responses),
+        6,
+    )
+    routing_by_provider[routing_provider] = provider_counts
 
     by_owner = summary.get("by_owner", {})
     if not isinstance(by_owner, dict):
@@ -503,6 +750,15 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     owner_counts["token_exact_count"] = int(owner_counts.get("token_exact_count", 0) or 0) + (
         1 if metric.get("token_count_exact", False) else 0
     )
+    owner_counts["routing_routellm_count"] = int(owner_counts.get("routing_routellm_count", 0) or 0) + (
+        1 if routing_strategy == "routellm" else 0
+    )
+    owner_counts["routing_fallback_count"] = int(owner_counts.get("routing_fallback_count", 0) or 0) + (
+        1 if routing_fallback_used else 0
+    )
+    owner_counts["routing_router_error_count"] = int(owner_counts.get("routing_router_error_count", 0) or 0) + (
+        1 if routing_router_error else 0
+    )
     owner_responses = int(owner_counts.get("responses", 0) or 0)
     owner_counts["quality_score_avg"] = round(
         float(owner_counts.get("quality_score_sum", 0.0) or 0.0) / max(1, owner_responses),
@@ -519,6 +775,18 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     owner_counts["tokens_avg"] = round(float(owner_counts.get("tokens_total", 0) or 0) / max(1, owner_responses), 6)
     owner_counts["token_exact_coverage"] = round(
         float(owner_counts.get("token_exact_count", 0) or 0) / max(1, owner_responses),
+        6,
+    )
+    owner_counts["routing_routellm_rate"] = round(
+        float(owner_counts.get("routing_routellm_count", 0) or 0) / max(1, owner_responses),
+        6,
+    )
+    owner_counts["routing_fallback_rate"] = round(
+        float(owner_counts.get("routing_fallback_count", 0) or 0) / max(1, owner_responses),
+        6,
+    )
+    owner_counts["routing_router_error_rate"] = round(
+        float(owner_counts.get("routing_router_error_count", 0) or 0) / max(1, owner_responses),
         6,
     )
     by_owner[owner] = owner_counts
@@ -552,6 +820,19 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
             "token_exact_count": token_exact_count,
             "token_exact_coverage": round(float(token_exact_count) / max(1, total), 6),
             "token_rate_per_minute": round(token_rate_per_minute, 6),
+            "routing_decisions_total": routing_decisions_total,
+            "routing_routellm_count": routing_routellm_count,
+            "routing_routellm_rate": round(float(routing_routellm_count) / max(1, routing_decisions_total), 6),
+            "routing_fallback_count": routing_fallback_count,
+            "routing_fallback_rate": round(float(routing_fallback_count) / max(1, routing_decisions_total), 6),
+            "routing_router_error_count": routing_router_error_count,
+            "routing_router_error_rate": round(float(routing_router_error_count) / max(1, routing_decisions_total), 6),
+            "routing_router_latency_sum": round(routing_router_latency_sum, 6),
+            "routing_router_latency_avg": round(
+                float(routing_router_latency_sum) / max(1, routing_decisions_total),
+                6,
+            ),
+            "routing_by_provider": routing_by_provider,
             "by_owner": by_owner,
             "latest_metric": metric,
         }
@@ -1702,8 +1983,9 @@ def build_attempt_telemetry(
     latency_sec: float,
     response_text: str,
     usage: dict[str, Any],
+    routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "owner": owner,
         "model": model,
         "latency_sec": round(max(0.0, float(latency_sec)), 6),
@@ -1714,6 +1996,9 @@ def build_attempt_telemetry(
         "prompt_difficulty_score": prompt_difficulty_score(prompt),
         "usage": usage,
     }
+    if isinstance(routing, dict):
+        payload["routing"] = routing
+    return payload
 
 
 def run_codex_task(
@@ -1725,6 +2010,10 @@ def run_codex_task(
     output_dir: Path,
     codex_cmd: str,
     codex_model: str | None,
+    routellm_enabled: bool = False,
+    routellm_policy: dict[str, Any] | None = None,
+    routellm_url: str = "",
+    routellm_timeout_sec: int = 5,
     timeout_sec: int,
     retry_context: dict[str, Any],
     progress_callback: Callable[[int], None] | None,
@@ -1756,6 +2045,21 @@ def run_codex_task(
     )
     if role_constraints.strip():
         prompt += f"\n{role_constraints.strip()}\n"
+    effective_routellm_policy = routellm_policy if isinstance(routellm_policy, dict) else DEFAULT_ROUTELLM_POLICY_PAYLOAD
+    try:
+        effective_routellm_timeout_sec = max(1, int(routellm_timeout_sec))
+    except (TypeError, ValueError):
+        effective_routellm_timeout_sec = 5
+    effective_routellm_url = str(routellm_url or "").strip()
+    routed_model, route_decision = resolve_routed_model(
+        provider="codex",
+        requested_model=codex_model,
+        prompt=prompt,
+        routellm_enabled=routellm_enabled,
+        routellm_policy=effective_routellm_policy,
+        router_url_override=effective_routellm_url,
+        router_timeout_sec_override=effective_routellm_timeout_sec,
+    )
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -1764,6 +2068,15 @@ def run_codex_task(
         event_type="prompt",
         content=prompt,
         meta={"agent": "codex"},
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="routing_decision",
+        content=json.dumps(route_decision, sort_keys=True),
+        meta={"agent": "codex", "provider": "codex"},
     )
 
     cmd = [
@@ -1779,14 +2092,14 @@ def run_codex_task(
         str(output_file),
         prompt,
     ]
-    if codex_model:
-        cmd[2:2] = ["--model", codex_model]
+    if routed_model:
+        cmd[2:2] = ["--model", routed_model]
 
     _print(f"Running Codex task {task.id}")
     started = time.monotonic()
     result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
     latency = time.monotonic() - started
-    model_name = codex_model or codex_cmd
+    model_name = routed_model or codex_cmd
     if result.returncode != 0:
         usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
         telemetry = build_attempt_telemetry(
@@ -1796,6 +2109,7 @@ def run_codex_task(
             latency_sec=latency,
             response_text=(result.stdout + "\n" + result.stderr).strip(),
             usage=usage,
+            routing=route_decision,
         )
         append_conversation_event(
             conversation_log_file,
@@ -1826,6 +2140,7 @@ def run_codex_task(
             latency_sec=latency,
             response_text=(result.stdout + "\n" + result.stderr).strip(),
             usage=usage,
+            routing=route_decision,
         )
         append_conversation_event(
             conversation_log_file,
@@ -1853,6 +2168,7 @@ def run_codex_task(
         latency_sec=latency,
         response_text=json.dumps(parsed, sort_keys=True),
         usage=usage,
+        routing=route_decision,
     )
     parsed["usage"] = usage
     append_conversation_event(
@@ -1875,6 +2191,10 @@ def run_gemini_task(
     gemini_cmd: str,
     gemini_model: str | None,
     gemini_fallback_models: list[str],
+    routellm_enabled: bool = False,
+    routellm_policy: dict[str, Any] | None = None,
+    routellm_url: str = "",
+    routellm_timeout_sec: int = 5,
     timeout_sec: int,
     retry_context: dict[str, Any],
     progress_callback: Callable[[int], None] | None,
@@ -1913,6 +2233,21 @@ def run_gemini_task(
         "- Focus on tests/specs/benchmarks and validation depth.\n"
         "- Avoid production code edits unless strictly required to keep tests executable.\n"
     )
+    effective_routellm_policy = routellm_policy if isinstance(routellm_policy, dict) else DEFAULT_ROUTELLM_POLICY_PAYLOAD
+    try:
+        effective_routellm_timeout_sec = max(1, int(routellm_timeout_sec))
+    except (TypeError, ValueError):
+        effective_routellm_timeout_sec = 5
+    effective_routellm_url = str(routellm_url or "").strip()
+    routed_model, route_decision = resolve_routed_model(
+        provider="gemini",
+        requested_model=gemini_model,
+        prompt=prompt,
+        routellm_enabled=routellm_enabled,
+        routellm_policy=effective_routellm_policy,
+        router_url_override=effective_routellm_url,
+        router_timeout_sec_override=effective_routellm_timeout_sec,
+    )
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -1921,6 +2256,15 @@ def run_gemini_task(
         event_type="prompt",
         content=prompt,
         meta={"agent": "gemini"},
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="routing_decision",
+        content=json.dumps(route_decision, sort_keys=True),
+        meta={"agent": "gemini", "provider": "gemini"},
     )
 
     def attempt_cross_provider_fallback(
@@ -1949,6 +2293,10 @@ def run_gemini_task(
                 objective_text=objective_text,
                 claude_cmd=claude_fallback_cmd,
                 claude_model=claude_fallback_model,
+                routellm_enabled=routellm_enabled,
+                routellm_policy=effective_routellm_policy,
+                routellm_url=effective_routellm_url,
+                routellm_timeout_sec=effective_routellm_timeout_sec,
                 timeout_sec=timeout_sec,
                 retry_context=retry_context,
                 progress_callback=progress_callback,
@@ -2001,6 +2349,10 @@ def run_gemini_task(
                 output_dir=codex_output_dir,
                 codex_cmd=codex_fallback_cmd,
                 codex_model=codex_fallback_model,
+                routellm_enabled=routellm_enabled,
+                routellm_policy=effective_routellm_policy,
+                routellm_url=effective_routellm_url,
+                routellm_timeout_sec=effective_routellm_timeout_sec,
                 timeout_sec=timeout_sec,
                 retry_context=retry_context,
                 progress_callback=progress_callback,
@@ -2049,11 +2401,11 @@ def run_gemini_task(
             }
         )
 
-    model_candidates = gemini_model_candidates(gemini_model, gemini_fallback_models)
+    model_candidates = gemini_model_candidates(routed_model, gemini_fallback_models)
     attempt_errors: list[str] = []
     result: subprocess.CompletedProcess[str] | None = None
     latency = 0.0
-    model_name = gemini_model or gemini_cmd
+    model_name = routed_model or gemini_cmd
 
     for idx, model_candidate in enumerate(model_candidates, start=1):
         cmd = [
@@ -2075,7 +2427,7 @@ def run_gemini_task(
         started = time.monotonic()
         result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
         latency = time.monotonic() - started
-        model_name = model_candidate or gemini_model or gemini_cmd
+        model_name = model_candidate or routed_model or gemini_cmd
         if result.returncode == 0:
             break
 
@@ -2113,6 +2465,7 @@ def run_gemini_task(
             latency_sec=latency,
             response_text=fail_text,
             usage=usage,
+            routing=route_decision,
         )
         append_conversation_event(
             conversation_log_file,
@@ -2156,6 +2509,7 @@ def run_gemini_task(
         latency_sec=latency,
         response_text=result.stdout.strip(),
         usage=usage,
+        routing=route_decision,
     )
     parsed["usage"] = usage
     append_conversation_event(
@@ -2207,6 +2561,10 @@ def run_claude_task(
     objective_text: str,
     claude_cmd: str,
     claude_model: str | None,
+    routellm_enabled: bool = False,
+    routellm_policy: dict[str, Any] | None = None,
+    routellm_url: str = "",
+    routellm_timeout_sec: int = 5,
     timeout_sec: int,
     retry_context: dict[str, Any],
     progress_callback: Callable[[int], None] | None,
@@ -2243,6 +2601,21 @@ def run_claude_task(
         )
     if constraints:
         prompt += f"\n{constraints}\n"
+    effective_routellm_policy = routellm_policy if isinstance(routellm_policy, dict) else DEFAULT_ROUTELLM_POLICY_PAYLOAD
+    try:
+        effective_routellm_timeout_sec = max(1, int(routellm_timeout_sec))
+    except (TypeError, ValueError):
+        effective_routellm_timeout_sec = 5
+    effective_routellm_url = str(routellm_url or "").strip()
+    routed_model, route_decision = resolve_routed_model(
+        provider="claude",
+        requested_model=claude_model,
+        prompt=prompt,
+        routellm_enabled=routellm_enabled,
+        routellm_policy=effective_routellm_policy,
+        router_url_override=effective_routellm_url,
+        router_timeout_sec_override=effective_routellm_timeout_sec,
+    )
     append_conversation_event(
         conversation_log_file,
         cycle=cycle,
@@ -2251,6 +2624,15 @@ def run_claude_task(
         event_type="prompt",
         content=prompt,
         meta={"agent": "claude"},
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="routing_decision",
+        content=json.dumps(route_decision, sort_keys=True),
+        meta={"agent": "claude", "provider": "claude"},
     )
 
     cmd = [
@@ -2262,8 +2644,8 @@ def run_claude_task(
         "--add-dir",
         str(repo),
     ]
-    if claude_model:
-        cmd.extend(["--model", claude_model])
+    if routed_model:
+        cmd.extend(["--model", routed_model])
 
     _print(f"Running Claude task {task.id}")
     started = time.monotonic()
@@ -2296,7 +2678,7 @@ def run_claude_task(
             progress_callback=progress_callback,
         )
         latency = time.monotonic() - started
-    model_name = claude_model or claude_cmd
+    model_name = routed_model or claude_cmd
     if result.returncode != 0:
         usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
         telemetry = build_attempt_telemetry(
@@ -2306,6 +2688,7 @@ def run_claude_task(
             latency_sec=latency,
             response_text=(result.stdout + "\n" + result.stderr).strip(),
             usage=usage,
+            routing=route_decision,
         )
         append_conversation_event(
             conversation_log_file,
@@ -2342,6 +2725,7 @@ def run_claude_task(
         latency_sec=latency,
         response_text=result.stdout.strip(),
         usage=usage,
+        routing=route_decision,
     )
     parsed["usage"] = usage
     append_conversation_event(
@@ -2483,6 +2867,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--metrics-file", default="artifacts/autonomy/response_metrics.ndjson")
     parser.add_argument("--metrics-summary-file", default="artifacts/autonomy/response_metrics_summary.json")
     parser.add_argument("--pricing-file", default="config/pricing.json")
+    parser.add_argument("--routellm-policy-file", default="config/routellm_policy.json")
+    parser.add_argument(
+        "--routellm-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable optional RouteLLM model routing for eligible providers.",
+    )
+    parser.add_argument("--routellm-url", default="")
+    parser.add_argument("--routellm-timeout-sec", type=int, default=5)
     parser.add_argument(
         "--continuous",
         action="store_true",
@@ -2542,6 +2935,7 @@ def main(argv: list[str] | None = None) -> int:
     metrics_file = Path(args.metrics_file).resolve()
     metrics_summary_file = Path(args.metrics_summary_file).resolve()
     pricing_file = Path(args.pricing_file).resolve() if args.pricing_file else None
+    routellm_policy_file = Path(args.routellm_policy_file).resolve() if args.routellm_policy_file else None
     dependency_state_file = Path(args.dependency_state_file).resolve() if args.dependency_state_file else None
     gemini_fallback_models = [str(item).strip() for item in args.gemini_fallback_model if str(item).strip()]
     if not gemini_fallback_models:
@@ -2580,6 +2974,9 @@ def main(argv: list[str] | None = None) -> int:
     state = load_state(state_file, tasks)
     objective_text = _read_text(objective_file)
     pricing = load_pricing(pricing_file)
+    routellm_policy = load_routellm_policy(routellm_policy_file)
+    routellm_url = str(args.routellm_url or "").strip()
+    routellm_timeout_sec = max(1, int(args.routellm_timeout_sec))
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
     codex_startup_instructions = _read_optional_text(codex_startup_prompt_file)
@@ -2853,6 +3250,10 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=artifacts_dir,
                 codex_cmd=args.codex_cmd,
                 codex_model=args.codex_model,
+                routellm_enabled=bool(args.routellm_enabled),
+                routellm_policy=routellm_policy,
+                routellm_url=routellm_url,
+                routellm_timeout_sec=routellm_timeout_sec,
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
                 progress_callback=task_progress,
@@ -2881,6 +3282,10 @@ def main(argv: list[str] | None = None) -> int:
                 gemini_cmd=args.gemini_cmd,
                 gemini_model=args.gemini_model,
                 gemini_fallback_models=gemini_fallback_models,
+                routellm_enabled=bool(args.routellm_enabled),
+                routellm_policy=routellm_policy,
+                routellm_url=routellm_url,
+                routellm_timeout_sec=routellm_timeout_sec,
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
                 progress_callback=task_progress,
@@ -2916,6 +3321,10 @@ def main(argv: list[str] | None = None) -> int:
                 objective_text=objective_text,
                 claude_cmd=args.claude_cmd,
                 claude_model=args.claude_model,
+                routellm_enabled=bool(args.routellm_enabled),
+                routellm_policy=routellm_policy,
+                routellm_url=routellm_url,
+                routellm_timeout_sec=routellm_timeout_sec,
                 timeout_sec=args.agent_timeout_sec,
                 retry_context=retry_context,
                 progress_callback=task_progress,
@@ -2947,6 +3356,7 @@ def main(argv: list[str] | None = None) -> int:
             if not telemetry:
                 return
             usage_payload = telemetry.get("usage", {}) if isinstance(telemetry.get("usage", {}), dict) else {}
+            routing_payload = telemetry.get("routing", {}) if isinstance(telemetry.get("routing", {}), dict) else {}
             cost_fields = compute_response_cost(
                 pricing=pricing,
                 owner=str(task.owner),
@@ -2988,6 +3398,14 @@ def main(argv: list[str] | None = None) -> int:
                 "summary": summary_text[:800],
                 "blocker": blocker_text[:800],
                 "notes": notes[:800],
+                "routing_provider": str(routing_payload.get("provider", task.owner)),
+                "routing_strategy": str(routing_payload.get("strategy", "static_fallback")),
+                "routing_requested_model": str(routing_payload.get("requested_model", "")),
+                "routing_selected_model": str(routing_payload.get("selected_model", telemetry.get("model", task.owner))),
+                "routing_fallback_used": bool(routing_payload.get("fallback_used", False)),
+                "routing_reason": str(routing_payload.get("reason", "")),
+                "routing_router_error": str(routing_payload.get("router_error", ""))[:400],
+                "routing_router_latency_sec": float(routing_payload.get("router_latency_sec", 0.0) or 0.0),
             }
             append_response_metric(metrics_file, metric)
             update_response_metrics_summary(metrics_summary_file, metric)

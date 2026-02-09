@@ -641,6 +641,75 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(payload["total_tokens"], 444)
         self.assertEqual(payload["cost_source"], "unpriced_model_estimated_tokens")
 
+    def test_resolve_routed_model_disabled_uses_static_model(self):
+        selected, decision = runner.resolve_routed_model(
+            provider="codex",
+            requested_model="gpt-4o-mini",
+            prompt="Implement helper.",
+            routellm_enabled=False,
+            routellm_policy={"enabled": True, "router": {"url": "http://router.invalid"}},
+        )
+        self.assertEqual(selected, "gpt-4o-mini")
+        self.assertEqual(decision["strategy"], "static_fallback")
+        self.assertEqual(decision["reason"], "router_disabled")
+        self.assertFalse(decision["fallback_used"])
+
+    def test_resolve_routed_model_router_failure_falls_back_deterministically(self):
+        policy = {
+            "enabled": True,
+            "router": {"url": "http://router.invalid", "timeout_sec": 2},
+            "providers": {"codex": {"enabled": True, "fallback_model": "gpt-4o-mini"}},
+        }
+        with mock.patch.object(
+            runner.urllib.request,
+            "urlopen",
+            side_effect=runner.urllib.error.URLError("connection refused"),
+        ):
+            selected, decision = runner.resolve_routed_model(
+                provider="codex",
+                requested_model=None,
+                prompt="Implement helper.",
+                routellm_enabled=True,
+                routellm_policy=policy,
+            )
+        self.assertEqual(selected, "gpt-4o-mini")
+        self.assertEqual(decision["selected_model"], "gpt-4o-mini")
+        self.assertEqual(decision["strategy"], "static_fallback")
+        self.assertTrue(decision["fallback_used"])
+        self.assertEqual(decision["reason"], "router_unavailable")
+
+    def test_resolve_routed_model_uses_router_selected_model(self):
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"selected_model":"gpt-5-mini"}'
+
+            def getcode(self):
+                return 200
+
+        policy = {
+            "enabled": True,
+            "router": {"url": "http://router.invalid", "timeout_sec": 2},
+            "providers": {"codex": {"enabled": True, "allowed_models": ["gpt-5-mini", "gpt-4o-mini"]}},
+        }
+        with mock.patch.object(runner.urllib.request, "urlopen", return_value=_FakeResponse()):
+            selected, decision = runner.resolve_routed_model(
+                provider="codex",
+                requested_model="gpt-4o-mini",
+                prompt="Implement helper.",
+                routellm_enabled=True,
+                routellm_policy=policy,
+            )
+        self.assertEqual(selected, "gpt-5-mini")
+        self.assertEqual(decision["strategy"], "routellm")
+        self.assertEqual(decision["reason"], "router_selected_model")
+        self.assertFalse(decision["fallback_used"])
+
     def test_update_response_metrics_summary_tracks_prompt_difficulty_and_recommendations(self):
         with tempfile.TemporaryDirectory() as td:
             summary_path = pathlib.Path(td) / "summary.json"
@@ -693,6 +762,41 @@ class RuntimeSafeguardTests(unittest.TestCase):
             self.assertIn("latency_sec_avg", second["by_owner"]["gemini"])
             self.assertIn("prompt_difficulty_score_avg", second["by_owner"]["gemini"])
             self.assertIn("tokens_avg", second["by_owner"]["gemini"])
+
+    def test_update_response_metrics_summary_tracks_routing_metrics(self):
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = pathlib.Path(td) / "summary.json"
+            summary = runner.update_response_metrics_summary(
+                summary_path,
+                {
+                    "owner": "codex",
+                    "quality_score": 0.8,
+                    "latency_sec": 10.0,
+                    "prompt_difficulty_score": 30,
+                    "first_time_pass": True,
+                    "validation_passed": True,
+                    "cost_exact": True,
+                    "cost_usd": 0.02,
+                    "token_count_exact": True,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                    "routing_provider": "codex",
+                    "routing_strategy": "routellm",
+                    "routing_requested_model": "gpt-4o-mini",
+                    "routing_selected_model": "gpt-5-mini",
+                    "routing_fallback_used": False,
+                    "routing_reason": "router_selected_model",
+                    "routing_router_error": "",
+                    "routing_router_latency_sec": 0.25,
+                },
+            )
+        self.assertEqual(summary["routing_decisions_total"], 1)
+        self.assertEqual(summary["routing_routellm_count"], 1)
+        self.assertEqual(summary["routing_fallback_count"], 0)
+        self.assertEqual(summary["routing_router_error_count"], 0)
+        self.assertIn("codex", summary["routing_by_provider"])
+        self.assertEqual(summary["routing_by_provider"]["codex"]["routellm_count"], 1)
 
     def test_load_tasks_supports_claude_owner(self):
         with tempfile.TemporaryDirectory() as td:
