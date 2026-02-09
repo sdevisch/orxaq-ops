@@ -27,6 +27,7 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `config/prompts/gemini_test_prompt.md` - baseline independent-test prompt for Gemini.
 - `config/prompts/claude_review_prompt.md` - baseline governance/review prompt for Claude.
 - `config/lanes.json` - parallel lane plan for Codex/Gemini/Claude with non-overlapping scopes.
+- `AGENTS.md` - canonical collaboration standard for hybrid human + IDE + API agent workflows.
 - `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
 - `docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md` - end-to-end VS Code + multi-agent operating guide.
 - `docs/release-pypi.md` - trusted-publishing release runbook.

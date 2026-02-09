@@ -15,6 +15,26 @@ repos:
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
+      - id: git-collaboration-precommit
+        name: git-collaboration-precommit
+        entry: python3 scripts/check_git_collaboration_policy.py --forbid-glob 'artifacts/*' --forbid-glob 'state/*' --forbid-glob '.env*' --allow-glob '.env.example' --allow-glob '.env.*.example' --forbid-glob 'orxaq-dual-agent.code-workspace'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: git-collaboration-prepush
+        name: git-collaboration-prepush
+        entry: python3 scripts/check_git_collaboration_policy.py --check-upstream-behind --forbid-glob 'artifacts/*' --forbid-glob 'state/*' --forbid-glob '.env*' --allow-glob '.env.example' --allow-glob '.env.*.example' --forbid-glob 'orxaq-dual-agent.code-workspace'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: commit-message-policy
+        name: commit-message-policy
+        entry: python3 scripts/check_commit_message.py
+        language: system
+        stages: [commit-msg]
+
       - id: hosted-controls
         name: hosted-controls
         entry: python3 scripts/check_hosted_controls.py --root .

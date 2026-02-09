@@ -106,6 +106,7 @@ setup:
 	@if command -v pre-commit >/dev/null 2>&1; then \
 		pre-commit install; \
 		pre-commit install --hook-type pre-push; \
+		pre-commit install --hook-type commit-msg; \
 	else \
 		echo "pre-commit not installed; install it to enable git hooks."; \
 	fi
