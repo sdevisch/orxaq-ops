@@ -2659,7 +2659,13 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
     return next((item for item in lane_status_snapshot(config)["lanes"] if item["id"] == lane_id), {"id": lane_id})
 
 
-def stop_lane_background(config: ManagerConfig, lane_id: str, *, reason: str = "manual") -> dict[str, Any]:
+def stop_lane_background(
+    config: ManagerConfig,
+    lane_id: str,
+    *,
+    reason: str = "manual",
+    pause: bool = True,
+) -> dict[str, Any]:
     pid_path = _lane_pid_file(config, lane_id)
     pid = _read_pid(pid_path)
     lanes, _ = _load_lane_specs_resilient(config)
@@ -2673,7 +2679,7 @@ def stop_lane_background(config: ManagerConfig, lane_id: str, *, reason: str = "
     for target in targets:
         _terminate_pid(target)
     pid_path.unlink(missing_ok=True)
-    if reason == "manual":
+    if reason == "manual" and pause:
         _lane_pause_file(config, lane_id).write_text("manual\n", encoding="utf-8")
     else:
         _lane_pause_file(config, lane_id).unlink(missing_ok=True)
@@ -2776,18 +2782,60 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
 
 
 def stop_lanes_background(config: ManagerConfig, lane_id: str | None = None) -> dict[str, Any]:
-    status = lane_status_snapshot(config)
-    selected = status["lanes"] if lane_id is None else [lane for lane in status["lanes"] if lane["id"] == lane_id]
-    if lane_id is not None and not selected:
-        raise RuntimeError(f"Unknown lane id {lane_id!r}. Update {config.lanes_file}.")
+    requested_lane = lane_id.strip() if isinstance(lane_id, str) and lane_id.strip() else None
+    lanes, load_errors = _load_lane_specs_resilient(config)
+    by_lane_id = {str(lane["id"]): lane for lane in lanes}
+    if requested_lane is not None and requested_lane not in by_lane_id:
+        raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
+
+    selected_ids = [requested_lane] if requested_lane is not None else [str(lane["id"]) for lane in lanes]
+    config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
+    skipped: list[dict[str, Any]] = []
     stopped: list[dict[str, Any]] = []
-    for lane in selected:
-        stopped.append(stop_lane_background(config, lane["id"], reason="manual"))
+    failed: list[dict[str, Any]] = list(config_failures)
+    status = lane_status_snapshot(config)
+    status_by_id = {
+        str(item.get("id", "")).strip(): item
+        for item in status.get("lanes", [])
+        if isinstance(item, dict) and str(item.get("id", "")).strip()
+    }
+    for current_lane_id in selected_ids:
+        lane = by_lane_id.get(current_lane_id, {})
+        lane_enabled = bool(lane.get("enabled", False))
+        lane_running = bool(status_by_id.get(current_lane_id, {}).get("running", False))
+        if not lane_enabled and not lane_running:
+            skipped.append({"id": current_lane_id, "reason": "disabled"})
+            continue
+        try:
+            stopped.append(
+                stop_lane_background(
+                    config,
+                    current_lane_id,
+                    reason="manual",
+                    pause=lane_enabled,
+                )
+            )
+        except Exception as err:
+            failed.append(
+                {
+                    "id": current_lane_id,
+                    "owner": str(lane.get("owner", "unknown")).strip() or "unknown",
+                    "error": str(err),
+                    "source": "lane_runtime",
+                }
+            )
     return {
         "timestamp": _now_iso(),
-        "requested_lane": lane_id or "all",
+        "requested_lane": requested_lane or "all",
         "stopped_count": len(stopped),
         "stopped": stopped,
+        "skipped_count": len(skipped),
+        "skipped": skipped,
+        "config_error_count": len(config_failures),
+        "config_errors": [item["error"] for item in config_failures],
+        "failed_count": len(failed),
+        "failed": failed,
+        "ok": len(failed) == 0,
     }
 
 

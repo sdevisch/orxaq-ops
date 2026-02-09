@@ -1700,6 +1700,126 @@ class ManagerTests(unittest.TestCase):
             stop.assert_called_once_with(cfg, "lane-a", reason="build_update")
             start.assert_called_once_with(cfg, "lane-a")
 
+    def test_stop_lanes_background_skips_disabled_lane_when_not_running(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": False,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"lanes": [{"id": "lane-a", "running": False}]},
+            ), mock.patch("orxaq_autonomy.manager.stop_lane_background") as stop:
+                payload = manager.stop_lanes_background(cfg)
+            self.assertEqual(payload["stopped_count"], 0)
+            self.assertEqual(payload["skipped_count"], 1)
+            self.assertEqual(payload["skipped"][0]["id"], "lane-a")
+            self.assertEqual(payload["skipped"][0]["reason"], "disabled")
+            self.assertEqual(payload["failed_count"], 0)
+            self.assertTrue(payload["ok"])
+            stop.assert_not_called()
+
+    def test_stop_lanes_background_keeps_valid_lane_when_another_lane_is_invalid(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "unsupported-owner",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"lanes": [{"id": "lane-a", "running": False}]},
+            ), mock.patch(
+                "orxaq_autonomy.manager.stop_lane_background",
+                return_value={"id": "lane-a", "running": False},
+            ) as stop:
+                payload = manager.stop_lanes_background(cfg)
+            self.assertEqual(payload["stopped_count"], 1)
+            self.assertEqual(payload["config_error_count"], 1)
+            self.assertEqual(payload["failed_count"], 1)
+            self.assertFalse(payload["ok"])
+            self.assertIn("lane-b", payload["config_errors"][0])
+            self.assertEqual(payload["failed"][0]["source"], "lane_config")
+            stop.assert_called_once_with(cfg, "lane-a", reason="manual", pause=True)
+
+    def test_stop_lanes_background_stops_running_disabled_lane_without_pause(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": False,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"lanes": [{"id": "lane-a", "running": True}]},
+            ), mock.patch(
+                "orxaq_autonomy.manager.stop_lane_background",
+                return_value={"id": "lane-a", "running": False},
+            ) as stop:
+                payload = manager.stop_lanes_background(cfg)
+            self.assertEqual(payload["stopped_count"], 1)
+            self.assertEqual(payload["failed_count"], 0)
+            self.assertTrue(payload["ok"])
+            stop.assert_called_once_with(cfg, "lane-a", reason="manual", pause=False)
+
     def test_stop_lane_background_marks_pause_flag(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
