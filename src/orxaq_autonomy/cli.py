@@ -188,6 +188,10 @@ def _filter_conversation_payload_for_lane(
             source_path = str(source.get(key, "")).strip().lower()
             if source_path and source_path in normalized:
                 return True
+        source_kind = str(source.get("resolved_kind", source.get("kind", ""))).strip().lower()
+        if source_kind == "primary":
+            if any(token in normalized for token in ("primary", "global", "conversation source", "conversations.ndjson")):
+                return True
         return False
 
     suppressed_payload_errors: list[str] = []
