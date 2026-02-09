@@ -1900,6 +1900,7 @@ class ManagerTests(unittest.TestCase):
             with mock.patch("orxaq_autonomy.manager._pid_running", return_value=True):
                 snapshot = manager.lane_status_snapshot(cfg)
             self.assertTrue(snapshot["ok"])
+            self.assertFalse(snapshot["partial"])
             lane = snapshot["lanes"][0]
             self.assertEqual(lane["owner"], "codex")
             self.assertEqual(lane["health"], "stale")
@@ -1951,6 +1952,7 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(invalid_lane["owner"], "unknown")
             self.assertEqual(invalid_lane["health"], "error")
             self.assertFalse(snapshot["ok"])
+            self.assertTrue(snapshot["partial"])
             self.assertIn("lane-b", snapshot["errors"][0])
 
     def test_lane_status_snapshot_treats_missing_state_entries_as_pending(self):

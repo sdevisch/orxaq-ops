@@ -522,6 +522,53 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (conversationFilters.tail > 0) query.set("tail", String(conversationFilters.tail));
       return `/api/conversations?${{query.toString()}}`;
     }}
+    function laneStatusPath() {{
+      const laneTarget = String(byId("laneTarget").value || "").trim();
+      if (!laneTarget) return "/api/lanes";
+      const query = new URLSearchParams();
+      query.set("lane", laneTarget);
+      return `/api/lanes?${{query.toString()}}`;
+    }}
+    function filterFallbackConversationEvents(events, filters) {{
+      const ownerFilter = String((filters && filters.owner) || "").trim().toLowerCase();
+      const laneFilter = String((filters && filters.lane) || "").trim().toLowerCase();
+      const typeFilter = String((filters && filters.event_type) || "").trim().toLowerCase();
+      const containsFilter = String((filters && filters.contains) || "").trim().toLowerCase();
+      const tailFilter = parseTail(filters && filters.tail);
+      const allEvents = Array.isArray(events) ? events.filter((item) => item && typeof item === "object") : [];
+      let filtered = allEvents.filter((item) => {{
+        const ownerValue = String(item.owner || "").trim().toLowerCase();
+        const laneValue = String(item.lane_id || "").trim().toLowerCase();
+        const typeValue = String(item.event_type || "").trim().toLowerCase();
+        const haystack = [
+          item.timestamp || "",
+          item.owner || "",
+          item.lane_id || "",
+          item.task_id || "",
+          item.event_type || "",
+          item.content || "",
+        ].join(" ").toLowerCase();
+        if (ownerFilter && ownerValue !== ownerFilter) return false;
+        if (laneFilter && laneValue !== laneFilter) return false;
+        if (typeFilter && typeValue !== typeFilter) return false;
+        if (containsFilter && !haystack.includes(containsFilter)) return false;
+        return true;
+      }});
+      if (tailFilter > 0) {{
+        filtered = filtered.slice(-tailFilter);
+      }}
+      const ownerCounts = {{}};
+      for (const event of filtered) {{
+        const owner = String(event.owner || "unknown").trim() || "unknown";
+        ownerCounts[owner] = Number(ownerCounts[owner] || 0) + 1;
+      }}
+      return {{
+        events: filtered,
+        owner_counts: ownerCounts,
+        total_events: filtered.length,
+        unfiltered_total_events: allEvents.length,
+      }};
+    }}
     function syncConversationInputs() {{
       byId("convOwner").value = conversationFilters.owner;
       byId("convLane").value = conversationFilters.lane;
@@ -944,7 +991,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       const [monitorResult, convResult, laneResult, dawResult] = await Promise.all([
         fetchJson('/api/monitor'),
         fetchJson(conversationPath()),
-        fetchJson('/api/lanes'),
+        fetchJson(laneStatusPath()),
         fetchJson('/api/daw?window_sec=120'),
       ]);
 
@@ -986,16 +1033,17 @@ def _dashboard_html(refresh_sec: int) -> str:
           contains: conversationFilters.contains,
           tail: conversationFilters.tail,
         }};
+        const filteredFallback = filterFallbackConversationEvents(fallbackEvents, fallbackFilters);
         const fallbackConv = monitorPayload && monitorPayload.conversations
           ? {{
-              total_events: monitorPayload.conversations.total_events || 0,
-              owner_counts: monitorPayload.conversations.owner_counts || {{}},
-              events: fallbackEvents,
+              total_events: filteredFallback.total_events,
+              owner_counts: filteredFallback.owner_counts,
+              events: filteredFallback.events,
               sources: Array.isArray(monitorPayload.conversations.sources) ? monitorPayload.conversations.sources : [],
               partial: true,
               errors: [convResult.error || 'conversation endpoint unavailable'],
               filters: fallbackFilters,
-              unfiltered_total_events: monitorPayload.conversations.total_events || 0,
+              unfiltered_total_events: filteredFallback.unfiltered_total_events,
             }}
           : {{
               total_events: 0,
@@ -1134,7 +1182,12 @@ def start_dashboard(
                     self._send_json(payload, status=status)
                     return
                 if parsed.path == "/api/lanes":
-                    self._send_json(_safe_lane_status_snapshot(config))
+                    query = parse_qs(parsed.query)
+                    payload = _filter_lane_status_payload(
+                        _safe_lane_status_snapshot(config),
+                        lane_id=query.get("lane", [""])[0],
+                    )
+                    self._send_json(payload)
                     return
                 if parsed.path == "/api/conversations":
                     query = parse_qs(parsed.query)
@@ -1501,6 +1554,58 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
         }
 
 
+def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -> dict[str, Any]:
+    requested_lane = lane_id.strip()
+    lane_items = payload.get("lanes", [])
+    if not isinstance(lane_items, list):
+        lane_items = []
+    lane_errors = payload.get("errors", [])
+    if not isinstance(lane_errors, list):
+        lane_errors = []
+    normalized_errors = [str(item).strip() for item in lane_errors if str(item).strip()]
+
+    if requested_lane:
+        lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == requested_lane]
+        if not lane_items:
+            if normalized_errors:
+                normalized_errors.append(
+                    f"Requested lane {requested_lane!r} is unavailable because lane status sources failed."
+                )
+            else:
+                lanes_file = str(payload.get("lanes_file", "")).strip()
+                normalized_errors.append(f"Unknown lane id {requested_lane!r}. Update {lanes_file}.")
+
+    health_counts: dict[str, int] = {}
+    owner_counts: dict[str, dict[str, int]] = {}
+    healthy_states = {"ok", "paused", "idle"}
+    for lane in lane_items:
+        if not isinstance(lane, dict):
+            continue
+        health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
+        health_counts[health] = health_counts.get(health, 0) + 1
+        owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+        owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
+        owner_entry["total"] += 1
+        if bool(lane.get("running", False)):
+            owner_entry["running"] += 1
+        if health in healthy_states:
+            owner_entry["healthy"] += 1
+        else:
+            owner_entry["degraded"] += 1
+
+    filtered = dict(payload)
+    filtered["requested_lane"] = requested_lane or "all"
+    filtered["lanes"] = lane_items
+    filtered["running_count"] = sum(1 for lane in lane_items if bool(lane.get("running", False)))
+    filtered["total_count"] = len(lane_items)
+    filtered["health_counts"] = health_counts
+    filtered["owner_counts"] = owner_counts
+    filtered["errors"] = normalized_errors
+    filtered["partial"] = bool(payload.get("partial", False)) or bool(normalized_errors)
+    filtered["ok"] = bool(payload.get("ok", not normalized_errors)) and not bool(normalized_errors)
+    return filtered
+
+
 def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
     try:
         return monitor_snapshot(config)
@@ -1528,6 +1633,7 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "lanes": [],
                 "health_counts": {},
                 "owner_counts": {},
+                "partial": True,
                 "ok": False,
                 "errors": [message],
             },
@@ -1591,6 +1697,7 @@ def _safe_lane_status_snapshot(config: ManagerConfig) -> dict:
             "lanes": [],
             "health_counts": {},
             "owner_counts": {},
+            "partial": True,
             "ok": False,
             "errors": [message],
         }

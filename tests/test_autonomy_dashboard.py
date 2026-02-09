@@ -41,6 +41,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("convOwner", html)
         self.assertIn("conversationSources", html)
         self.assertIn("conversationPath", html)
+        self.assertIn("laneStatusPath", html)
+        self.assertIn("filterFallbackConversationEvents", html)
         self.assertIn("FETCH_TIMEOUT_MS", html)
         self.assertIn("timeout after", html)
 
@@ -61,10 +63,49 @@ class DashboardTests(unittest.TestCase):
         with mock.patch("orxaq_autonomy.dashboard.lane_status_snapshot", side_effect=RuntimeError("lane parse failed")):
             payload = dashboard._safe_lane_status_snapshot(cfg)
         self.assertFalse(payload["ok"])
+        self.assertTrue(payload["partial"])
         self.assertEqual(payload["total_count"], 0)
         self.assertEqual(payload["health_counts"], {})
         self.assertEqual(payload["owner_counts"], {})
         self.assertIn("lane parse failed", payload["errors"][0])
+
+    def test_filter_lane_status_payload_filters_selected_lane(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+                {"id": "lane-b", "owner": "gemini", "running": False, "health": "stale"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="lane-a")
+        self.assertEqual(filtered["requested_lane"], "lane-a")
+        self.assertEqual(filtered["total_count"], 1)
+        self.assertEqual(filtered["running_count"], 1)
+        self.assertTrue(filtered["ok"])
+        self.assertFalse(filtered["partial"])
+        self.assertEqual(filtered["health_counts"], {"ok": 1})
+        self.assertEqual(filtered["owner_counts"]["codex"]["total"], 1)
+
+    def test_filter_lane_status_payload_reports_unknown_lane(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="missing-lane")
+        self.assertEqual(filtered["requested_lane"], "missing-lane")
+        self.assertEqual(filtered["total_count"], 0)
+        self.assertFalse(filtered["ok"])
+        self.assertTrue(filtered["partial"])
+        self.assertTrue(filtered["errors"])
+        self.assertIn("Unknown lane id", filtered["errors"][0])
 
     def test_safe_conversations_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()

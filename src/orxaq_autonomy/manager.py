@@ -2413,6 +2413,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "lanes": snapshots,
         "health_counts": health_counts,
         "owner_counts": owner_counts,
+        "partial": len(errors) > 0,
         "ok": len(errors) == 0,
         "errors": errors,
     }
