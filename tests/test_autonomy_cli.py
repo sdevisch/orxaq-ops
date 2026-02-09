@@ -323,6 +323,45 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["events"][0]["owner"], "codex")
             self.assertEqual(data["filters"]["lane"], "lane-a")
 
+    def test_conversations_command_suppresses_unrelated_lane_source_failures(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            payload = {
+                "total_events": 2,
+                "events": [
+                    {"owner": "codex", "lane_id": "lane-a", "event_type": "status", "content": "alpha"},
+                    {"owner": "gemini", "lane_id": "lane-b", "event_type": "status", "content": "beta"},
+                ],
+                "owner_counts": {"codex": 1, "gemini": 1},
+                "sources": [
+                    {"lane_id": "", "kind": "primary", "ok": True, "error": "", "event_count": 2},
+                    {"lane_id": "lane-a", "kind": "lane", "ok": True, "error": "", "event_count": 1},
+                    {
+                        "lane_id": "lane-b",
+                        "kind": "lane",
+                        "ok": False,
+                        "error": "lane-b stream unavailable",
+                        "event_count": 0,
+                    },
+                ],
+                "partial": True,
+                "ok": False,
+                "errors": ["lane-b stream unavailable"],
+            }
+            with mock.patch("orxaq_autonomy.cli.conversations_snapshot", return_value=payload):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "conversations", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertTrue(data["ok"])
+            self.assertFalse(data["partial"])
+            self.assertEqual(data["total_events"], 1)
+            self.assertEqual(data["errors"], [])
+            self.assertEqual(data["suppressed_source_error_count"], 1)
+            self.assertEqual(len(data["sources"]), 2)
+
     def test_lane_inspect_command_returns_lane_and_filtered_conversations(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -428,6 +467,58 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["lane_errors"], [])
             self.assertEqual(payload["suppressed_lane_errors"], ["lane-b: heartbeat stale"])
             self.assertEqual(payload["lane"]["id"], "lane-a")
+
+    def test_lane_inspect_suppresses_unrelated_conversation_source_failures(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 2,
+                "events": [
+                    {"owner": "codex", "lane_id": "lane-a", "event_type": "status", "content": "ok"},
+                    {"owner": "gemini", "lane_id": "lane-b", "event_type": "status", "content": "noisy"},
+                ],
+                "owner_counts": {"codex": 1, "gemini": 1},
+                "ok": False,
+                "partial": True,
+                "errors": ["lane-b stream unavailable"],
+                "sources": [
+                    {"lane_id": "", "kind": "primary", "ok": True, "error": "", "event_count": 2},
+                    {"lane_id": "lane-a", "kind": "lane", "ok": True, "error": "", "event_count": 1},
+                    {
+                        "lane_id": "lane-b",
+                        "kind": "lane",
+                        "ok": False,
+                        "error": "lane-b stream unavailable",
+                        "event_count": 0,
+                    },
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["partial"])
+            self.assertTrue(payload["conversations"]["ok"])
+            self.assertFalse(payload["conversations"]["partial"])
+            self.assertEqual(payload["conversations"]["errors"], [])
+            self.assertEqual(payload["conversations"]["total_events"], 1)
+            self.assertEqual(payload["conversations"]["suppressed_source_error_count"], 1)
+            self.assertEqual(payload["conversation_source_health"]["state"], "ok")
 
     def test_lane_inspect_reports_degraded_conversation_source_health(self):
         with tempfile.TemporaryDirectory() as td:

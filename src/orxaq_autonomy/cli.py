@@ -112,6 +112,70 @@ def _apply_conversation_filters(
     return result
 
 
+def _filter_conversation_payload_for_lane(
+    payload: dict[str, Any],
+    *,
+    lane_id: str = "",
+) -> dict[str, Any]:
+    requested_lane = lane_id.strip()
+    source_reports = payload.get("sources", [])
+    if not isinstance(source_reports, list):
+        source_reports = []
+    normalized_sources = [item for item in source_reports if isinstance(item, dict)]
+
+    if not requested_lane:
+        result = dict(payload)
+        result["sources"] = normalized_sources
+        result["suppressed_sources"] = []
+        result["suppressed_source_count"] = 0
+        result["suppressed_source_errors"] = []
+        result["suppressed_source_error_count"] = 0
+        return result
+
+    retained_sources: list[dict[str, Any]] = []
+    suppressed_sources: list[dict[str, Any]] = []
+    for source in normalized_sources:
+        source_lane = str(source.get("lane_id", "")).strip()
+        if source_lane and source_lane != requested_lane:
+            suppressed_sources.append(source)
+            continue
+        retained_sources.append(source)
+
+    retained_errors = [
+        str(source.get("error", "")).strip()
+        for source in retained_sources
+        if str(source.get("error", "")).strip()
+    ]
+    suppressed_errors = [
+        str(source.get("error", "")).strip()
+        for source in suppressed_sources
+        if str(source.get("error", "")).strip()
+    ]
+
+    payload_errors = payload.get("errors", [])
+    if not isinstance(payload_errors, list):
+        payload_errors = []
+    for entry in payload_errors:
+        message = str(entry).strip()
+        if not message or message in suppressed_errors:
+            continue
+        if message not in retained_errors:
+            retained_errors.append(message)
+
+    retained_source_failures = any(not bool(source.get("ok", False)) for source in retained_sources)
+    partial = retained_source_failures or bool(retained_errors)
+    filtered = dict(payload)
+    filtered["sources"] = retained_sources
+    filtered["errors"] = retained_errors
+    filtered["ok"] = not partial
+    filtered["partial"] = partial
+    filtered["suppressed_sources"] = suppressed_sources
+    filtered["suppressed_source_count"] = len(suppressed_sources)
+    filtered["suppressed_source_errors"] = suppressed_errors
+    filtered["suppressed_source_error_count"] = len(suppressed_errors)
+    return filtered
+
+
 def _conversation_error_payload(
     cfg: ManagerConfig,
     *,
@@ -187,6 +251,7 @@ def _safe_conversations_snapshot(
             contains=contains,
             tail=tail,
         )
+    payload = _filter_conversation_payload_for_lane(payload, lane_id=lane_id)
     return _apply_conversation_filters(
         payload,
         owner=owner,

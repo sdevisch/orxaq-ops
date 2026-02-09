@@ -43,6 +43,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("conversation_source_errors", html)
         self.assertIn("conversation_source=", html)
         self.assertIn("source_error:", html)
+        self.assertIn("suppressed_source_errors", html)
         self.assertIn("stopped=${payload.stopped_count || 0} failed=${failed}", html)
         self.assertIn("convOwner", html)
         self.assertIn("conversationSources", html)
@@ -283,6 +284,25 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(payload["sources"][0]["ok"])
         self.assertEqual(payload["sources"][0]["path"], str(cfg.conversation_log_file))
 
+    def test_filter_conversation_payload_for_lane_suppresses_unrelated_lane_errors(self):
+        payload = {
+            "ok": False,
+            "partial": True,
+            "errors": ["lane-b stream unavailable"],
+            "sources": [
+                {"lane_id": "", "kind": "primary", "ok": True, "error": "", "event_count": 2},
+                {"lane_id": "lane-a", "kind": "lane", "ok": True, "error": "", "event_count": 1},
+                {"lane_id": "lane-b", "kind": "lane", "ok": False, "error": "lane-b stream unavailable", "event_count": 0},
+            ],
+        }
+        filtered = dashboard._filter_conversation_payload_for_lane(payload, lane_id="lane-a")
+        self.assertTrue(filtered["ok"])
+        self.assertFalse(filtered["partial"])
+        self.assertEqual(filtered["errors"], [])
+        self.assertEqual(len(filtered["sources"]), 2)
+        self.assertEqual(filtered["suppressed_source_count"], 1)
+        self.assertEqual(filtered["suppressed_source_error_count"], 1)
+
     def test_apply_conversation_filters_matches_owner_and_lane(self):
         payload = {
             "events": [
@@ -357,6 +377,45 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["total_events"], 1)
         self.assertEqual(payload["filters"]["owner"], "codex")
+
+    def test_safe_conversations_snapshot_suppresses_unrelated_lane_source_failures(self):
+        cfg = mock.Mock()
+        cfg.conversation_log_file = pathlib.Path("/tmp/conversations.ndjson")
+        source_payload = {
+            "total_events": 2,
+            "events": [
+                {"owner": "codex", "lane_id": "lane-a", "event_type": "status", "content": "alpha"},
+                {"owner": "gemini", "lane_id": "lane-b", "event_type": "status", "content": "beta"},
+            ],
+            "owner_counts": {"codex": 1, "gemini": 1},
+            "sources": [
+                {"lane_id": "", "kind": "primary", "ok": True, "error": "", "event_count": 2},
+                {"lane_id": "lane-a", "kind": "lane", "ok": True, "error": "", "event_count": 1},
+                {
+                    "lane_id": "lane-b",
+                    "kind": "lane",
+                    "ok": False,
+                    "error": "lane-b stream unavailable",
+                    "event_count": 0,
+                },
+            ],
+            "partial": True,
+            "ok": False,
+            "errors": ["lane-b stream unavailable"],
+        }
+        with mock.patch("orxaq_autonomy.dashboard.conversations_snapshot", return_value=source_payload):
+            payload = dashboard._safe_conversations_snapshot(
+                cfg,
+                lines=200,
+                lane_id="lane-a",
+            )
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["partial"])
+        self.assertEqual(payload["total_events"], 1)
+        self.assertEqual(payload["events"][0]["lane_id"], "lane-a")
+        self.assertEqual(payload["suppressed_source_error_count"], 1)
+        self.assertEqual(len(payload["sources"]), 2)
+        self.assertEqual(payload["errors"], [])
 
     def test_safe_lane_action_returns_structured_error(self):
         cfg = mock.Mock()

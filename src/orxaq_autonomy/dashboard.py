@@ -996,6 +996,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       const events = payload.events || [];
       const ownerCounts = payload.owner_counts || {{}};
       const sourceReports = payload.sources || [];
+      const suppressedSourceErrors = Number(payload.suppressed_source_error_count || 0);
       const filters = payload.filters || {{}};
       const failedSources = sourceReports.filter((source) => !source.ok).length;
       const healthySources = Math.max(sourceReports.length - failedSources, 0);
@@ -1008,6 +1009,9 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (filters.contains) filterParts.push(`contains=${{filters.contains}}`);
       if (Number(filters.tail || 0) > 0) filterParts.push(`tail=${{filters.tail}}`);
       const filterLabel = filterParts.length ? ` · filters: ${{filterParts.join(", ")}}` : "";
+      const suppressedLabel = suppressedSourceErrors > 0
+        ? ` · suppressed_source_errors=${{suppressedSourceErrors}}`
+        : "";
       const sourceSummary = sourceReports.length
         ? sourceReports.map((source) => {{
             const item = source || {{}};
@@ -1023,7 +1027,7 @@ def _dashboard_html(refresh_sec: int) -> str:
           }}).join(" | ")
         : "none reported";
       byId("conversationSummary").textContent =
-        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{healthySources}}/${{sourceReports.length}} healthy${{partial}}${{errors}}${{filterLabel}}`;
+        `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{healthySources}}/${{sourceReports.length}} healthy${{partial}}${{errors}}${{filterLabel}}${{suppressedLabel}}`;
       byId("conversationSources").textContent = `source health: ${{sourceSummary}}`;
       if (!events.length) {{
         byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
@@ -1666,6 +1670,70 @@ def _apply_conversation_filters(
     return result
 
 
+def _filter_conversation_payload_for_lane(
+    payload: dict[str, Any],
+    *,
+    lane_id: str = "",
+) -> dict[str, Any]:
+    requested_lane = lane_id.strip()
+    source_reports = payload.get("sources", [])
+    if not isinstance(source_reports, list):
+        source_reports = []
+    normalized_sources = [item for item in source_reports if isinstance(item, dict)]
+
+    if not requested_lane:
+        result = dict(payload)
+        result["sources"] = normalized_sources
+        result["suppressed_sources"] = []
+        result["suppressed_source_count"] = 0
+        result["suppressed_source_errors"] = []
+        result["suppressed_source_error_count"] = 0
+        return result
+
+    retained_sources: list[dict[str, Any]] = []
+    suppressed_sources: list[dict[str, Any]] = []
+    for source in normalized_sources:
+        source_lane = str(source.get("lane_id", "")).strip()
+        if source_lane and source_lane != requested_lane:
+            suppressed_sources.append(source)
+            continue
+        retained_sources.append(source)
+
+    retained_errors = [
+        str(source.get("error", "")).strip()
+        for source in retained_sources
+        if str(source.get("error", "")).strip()
+    ]
+    suppressed_errors = [
+        str(source.get("error", "")).strip()
+        for source in suppressed_sources
+        if str(source.get("error", "")).strip()
+    ]
+
+    payload_errors = payload.get("errors", [])
+    if not isinstance(payload_errors, list):
+        payload_errors = []
+    for entry in payload_errors:
+        message = str(entry).strip()
+        if not message or message in suppressed_errors:
+            continue
+        if message not in retained_errors:
+            retained_errors.append(message)
+
+    retained_source_failures = any(not bool(source.get("ok", False)) for source in retained_sources)
+    partial = retained_source_failures or bool(retained_errors)
+    filtered = dict(payload)
+    filtered["sources"] = retained_sources
+    filtered["errors"] = retained_errors
+    filtered["ok"] = not partial
+    filtered["partial"] = partial
+    filtered["suppressed_sources"] = suppressed_sources
+    filtered["suppressed_source_count"] = len(suppressed_sources)
+    filtered["suppressed_source_errors"] = suppressed_errors
+    filtered["suppressed_source_error_count"] = len(suppressed_errors)
+    return filtered
+
+
 def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") -> dict[str, Any]:
     normalized_action = action.strip().lower()
     normalized_lane = lane_id.strip() or None
@@ -2066,19 +2134,11 @@ def _safe_conversations_snapshot(
 ) -> dict:
     try:
         payload = conversations_snapshot(config, lines=lines, include_lanes=include_lanes)
-        return _apply_conversation_filters(
-            payload,
-            owner=owner,
-            lane_id=lane_id,
-            event_type=event_type,
-            contains=contains,
-            tail=tail,
-        )
     except Exception as err:
         message = str(err)
         source_path = Path(config.conversation_log_file)
         source_missing = not source_path.exists()
-        return {
+        payload = {
             "timestamp": "",
             "conversation_files": [str(source_path)],
             "total_events": 0,
@@ -2112,6 +2172,15 @@ def _safe_conversations_snapshot(
                 "tail": max(0, int(tail)),
             },
         }
+    payload = _filter_conversation_payload_for_lane(payload, lane_id=lane_id)
+    return _apply_conversation_filters(
+        payload,
+        owner=owner,
+        lane_id=lane_id,
+        event_type=event_type,
+        contains=contains,
+        tail=tail,
+    )
 
 
 def _bind_server_with_port_scan(
