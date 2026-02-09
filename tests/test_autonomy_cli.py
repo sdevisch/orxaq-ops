@@ -761,6 +761,33 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["suppressed_errors"], [])
             self.assertIn("lane status source unavailable", data["errors"][0])
 
+    def test_lanes_status_with_lane_filter_keeps_colon_global_errors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "ok": False,
+                    "partial": True,
+                    "errors": ["lane status source: timeout", "lane-b: heartbeat stale"],
+                    "lanes": [
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"},
+                        {"id": "lane-b", "owner": "gemini", "running": True, "pid": 200, "health": "stale"},
+                    ],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertFalse(data["ok"])
+            self.assertTrue(data["partial"])
+            self.assertEqual(data["errors"], ["lane status source: timeout"])
+            self.assertEqual(data["suppressed_errors"], ["lane-b: heartbeat stale"])
+
     def test_lane_status_alias_command_with_lane_filter(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

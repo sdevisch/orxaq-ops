@@ -198,6 +198,23 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(filtered["suppressed_errors"], [])
         self.assertIn("lane status source unavailable", filtered["errors"][0])
 
+    def test_filter_lane_status_payload_keeps_colon_global_errors_for_requested_lane(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": False,
+            "partial": True,
+            "errors": ["lane status source: timeout", "lane-b: heartbeat stale"],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+                {"id": "lane-b", "owner": "gemini", "running": True, "health": "stale"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="lane-a")
+        self.assertFalse(filtered["ok"])
+        self.assertTrue(filtered["partial"])
+        self.assertEqual(filtered["errors"], ["lane status source: timeout"])
+        self.assertEqual(filtered["suppressed_errors"], ["lane-b: heartbeat stale"])
+
     def test_safe_conversations_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()
         cfg.conversation_log_file = pathlib.Path("/tmp/conversations.ndjson")

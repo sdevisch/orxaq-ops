@@ -1715,7 +1715,12 @@ def _lane_action_http_status(payload: dict[str, Any]) -> HTTPStatus:
     return HTTPStatus.SERVICE_UNAVAILABLE
 
 
-def _lane_error_matches_requested_lane(error: str, requested_lane: str) -> bool:
+def _lane_error_matches_requested_lane(
+    error: str,
+    requested_lane: str,
+    *,
+    known_lane_ids: set[str] | None = None,
+) -> bool:
     message = str(error).strip()
     lane = requested_lane.strip().lower()
     if not message or not lane:
@@ -1723,7 +1728,11 @@ def _lane_error_matches_requested_lane(error: str, requested_lane: str) -> bool:
     if ":" not in message:
         return True
     prefix = message.split(":", 1)[0].strip().lower()
-    return prefix == lane
+    if prefix == lane:
+        return True
+    if known_lane_ids and prefix in known_lane_ids:
+        return False
+    return True
 
 
 def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -> dict[str, Any]:
@@ -1731,6 +1740,11 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
     lane_items = payload.get("lanes", [])
     if not isinstance(lane_items, list):
         lane_items = []
+    known_lane_ids = {
+        str(item.get("id", "")).strip().lower()
+        for item in lane_items
+        if isinstance(item, dict) and str(item.get("id", "")).strip()
+    }
     lane_errors = payload.get("errors", [])
     if not isinstance(lane_errors, list):
         lane_errors = []
@@ -1740,7 +1754,9 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
     if requested_lane:
         lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == requested_lane]
         lane_specific_errors = [
-            item for item in normalized_errors if _lane_error_matches_requested_lane(item, requested_lane)
+            item
+            for item in normalized_errors
+            if _lane_error_matches_requested_lane(item, requested_lane, known_lane_ids=known_lane_ids)
         ]
         suppressed_errors = [item for item in normalized_errors if item not in lane_specific_errors]
         if lane_items:
