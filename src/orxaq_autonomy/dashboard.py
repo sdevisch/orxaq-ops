@@ -501,6 +501,10 @@ def _dashboard_html(refresh_sec: int) -> str:
       contains: "",
       tail: 0,
     }};
+    let lastSuccessfulMonitor = null;
+    let lastSuccessfulLanePayload = null;
+    let lastSuccessfulConversationPayload = null;
+    let lastSuccessfulDawPayload = null;
 
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
@@ -634,6 +638,78 @@ def _dashboard_html(refresh_sec: int) -> str:
         owner_counts: ownerCounts,
         total_events: filtered.length,
         unfiltered_total_events: allEvents.length,
+      }};
+    }}
+    function fallbackConversationPayloadFromMonitor(monitorPayload, endpointError) {{
+      const monitorRecentEvents = (
+        monitorPayload &&
+        monitorPayload.conversations &&
+        Array.isArray(monitorPayload.conversations.recent_events)
+      ) ? monitorPayload.conversations.recent_events : [];
+      const monitorLatestEvent = (
+        monitorPayload &&
+        monitorPayload.conversations &&
+        monitorPayload.conversations.latest
+      ) ? monitorPayload.conversations.latest : null;
+      const fallbackEvents = monitorRecentEvents.length
+        ? monitorRecentEvents
+        : (monitorLatestEvent ? [monitorLatestEvent] : []);
+      const fallbackFilters = {{
+        owner: conversationFilters.owner,
+        lane: conversationFilters.lane,
+        event_type: conversationFilters.event_type,
+        contains: conversationFilters.contains,
+        tail: conversationFilters.tail,
+      }};
+      const filteredFallback = filterFallbackConversationEvents(fallbackEvents, fallbackFilters);
+      const errorText = String(endpointError || "conversation endpoint unavailable");
+      if (monitorPayload && monitorPayload.conversations) {{
+        return {{
+          total_events: filteredFallback.total_events,
+          owner_counts: filteredFallback.owner_counts,
+          events: filteredFallback.events,
+          sources: Array.isArray(monitorPayload.conversations.sources) ? monitorPayload.conversations.sources : [],
+          partial: true,
+          ok: false,
+          errors: [errorText],
+          filters: fallbackFilters,
+          unfiltered_total_events: filteredFallback.unfiltered_total_events,
+        }};
+      }}
+      return {{
+        total_events: 0,
+        owner_counts: {{}},
+        events: [],
+        sources: [],
+        partial: true,
+        ok: false,
+        errors: [errorText],
+        filters: fallbackFilters,
+        unfiltered_total_events: 0,
+      }};
+    }}
+    function fallbackConversationPayloadFromCache(cachePayload, endpointError) {{
+      const cached = (cachePayload && typeof cachePayload === "object") ? cachePayload : {{}};
+      const fallbackFilters = {{
+        owner: conversationFilters.owner,
+        lane: conversationFilters.lane,
+        event_type: conversationFilters.event_type,
+        contains: conversationFilters.contains,
+        tail: conversationFilters.tail,
+      }};
+      const cachedEvents = Array.isArray(cached.events) ? cached.events : [];
+      const filteredFallback = filterFallbackConversationEvents(cachedEvents, fallbackFilters);
+      const errors = [String(endpointError || "conversation endpoint unavailable"), "conversation data from stale cache"];
+      return {{
+        total_events: filteredFallback.total_events,
+        owner_counts: filteredFallback.owner_counts,
+        events: filteredFallback.events,
+        sources: Array.isArray(cached.sources) ? cached.sources : [],
+        partial: true,
+        ok: false,
+        errors,
+        filters: fallbackFilters,
+        unfiltered_total_events: filteredFallback.unfiltered_total_events,
       }};
     }}
     function syncConversationInputs() {{
@@ -1135,63 +1211,54 @@ def _dashboard_html(refresh_sec: int) -> str:
         fetchJson('/api/daw?window_sec=120'),
       ]);
 
-      let monitorPayload = monitorResult.payload;
-      let effectiveConversationPayload = null;
-      const laneTarget = String(byId("laneTarget").value || "").trim();
-      const lanePayload = laneResult.ok
-        ? laneResult.payload
-        : fallbackLanePayloadFromMonitor(monitorPayload, laneTarget, laneResult.error);
+      if (monitorResult.ok && monitorResult.payload) {{
+        lastSuccessfulMonitor = monitorResult.payload;
+      }}
+      const monitorPayload = monitorResult.payload;
+      const monitorFallbackPayload = (monitorResult.ok && monitorPayload)
+        ? monitorPayload
+        : lastSuccessfulMonitor;
 
-      if (convResult.ok && convResult.payload) {{
-        effectiveConversationPayload = convResult.payload;
+      const laneTarget = String(byId("laneTarget").value || "").trim();
+      let lanePayload = null;
+      if (laneResult.ok && laneResult.payload) {{
+        lanePayload = laneResult.payload;
+        lastSuccessfulLanePayload = laneResult.payload;
+      }} else if (monitorFallbackPayload) {{
+        lanePayload = fallbackLanePayloadFromMonitor(monitorFallbackPayload, laneTarget, laneResult.error);
+      }} else if (lastSuccessfulLanePayload) {{
+        lanePayload = fallbackLanePayloadFromMonitor(
+          {{ lanes: lastSuccessfulLanePayload }},
+          laneTarget,
+          `stale cache used: ${{String(laneResult.error || "lane endpoint unavailable")}}`,
+        );
       }} else {{
-        const monitorRecentEvents = (
-          monitorPayload &&
-          monitorPayload.conversations &&
-          Array.isArray(monitorPayload.conversations.recent_events)
-        ) ? monitorPayload.conversations.recent_events : [];
-        const monitorLatestEvent = (
-          monitorPayload &&
-          monitorPayload.conversations &&
-          monitorPayload.conversations.latest
-        ) ? monitorPayload.conversations.latest : null;
-        const fallbackEvents = monitorRecentEvents.length
-          ? monitorRecentEvents
-          : (monitorLatestEvent ? [monitorLatestEvent] : []);
-        const fallbackFilters = {{
-          owner: conversationFilters.owner,
-          lane: conversationFilters.lane,
-          event_type: conversationFilters.event_type,
-          contains: conversationFilters.contains,
-          tail: conversationFilters.tail,
-        }};
-        const filteredFallback = filterFallbackConversationEvents(fallbackEvents, fallbackFilters);
-        const fallbackConv = monitorPayload && monitorPayload.conversations
-          ? {{
-              total_events: filteredFallback.total_events,
-              owner_counts: filteredFallback.owner_counts,
-              events: filteredFallback.events,
-              sources: Array.isArray(monitorPayload.conversations.sources) ? monitorPayload.conversations.sources : [],
-              partial: true,
-              errors: [convResult.error || 'conversation endpoint unavailable'],
-              filters: fallbackFilters,
-              unfiltered_total_events: filteredFallback.unfiltered_total_events,
-            }}
-          : {{
-              total_events: 0,
-              owner_counts: {{}},
-              events: [],
-              sources: [],
-              partial: true,
-              errors: [convResult.error || 'conversation endpoint unavailable'],
-              filters: fallbackFilters,
-              unfiltered_total_events: 0,
-            }};
-        effectiveConversationPayload = fallbackConv;
+        lanePayload = fallbackLanePayloadFromMonitor(null, laneTarget, laneResult.error || "lane endpoint unavailable");
       }}
 
-      if (monitorResult.ok && monitorPayload) {{
-        render(monitorPayload, lanePayload, effectiveConversationPayload);
+      let effectiveConversationPayload = null;
+      if (convResult.ok && convResult.payload) {{
+        effectiveConversationPayload = convResult.payload;
+        lastSuccessfulConversationPayload = convResult.payload;
+      }} else if (monitorFallbackPayload) {{
+        effectiveConversationPayload = fallbackConversationPayloadFromMonitor(monitorFallbackPayload, convResult.error);
+      }} else if (lastSuccessfulConversationPayload) {{
+        effectiveConversationPayload = fallbackConversationPayloadFromCache(lastSuccessfulConversationPayload, convResult.error);
+      }} else {{
+        effectiveConversationPayload = fallbackConversationPayloadFromCache(null, convResult.error);
+      }}
+
+      let snapshotForRender = monitorFallbackPayload;
+      if (snapshotForRender && !monitorResult.ok) {{
+        const endpointError = String(monitorResult.error || "monitor endpoint unavailable");
+        snapshotForRender = {{
+          ...snapshotForRender,
+          latest_log_line: `monitor endpoint unavailable (${{endpointError}}); using cached snapshot`,
+        }};
+      }}
+
+      if (snapshotForRender) {{
+        render(snapshotForRender, lanePayload, effectiveConversationPayload);
       }} else {{
         byId("latestLog").textContent = `monitor fetch failed: ${{monitorResult.error}}`;
         byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
@@ -1212,7 +1279,10 @@ def _dashboard_html(refresh_sec: int) -> str:
         filters: {{}},
       }});
       if (dawResult.ok && dawResult.payload) {{
+        lastSuccessfulDawPayload = dawResult.payload;
         renderDaw(dawResult.payload);
+      }} else if (lastSuccessfulDawPayload) {{
+        renderDaw(lastSuccessfulDawPayload);
       }} else {{
         renderDaw({{
           tracks: [],
@@ -1224,7 +1294,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         }});
       }}
 
-      const diagnosticsPayload = (monitorPayload && monitorPayload.diagnostics) || {{}};
+      const diagnosticsPayload = (snapshotForRender && snapshotForRender.diagnostics) || {{}};
       renderDiagnostics(diagnosticsPayload, {{
         monitor_endpoint: monitorResult.ok ? "" : monitorResult.error,
         conversations_endpoint: convResult.ok ? "" : convResult.error,
