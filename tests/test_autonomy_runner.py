@@ -265,6 +265,37 @@ class SchedulingTests(unittest.TestCase):
         self.assertTrue(entry["not_before"])
         self.assertEqual(entry["last_error"], "")
 
+    def test_recycle_stalled_tasks_for_continuous_mode_reopens_blocked(self):
+        task = runner.Task(
+            id="task-b",
+            owner="claude",
+            priority=1,
+            title="B",
+            description="B",
+            depends_on=[],
+            acceptance=[],
+        )
+        state = {
+            "task-b": {
+                "status": runner.STATUS_BLOCKED,
+                "attempts": 8,
+                "retryable_failures": 3,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "blocked",
+                "last_error": "permission deadlock",
+                "owner": "claude",
+            }
+        }
+        reopened = runner.recycle_stalled_tasks_for_continuous_mode(state, [task], delay_sec=60)
+        self.assertEqual(reopened, ["task-b"])
+        entry = state["task-b"]
+        self.assertEqual(entry["status"], runner.STATUS_PENDING)
+        self.assertEqual(entry["attempts"], 0)
+        self.assertEqual(entry["retryable_failures"], 0)
+        self.assertTrue(entry["not_before"])
+        self.assertIn("reopened blocked task", entry["last_error"])
+
 
 class RuntimeSafeguardTests(unittest.TestCase):
     def test_build_subprocess_env_sets_non_interactive_defaults(self):
@@ -523,6 +554,7 @@ class RuntimeSafeguardTests(unittest.TestCase):
                 (True, "true"),
                 (True, "origin/main"),
                 (True, "2 0"),
+                (True, "codex/autonomy-orxaq"),
                 (True, "0 0"),
             ],
         ), mock.patch.object(
@@ -843,6 +875,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "done")
         self.assertEqual(len(captured), 1)
         cmd = captured[0]
+        self.assertIn("-p", cmd)
         self.assertIn("--print", cmd)
         self.assertIn("--permission-mode", cmd)
         self.assertIn("bypassPermissions", cmd)
@@ -857,6 +890,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
                 (True, "true"),
                 (True, "origin/main"),
                 (True, "2 0"),
+                (True, "codex/gemini-orxaq"),
             ],
         ), mock.patch.object(
             runner,
@@ -868,7 +902,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertIn("auto-pushed 2 commit", details)
         run_command.assert_called_once()
 
-    def test_auto_push_repo_if_ahead_falls_back_to_no_verify(self):
+    def test_auto_push_repo_if_ahead_switches_from_protected_branch(self):
         with mock.patch.object(
             runner,
             "_git_output",
@@ -876,21 +910,97 @@ class AgentExecutionHardeningTests(unittest.TestCase):
                 (True, "true"),
                 (True, "origin/main"),
                 (True, "1 0"),
+                (True, "main"),
+                (True, "main"),
+                (True, "codex/gemini-orxaq"),
             ],
         ), mock.patch.object(
             runner,
             "run_command",
             side_effect=[
-                runner.subprocess.CompletedProcess(["git", "push"], returncode=1, stdout="", stderr="pre-push failed"),
                 runner.subprocess.CompletedProcess(
-                    ["git", "push", "--no-verify"], returncode=0, stdout="", stderr=""
+                    ["git", "push"],
+                    returncode=1,
+                    stdout="",
+                    stderr="GH013: Changes must be made through a pull request.",
+                ),
+                runner.subprocess.CompletedProcess(["git", "checkout", "codex/gemini-orxaq"], returncode=1, stdout="", stderr=""),
+                runner.subprocess.CompletedProcess(["git", "checkout", "-b", "codex/gemini-orxaq"], returncode=0, stdout="", stderr=""),
+                runner.subprocess.CompletedProcess(
+                    ["git", "push", "-u", "origin", "codex/gemini-orxaq"], returncode=0, stdout="", stderr=""
                 ),
             ],
-        ) as run_command:
-            status, details = runner.auto_push_repo_if_ahead(pathlib.Path("/tmp/repo"))
+        ):
+            status, details = runner.auto_push_repo_if_ahead(pathlib.Path("/tmp/repo"), owner="gemini")
         self.assertEqual(status, "pushed")
-        self.assertIn("--no-verify", details)
-        self.assertEqual(run_command.call_count, 2)
+        self.assertIn("codex/gemini-orxaq", details)
+
+    def test_push_with_recovery_updates_moved_remote_and_retries(self):
+        repo = pathlib.Path("/tmp/repo")
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            return_value=(True, "codex/autonomy-orxaq"),
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(
+                    ["git", "push"],
+                    returncode=1,
+                    stdout="",
+                    stderr="remote: This repository moved. Please use the new location: https://github.com/Orxaq/orxaq.git",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "remote", "set-url", "origin", "https://github.com/Orxaq/orxaq.git"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+                runner.subprocess.CompletedProcess(["git", "push"], returncode=0, stdout="", stderr=""),
+            ],
+        ):
+            ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="codex")
+        self.assertTrue(ok)
+        self.assertIn("updating origin", details)
+
+    def test_push_with_recovery_handles_protected_branch_on_no_verify_path(self):
+        repo = pathlib.Path("/tmp/repo")
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            side_effect=[
+                (True, "main"),
+                (True, "main"),
+                (True, "main"),
+                (True, "codex/gemini-repo"),
+            ],
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(
+                    ["git", "push"], returncode=1, stdout="", stderr="hook failed before remote check"
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "push", "--no-verify"],
+                    returncode=1,
+                    stdout="",
+                    stderr="GH013: Changes must be made through a pull request.",
+                ),
+                runner.subprocess.CompletedProcess(["git", "checkout", "codex/gemini-repo"], returncode=1, stdout="", stderr=""),
+                runner.subprocess.CompletedProcess(["git", "checkout", "-b", "codex/gemini-repo"], returncode=0, stdout="", stderr=""),
+                runner.subprocess.CompletedProcess(
+                    ["git", "push", "--no-verify", "-u", "origin", "codex/gemini-repo"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+            ],
+        ):
+            ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="gemini")
+        self.assertTrue(ok)
+        self.assertIn("protected-branch switch", details)
 
 
 if __name__ == "__main__":
