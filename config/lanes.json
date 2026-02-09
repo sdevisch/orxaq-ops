@@ -558,6 +558,385 @@
         "README.md",
         "PROJECT_HISTORY.md"
       ]
+    },
+    {
+      "id": "codex-rpa-url-safety-hardening",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Cost-efficient Codex lane for RPA URL safety hardening in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_rpa_url_safety_hardening_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_rpa/src/automation.py",
+        "tests/unit/test_rpa_automation.py",
+        "tests/unit/test_rpa_workflow.py"
+      ]
+    },
+    {
+      "id": "codex-rpa-workflow-execution-hardening",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Cost-efficient Codex lane for RPA workflow execution hardening in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_rpa_workflow_execution_hardening_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_rpa/src/workflow.py",
+        "tests/unit/test_rpa_workflow.py",
+        "tests/integration/test_local_project_workflow.py"
+      ]
+    },
+    {
+      "id": "codex-rpa-orchestrator-bridge-hardening",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Cost-efficient Codex lane for mesh/orchestrator RPA bridge hardening in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_rpa_orchestrator_bridge_hardening_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "resilience_config": {
+        "retry_policy": {
+          "max_retries": 5,
+          "initial_backoff_ms": 50,
+          "max_backoff_ms": 5000,
+          "backoff_multiplier": 2.0
+        },
+        "circuit_breaker": {
+          "failure_threshold": 3,
+          "reset_timeout_ms": 30000
+        },
+        "error_classification": {
+          "transient_errors": [
+            "ConnectionError",
+            "TimeoutError",
+            "NetworkError"
+          ],
+          "fatal_errors": [
+            "AuthenticationError",
+            "ConfigurationError"
+          ]
+        }
+      },
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_mesh/src/orchestrator.py",
+        "tests/unit/test_mesh_api.py",
+        "tests/integration/test_orchestrator.py"
+      ]
+    },
+    {
+      "id": "codex-rpa-fill-form-hardening",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Cost-efficient Codex lane for RPA fill-form hardening in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_rpa_fill_form_hardening_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_rpa/src/workflow.py",
+        "tests/unit/test_rpa_fill_form.py",
+        "tests/unit/test_rpa_workflow.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-url-adversarial-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for RPA URL adversarial coverage in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_url_adversarial_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_rpa_safety.py",
+        "tests/unit/test_rpa_safety_adversarial.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-workflow-spec-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for RPA workflow-spec regression coverage in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_workflow_spec_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_rpa_workflow.py",
+        "tests/unit/test_rpa_regression.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-session-lifecycle-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for RPA session lifecycle coverage in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_session_lifecycle_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_rpa_automation.py",
+        "tests/unit/test_rpa_workflow.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-fill-form-regression-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for RPA fill-form regression coverage in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_fill_form_regression_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_rpa_fill_form.py",
+        "tests/unit/test_rpa_regression.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-mesh-bridge-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for mesh-to-RPA bridge regression tests in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_mesh_bridge_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_mesh_cli_rpa_regression.py",
+        "tests/unit/test_mesh_api.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-cli-integration-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for RPA CLI integration coverage in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_cli_integration_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/integration/test_rpa_cli.py",
+        "tests/integration/test_cli_regression.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-lane-guard-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for RPA lane-guard regression coverage in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_lane_guard_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_mesh_cli_rpa_lane_guards.py",
+        "tests/integration/test_cli_guards.py"
+      ]
+    },
+    {
+      "id": "gemini-rpa-smoke-workflow-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Cost-efficient Gemini lane for fast RPA smoke workflows in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_smoke_workflow_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_cost_efficient_swarm.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "gemini_model": "gemini-2.0-flash",
+      "gemini_fallback_models": [
+        "gemini-2.0-flash"
+      ],
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": false,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/integration/test_local_project_workflow.py",
+        "tests/unit/test_rpa_regression.py"
+      ]
     }
   ]
 }
