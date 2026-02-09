@@ -122,7 +122,7 @@ Dashboard operator controls:
 - Lane runtime summary includes recovered lane count so operators can verify fallback coverage at a glance.
 - Conversation feed supports owner/lane/type/text filters and tail-limited inspection without leaving the UI.
 - API equivalents:
-  - `GET /api/lanes/action?action=ensure|start|stop&lane=<optional-lane-id>`
+  - `GET /api/lanes/action?action=status|ensure|start|stop&lane=<optional-lane-id>`
   - `GET /api/conversations?lines=200&owner=<owner>&lane=<lane-id>&event_type=<type>&contains=<text>&tail=<n>`
 
 4. Enable host keepalive for restart resilience.

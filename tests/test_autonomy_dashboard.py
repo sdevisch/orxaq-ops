@@ -1081,6 +1081,40 @@ class DashboardTests(unittest.TestCase):
         payload = dashboard._safe_lane_action(cfg, action="unknown", lane_id="lane-a")
         self.assertFalse(payload["ok"])
         self.assertIn("unsupported action", payload["error"])
+        self.assertEqual(payload["supported_actions"], ["status", "ensure", "start", "stop"])
+
+    def test_safe_lane_action_status_uses_lane_and_conversation_rollup(self):
+        cfg = mock.Mock()
+        lane_snapshot = {"ok": True, "lanes": []}
+        filtered_lane_payload = {"ok": True, "partial": False, "errors": [], "lanes": []}
+        conversation_payload = {"ok": True, "partial": False, "errors": [], "events": [], "sources": []}
+        augmented_payload = {"ok": False, "partial": True, "errors": ["lane status source unavailable"], "lanes": []}
+        with mock.patch(
+            "orxaq_autonomy.dashboard._safe_lane_status_snapshot",
+            return_value=lane_snapshot,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._filter_lane_status_payload",
+            return_value=filtered_lane_payload,
+        ) as filter_lane, mock.patch(
+            "orxaq_autonomy.dashboard._safe_conversations_snapshot",
+            return_value=conversation_payload,
+        ) as conversations, mock.patch(
+            "orxaq_autonomy.dashboard._augment_lane_payload_with_conversation_rollup",
+            return_value=augmented_payload,
+        ) as augment:
+            payload = dashboard._safe_lane_action(cfg, action="status", lane_id="lane-a")
+        filter_lane.assert_called_once_with(lane_snapshot, lane_id="lane-a")
+        conversations.assert_called_once_with(
+            cfg,
+            lines=200,
+            include_lanes=True,
+            lane_id="lane-a",
+        )
+        augment.assert_called_once_with(filtered_lane_payload, conversation_payload)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["partial"])
+        self.assertEqual(payload["action"], "status")
+        self.assertEqual(payload["lane"], "lane-a")
 
     def test_safe_lane_action_ensure_forwards_lane_id(self):
         cfg = mock.Mock()
@@ -1127,6 +1161,17 @@ class DashboardTests(unittest.TestCase):
 
     def test_lane_action_http_status_ok_when_action_succeeds(self):
         status = dashboard._lane_action_http_status({"ok": True})
+        self.assertEqual(status, HTTPStatus.OK)
+
+    def test_lane_action_http_status_ok_for_status_action_when_partial(self):
+        status = dashboard._lane_action_http_status(
+            {
+                "action": "status",
+                "ok": False,
+                "partial": True,
+                "errors": ["lane status source unavailable"],
+            }
+        )
         self.assertEqual(status, HTTPStatus.OK)
 
     def test_lane_action_http_status_bad_request_for_unsupported_action(self):

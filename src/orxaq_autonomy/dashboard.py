@@ -2358,6 +2358,21 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
     normalized_action = action.strip().lower()
     normalized_lane = lane_id.strip() or None
     try:
+        if normalized_action == "status":
+            payload = _filter_lane_status_payload(
+                _safe_lane_status_snapshot(config),
+                lane_id=normalized_lane or "",
+            )
+            conversation_payload = _safe_conversations_snapshot(
+                config,
+                lines=200,
+                include_lanes=True,
+                lane_id=normalized_lane or "",
+            )
+            payload = _augment_lane_payload_with_conversation_rollup(payload, conversation_payload)
+            payload["action"] = "status"
+            payload["lane"] = normalized_lane or ""
+            return payload
         if normalized_action == "ensure":
             payload = ensure_lanes_background(config, lane_id=normalized_lane)
             payload["action"] = "ensure"
@@ -2381,7 +2396,7 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
             "action": normalized_action,
             "lane": normalized_lane or "",
             "error": "unsupported action",
-            "supported_actions": ["ensure", "start", "stop"],
+            "supported_actions": ["status", "ensure", "start", "stop"],
         }
     except Exception as err:
         return {
@@ -2393,6 +2408,9 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
 
 
 def _lane_action_http_status(payload: dict[str, Any]) -> HTTPStatus:
+    action = str(payload.get("action", "")).strip().lower()
+    if action == "status" and not str(payload.get("error", "")).strip():
+        return HTTPStatus.OK
     if bool(payload.get("ok", False)):
         return HTTPStatus.OK
     error = str(payload.get("error", "")).strip().lower()
