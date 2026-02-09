@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import datetime as dt
 import unittest
 from unittest import mock
 
@@ -287,6 +288,124 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("runtime", snapshot)
             self.assertIn("effective_agents_running", snapshot["runtime"])
             self.assertIn("source", snapshot["progress"])
+
+    def test_monitor_snapshot_reports_completed_last_24h_from_task_done_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            conv_file = root / "artifacts" / "autonomy" / "custom_conversations.ndjson"
+            conv_file.parent.mkdir(parents=True, exist_ok=True)
+            now_utc = manager._now_utc()
+            recent_ts = (now_utc - dt.timedelta(hours=2)).isoformat()
+            old_ts = (now_utc - dt.timedelta(hours=30)).isoformat()
+            conv_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": recent_ts,
+                                "event_type": "task_done",
+                                "owner": "codex",
+                                "task_id": "task-a",
+                                "cycle": 1,
+                            }
+                        ),
+                        # Duplicate event should be deduplicated by key.
+                        json.dumps(
+                            {
+                                "timestamp": recent_ts,
+                                "event_type": "task_done",
+                                "owner": "codex",
+                                "task_id": "task-a",
+                                "cycle": 1,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": recent_ts,
+                                "event_type": "task_done",
+                                "owner": "gemini",
+                                "task_id": "task-b",
+                                "cycle": 2,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": old_ts,
+                                "event_type": "task_done",
+                                "owner": "codex",
+                                "task_id": "old-task",
+                                "cycle": 3,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": recent_ts,
+                                "event_type": "task_blocked",
+                                "owner": "codex",
+                                "task_id": "blocked-task",
+                                "cycle": 4,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"ok": True, "errors": [], "running_count": 0, "total_count": 0, "lanes": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 0,
+                    "events": [],
+                    "owner_counts": {},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [
+                        {
+                            "path": str(conv_file),
+                            "resolved_path": str(conv_file),
+                            "kind": "primary",
+                            "resolved_kind": "primary",
+                            "lane_id": "",
+                            "owner": "",
+                            "ok": True,
+                            "missing": False,
+                            "recoverable_missing": False,
+                            "fallback_used": False,
+                            "error": "",
+                            "event_count": 5,
+                        }
+                    ],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            progress = snapshot["progress"]
+            self.assertEqual(progress["completed_last_24h"], 2)
+            self.assertEqual(progress["completed_last_24h_unique_tasks"], 2)
+            self.assertEqual(progress["completed_last_24h_by_owner"]["codex"], 1)
+            self.assertEqual(progress["completed_last_24h_by_owner"]["gemini"], 1)
+            self.assertEqual(progress["completed_last_24h_sources_scanned"], 1)
+            self.assertEqual(progress["completed_last_24h_errors"], [])
+            self.assertTrue(snapshot["diagnostics"]["sources"]["completed_last_24h"]["ok"])
 
     def test_monitor_snapshot_reports_handoff_counts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1741,7 +1860,12 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["ok"])
             self.assertTrue(snapshot["partial"])
             self.assertIn("lane_specs: lane-b", snapshot["errors"][0])
-            self.assertTrue(any(item.get("kind") == "lane_config" and item.get("lane_id") == "lane-b" for item in snapshot["sources"]))
+            lane_config_source = next(
+                item
+                for item in snapshot["sources"]
+                if item.get("kind") == "lane_config" and item.get("lane_id") == "lane-b"
+            )
+            self.assertEqual(lane_config_source["owner"], "bad-owner")
 
     def test_conversations_snapshot_falls_back_to_lane_events_when_conversation_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -3055,6 +3179,43 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["owner_counts"]["gemini"]["total"], 1)
             self.assertIn("lane source unavailable", snapshot["errors"][0])
 
+    def test_lane_status_fallback_snapshot_preserves_owner_for_invalid_lane_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "unsupported-owner",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            snapshot = manager.lane_status_fallback_snapshot(cfg, error="lane source unavailable")
+            invalid_lane = next(item for item in snapshot["lanes"] if item["id"] == "lane-b")
+            self.assertEqual(invalid_lane["owner"], "unsupported-owner")
+            self.assertEqual(snapshot["owner_counts"]["unsupported-owner"]["total"], 1)
+
     def test_lane_status_snapshot_keeps_valid_lane_when_another_lane_is_invalid(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -3094,7 +3255,7 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("lane-b", lane_ids)
             invalid_lane = next(item for item in snapshot["lanes"] if item["id"] == "lane-b")
             self.assertEqual(invalid_lane["source"], "lane_config")
-            self.assertEqual(invalid_lane["owner"], "unknown")
+            self.assertEqual(invalid_lane["owner"], "unsupported-owner")
             self.assertEqual(invalid_lane["health"], "error")
             self.assertFalse(snapshot["ok"])
             self.assertTrue(snapshot["partial"])

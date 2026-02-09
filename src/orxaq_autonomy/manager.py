@@ -1906,6 +1906,19 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         conversation_owner_counts = {}
     conversation_partial = bool(conv.get("partial", False)) or bool(conversation_errors)
     conversation_ok = bool(conv.get("ok", False)) and not conversation_partial
+    task_done_24h = _task_done_events_last_24h(normalized_conv_sources)
+    _mark_source("completed_last_24h", bool(task_done_24h.get("ok", False)), _error_text(task_done_24h.get("errors", [])))
+    progress["completed_last_24h"] = _int_value(task_done_24h.get("completed_events", 0), 0)
+    progress["completed_last_24h_unique_tasks"] = _int_value(task_done_24h.get("unique_task_count", 0), 0)
+    progress["completed_last_24h_by_owner"] = (
+        dict(task_done_24h.get("by_owner", {})) if isinstance(task_done_24h.get("by_owner", {}), dict) else {}
+    )
+    progress["completed_last_24h_window_start"] = str(task_done_24h.get("window_start", ""))
+    progress["completed_last_24h_window_end"] = str(task_done_24h.get("window_end", ""))
+    progress["completed_last_24h_sources_scanned"] = _int_value(task_done_24h.get("files_scanned", 0), 0)
+    progress["completed_last_24h_errors"] = list(task_done_24h.get("errors", [])) if isinstance(
+        task_done_24h.get("errors", []), list
+    ) else []
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
     try:
         response_metrics = _response_metrics_snapshot(config, lane_items)
@@ -2519,7 +2532,11 @@ def _lane_load_error_entries(errors: list[str]) -> list[dict[str, str]]:
             prefix = message.split(":", 1)[0].strip()
             if prefix:
                 lane_label = prefix
-        out.append({"id": lane_label, "error": message, "source": "lane_config"})
+        owner = "unknown"
+        owner_match = re.search(r"unsupported\s+lane\s+owner\s+['\"]([^'\"]+)['\"]", message, flags=re.IGNORECASE)
+        if owner_match:
+            owner = owner_match.group(1).strip() or "unknown"
+        out.append({"id": lane_label, "owner": owner, "error": message, "source": "lane_config"})
     return out
 
 
@@ -2763,13 +2780,14 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
 
     for entry in _lane_load_error_entries(load_errors):
         lane_id = str(entry.get("id", "lane_config")).strip() or "lane_config"
+        lane_owner = str(entry.get("owner", "unknown")).strip() or "unknown"
         runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
         lane_error = str(entry.get("error", "lane configuration error")).strip() or "lane configuration error"
         snapshots.append(
             {
                 "id": lane_id,
                 "enabled": False,
-                "owner": "unknown",
+                "owner": lane_owner,
                 "description": "lane configuration load error",
                 "running": False,
                 "pid": None,
@@ -2954,13 +2972,14 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
             )
     for entry in _lane_load_error_entries(load_errors):
         lane_id = str(entry.get("id", "lane_config")).strip() or "lane_config"
+        lane_owner = str(entry.get("owner", "unknown")).strip() or "unknown"
         message = str(entry.get("error", "lane configuration error")).strip() or "lane configuration error"
         runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
         snapshots.append(
             {
                 "id": lane_id,
                 "enabled": False,
-                "owner": "unknown",
+                "owner": lane_owner,
                 "description": "lane configuration load error",
                 "running": False,
                 "pid": None,
@@ -3509,6 +3528,79 @@ def _conversation_event_sort_key(item: dict[str, Any]) -> tuple[int, float, str]
     return (1, parsed.timestamp(), "")
 
 
+def _task_done_events_last_24h(source_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    now_utc = _now_utc()
+    window_start = now_utc - dt.timedelta(hours=24)
+    by_owner: dict[str, int] = {}
+    unique_tasks: set[tuple[str, str, str]] = set()
+    seen_events: set[tuple[str, str, str, str, str, str]] = set()
+    errors: list[str] = []
+    files_scanned = 0
+    completed_events = 0
+
+    for source in source_reports:
+        if not isinstance(source, dict):
+            continue
+        resolved_raw = str(source.get("resolved_path", "")).strip() or str(source.get("path", "")).strip()
+        if not resolved_raw:
+            continue
+        source_path = Path(resolved_raw)
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        files_scanned += 1
+        source_owner = str(source.get("owner", "")).strip() or "unknown"
+        source_lane_id = str(source.get("lane_id", "")).strip()
+        try:
+            with source_path.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        payload = json.loads(raw_line)
+                    except Exception:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    if str(payload.get("event_type", "")).strip().lower() != "task_done":
+                        continue
+                    parsed_ts = _parse_iso_timestamp(payload.get("timestamp"))
+                    if parsed_ts is None or parsed_ts < window_start or parsed_ts > now_utc:
+                        continue
+                    owner = str(payload.get("owner", "")).strip() or source_owner
+                    lane_id = str(payload.get("lane_id", "")).strip() or source_lane_id
+                    task_id = str(payload.get("task_id", "")).strip()
+                    cycle = str(payload.get("cycle", "")).strip()
+                    event_key = (
+                        str(source_path),
+                        parsed_ts.isoformat(),
+                        owner,
+                        lane_id,
+                        task_id,
+                        cycle,
+                    )
+                    if event_key in seen_events:
+                        continue
+                    seen_events.add(event_key)
+                    completed_events += 1
+                    by_owner[owner] = by_owner.get(owner, 0) + 1
+                    if task_id:
+                        unique_tasks.add((owner, lane_id, task_id))
+        except Exception as err:
+            errors.append(f"{source_path}: {err}")
+
+    return {
+        "window_start": window_start.isoformat(),
+        "window_end": now_utc.isoformat(),
+        "completed_events": completed_events,
+        "unique_task_count": len(unique_tasks),
+        "by_owner": by_owner,
+        "files_scanned": files_scanned,
+        "errors": errors,
+        "ok": len(errors) == 0,
+    }
+
+
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
     line_limit = max(1, min(2000, int(lines)))
     lane_owner_map: dict[str, str] = {}
@@ -3534,7 +3626,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                     "kind": "lane_config",
                     "resolved_kind": "lane_config",
                     "lane_id": str(lane_error.get("id", "")).strip(),
-                    "owner": "unknown",
+                    "owner": str(lane_error.get("owner", "unknown")).strip() or "unknown",
                     "ok": False,
                     "missing": False,
                     "recoverable_missing": False,
