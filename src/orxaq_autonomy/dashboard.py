@@ -1864,6 +1864,26 @@ def _filter_conversation_payload_for_lane(
             continue
         retained_sources.append(source)
 
+    # If lane-specific conversation source data is healthy, a failed
+    # primary/global source should not block lane-focused observability.
+    lane_source_healthy = any(
+        str(source.get("lane_id", "")).strip() == requested_lane and bool(source.get("ok", False))
+        for source in retained_sources
+    )
+    if lane_source_healthy:
+        lane_scoped_sources: list[dict[str, Any]] = []
+        for source in retained_sources:
+            source_lane = str(source.get("lane_id", "")).strip()
+            if source_lane:
+                lane_scoped_sources.append(source)
+                continue
+            source_kind = str(source.get("resolved_kind", source.get("kind", ""))).strip().lower()
+            if bool(source.get("ok", False)) or source_kind != "primary":
+                lane_scoped_sources.append(source)
+                continue
+            suppressed_sources.append(source)
+        retained_sources = lane_scoped_sources
+
     retained_errors = [
         str(source.get("error", "")).strip()
         for source in retained_sources

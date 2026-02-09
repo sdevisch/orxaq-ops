@@ -473,6 +473,52 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(len(payload["sources"]), 2)
         self.assertEqual(payload["errors"], [])
 
+    def test_safe_conversations_snapshot_suppresses_primary_failure_when_lane_source_is_healthy(self):
+        cfg = mock.Mock()
+        cfg.conversation_log_file = pathlib.Path("/tmp/conversations.ndjson")
+        source_payload = {
+            "total_events": 1,
+            "events": [
+                {"owner": "codex", "lane_id": "lane-a", "event_type": "status", "content": "alpha"},
+            ],
+            "owner_counts": {"codex": 1},
+            "sources": [
+                {
+                    "lane_id": "",
+                    "kind": "primary",
+                    "resolved_kind": "primary",
+                    "path": "/tmp/conversations.ndjson",
+                    "resolved_path": "/tmp/conversations.ndjson",
+                    "ok": False,
+                    "error": "primary stream unavailable",
+                    "event_count": 0,
+                },
+                {
+                    "lane_id": "lane-a",
+                    "kind": "lane",
+                    "resolved_kind": "lane",
+                    "path": "/tmp/lanes/lane-a/conversations.ndjson",
+                    "resolved_path": "/tmp/lanes/lane-a/conversations.ndjson",
+                    "ok": True,
+                    "error": "",
+                    "event_count": 1,
+                },
+            ],
+            "partial": True,
+            "ok": False,
+            "errors": ["/tmp/conversations.ndjson: primary stream unavailable"],
+        }
+        with mock.patch("orxaq_autonomy.dashboard.conversations_snapshot", return_value=source_payload):
+            payload = dashboard._safe_conversations_snapshot(cfg, lines=200, lane_id="lane-a")
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["partial"])
+        self.assertEqual(payload["errors"], [])
+        self.assertEqual(payload["total_events"], 1)
+        self.assertEqual(payload["suppressed_source_count"], 1)
+        self.assertEqual(len(payload["sources"]), 1)
+        self.assertEqual(payload["sources"][0]["lane_id"], "lane-a")
+        self.assertIn("primary stream unavailable", " ".join(payload["suppressed_source_errors"]))
+
     def test_lane_conversation_rollup_tracks_latest_event_and_source_health(self):
         payload = {
             "events": [
