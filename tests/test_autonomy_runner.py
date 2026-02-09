@@ -964,6 +964,39 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertIn("codex/gemini-repo", details)
         self.assertIn("codex/fix-remote", details)
 
+    def test_ensure_pushable_branch_force_switches_to_unique_branch_when_target_rejected(self):
+        repo = pathlib.Path("/tmp/repo")
+        with mock.patch.object(
+            runner,
+            "_current_branch",
+            return_value=(True, "codex/gemini-repo"),
+        ), mock.patch.object(
+            runner,
+            "_unique_autonomy_branch_name",
+            return_value="codex/gemini-repo--r123",
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "codex/gemini-repo--r123"],
+                    returncode=1,
+                    stdout="",
+                    stderr="did not match any file(s) known to git",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "-b", "codex/gemini-repo--r123"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+            ],
+        ):
+            ok, details = runner.ensure_pushable_branch(repo, owner="gemini", force_switch=True)
+        self.assertTrue(ok)
+        self.assertIn("codex/gemini-repo--r123", details)
+        self.assertIn("isolation fallback", details)
+
     def test_push_with_recovery_updates_moved_remote_and_retries(self):
         repo = pathlib.Path("/tmp/repo")
         with mock.patch.object(

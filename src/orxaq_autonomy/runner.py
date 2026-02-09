@@ -1368,6 +1368,11 @@ def _autonomy_branch_name(repo: Path, owner: str = "autonomy") -> str:
     return f"codex/{_branch_token(owner)}-{_branch_token(repo.name)}"
 
 
+def _unique_autonomy_branch_name(repo: Path, owner: str = "autonomy") -> str:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    return f"{_autonomy_branch_name(repo, owner=owner)}--r{stamp}-{os.getpid()}"
+
+
 def _remote_moved_url(output: str) -> str | None:
     match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git", output)
     if not match:
@@ -1409,18 +1414,25 @@ def ensure_pushable_branch(
         return True, f"created pushable branch `{target}` from detached HEAD"
 
     if branch not in PROTECTED_BRANCH_NAMES:
-        if force_switch and branch != target:
-            checkout = run_command(["git", "checkout", target], cwd=repo, timeout_sec=timeout_sec)
+        if force_switch:
+            preferred = target
+            context = f"switch from branch `{branch}` after push rejection"
+            if branch == target:
+                preferred = _unique_autonomy_branch_name(repo, owner=owner)
+                context = f"isolation fallback after repeated push rejection on `{branch}`"
+            checkout = run_command(["git", "checkout", preferred], cwd=repo, timeout_sec=timeout_sec)
             if checkout.returncode == 0:
-                return True, f"switched to existing pushable branch `{target}` from `{branch}`"
-            create = run_command(["git", "checkout", "-b", target], cwd=repo, timeout_sec=timeout_sec)
+                return True, f"switched to existing pushable branch `{preferred}` from `{branch}`"
+            create = run_command(["git", "checkout", "-b", preferred], cwd=repo, timeout_sec=timeout_sec)
             if create.returncode != 0:
                 return False, (
-                    f"failed to switch from branch `{branch}` after push rejection:\n"
+                    f"failed to {context}:\n"
                     f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
                     f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
                 )
-            return True, f"created pushable branch `{target}` from `{branch}`"
+            if preferred != target:
+                return True, f"created pushable branch `{preferred}` as isolation fallback from `{branch}`"
+            return True, f"created pushable branch `{preferred}` from `{branch}`"
         return True, f"current branch is pushable: {branch}"
 
     checkout = run_command(["git", "checkout", target], cwd=repo, timeout_sec=timeout_sec)
