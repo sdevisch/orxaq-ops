@@ -1389,6 +1389,10 @@ def _current_branch(repo: Path) -> tuple[bool, str]:
     return _git_output(repo, ["rev-parse", "--abbrev-ref", "HEAD"])
 
 
+def _combined_process_output(result: subprocess.CompletedProcess[str]) -> str:
+    return f"{result.stdout}\n{result.stderr}".strip()
+
+
 def ensure_pushable_branch(
     repo: Path,
     owner: str = "autonomy",
@@ -1406,10 +1410,12 @@ def ensure_pushable_branch(
             return True, f"switched to existing pushable branch `{target}` from detached HEAD"
         create = run_command(["git", "checkout", "-b", target], cwd=repo, timeout_sec=timeout_sec)
         if create.returncode != 0:
+            checkout_output = _combined_process_output(checkout)
+            create_output = _combined_process_output(create)
             return False, (
                 "failed to switch off detached HEAD:\n"
-                f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
-                f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
+                f"{checkout_output}\n\n"
+                f"create branch failure:\n{create_output}"
             )
         return True, f"created pushable branch `{target}` from detached HEAD"
 
@@ -1425,10 +1431,12 @@ def ensure_pushable_branch(
                 return True, f"switched to existing pushable branch `{preferred}` from `{branch}`"
             create = run_command(["git", "checkout", "-b", preferred], cwd=repo, timeout_sec=timeout_sec)
             if create.returncode != 0:
+                checkout_output = _combined_process_output(checkout)
+                create_output = _combined_process_output(create)
                 return False, (
                     f"failed to {context}:\n"
-                    f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
-                    f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
+                    f"{checkout_output}\n\n"
+                    f"create branch failure:\n{create_output}"
                 )
             if preferred != target:
                 return True, f"created pushable branch `{preferred}` as isolation fallback from `{branch}`"
@@ -1441,10 +1449,12 @@ def ensure_pushable_branch(
 
     create = run_command(["git", "checkout", "-b", target], cwd=repo, timeout_sec=timeout_sec)
     if create.returncode != 0:
+        checkout_output = _combined_process_output(checkout)
+        create_output = _combined_process_output(create)
         return False, (
             f"failed to switch off protected branch `{branch}`:\n"
-            f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
-            f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
+            f"{checkout_output}\n\n"
+            f"create branch failure:\n{create_output}"
         )
     return True, f"created pushable branch `{target}` from protected `{branch}`"
 
