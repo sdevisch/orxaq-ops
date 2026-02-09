@@ -700,15 +700,63 @@ def _dashboard_html(refresh_sec: int) -> str:
         <h2>Parallel Lanes</h2>
         <div id="laneSummary" class="mono">lanes: loading...</div>
         <div id="laneOwnerSummary" class="mono">owners: loading...</div>
+        <div id="laneVisibleSummary" class="mono">visible lanes: loading...</div>
         <div class="inline-controls">
-          <div class="actions">
+          <div class="fields">
             <input id="laneTarget" type="text" placeholder="lane id (optional)" />
+            <select id="laneFilterOwner">
+              <option value="all">owner: all</option>
+              <option value="codex">owner: codex</option>
+              <option value="gemini">owner: gemini</option>
+              <option value="claude">owner: claude</option>
+              <option value="unknown">owner: unknown</option>
+            </select>
+            <select id="laneFilterHealth">
+              <option value="all">health: all</option>
+              <option value="degraded">health: degraded</option>
+              <option value="ok">health: operational</option>
+              <option value="running">health: running</option>
+              <option value="stopped">health: stopped</option>
+            </select>
+            <select id="laneSortBy">
+              <option value="attention">sort: attention</option>
+              <option value="heartbeat">sort: heartbeat age</option>
+              <option value="tasks">sort: blocked tasks</option>
+              <option value="owner">sort: owner</option>
+              <option value="lane">sort: lane id</option>
+            </select>
+            <input id="laneFilterText" class="full" type="text" placeholder="filter by lane/description/model/policy" />
+          </div>
+          <div class="actions">
             <button id="laneStatus">Status</button>
             <button id="laneEnsure">Ensure</button>
             <button id="laneStart">Start</button>
             <button id="laneStop">Stop</button>
+            <button id="laneFilterReset">Reset filters</button>
           </div>
           <div id="laneActionStatus" class="mono">lane action: idle</div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>Owner</th>
+                <th>State</th>
+                <th>Health</th>
+                <th>Heartbeat</th>
+                <th>Tasks</th>
+                <th>Routing</th>
+                <th>Model Hint</th>
+                <th>Latest Event</th>
+                <th>Conversation Source</th>
+                <th>Latest Conversation</th>
+              </tr>
+            </thead>
+            <tbody id="laneTableBody">
+              <tr><td colspan="11" class="mono">Loading lane details...</td></tr>
+            </tbody>
+          </table>
         </div>
         <div id="laneList" class="repo"></div>
       </article>
@@ -778,28 +826,30 @@ def _dashboard_html(refresh_sec: int) -> str:
         </div>
       </article>
 
-      <article class="card span-6">
-        <h2>Lane Router Configuration</h2>
-        <div id="routingLaneSummary" class="mono">lane routing config: loading...</div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Lane</th>
-                <th>Health</th>
-                <th>RouteLLM</th>
-                <th>Router URL</th>
-                <th>Decisions (tail)</th>
-                <th>Fallbacks</th>
-                <th>Errors</th>
-              </tr>
-            </thead>
-            <tbody id="routingLaneBody">
-              <tr><td colspan="7" class="mono">Loading lane routing...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </article>
+	      <article class="card span-6">
+	        <h2>Lane Router Configuration</h2>
+	        <div id="routingLaneSummary" class="mono">lane routing config: loading...</div>
+	        <div class="table-wrap">
+	          <table class="data-table">
+	            <thead>
+	              <tr>
+	                <th>Lane</th>
+	                <th>Health</th>
+	                <th>RouteLLM</th>
+	                <th>Policy</th>
+	                <th>Router URL</th>
+	                <th>Model Hint</th>
+	                <th>Decisions (tail)</th>
+	                <th>Fallbacks</th>
+	                <th>Errors</th>
+	              </tr>
+	            </thead>
+	            <tbody id="routingLaneBody">
+	              <tr><td colspan="9" class="mono">Loading lane routing...</td></tr>
+	            </tbody>
+	          </table>
+	        </div>
+	      </article>
 
       <article class="card span-12">
         <h2>Recent Routing Decisions</h2>
@@ -830,6 +880,7 @@ def _dashboard_html(refresh_sec: int) -> str:
     let lastSuccessfulWatchdogPayload = null;
     let lastSuccessfulCollabPayload = null;
     let lastSuccessfulRoutingPayload = null;
+    let laneFilterTimer = null;
 
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
@@ -894,6 +945,83 @@ def _dashboard_html(refresh_sec: int) -> str:
       const parsed = Number(value || 0);
       if (!Number.isFinite(parsed) || parsed < 0) return 0;
       return Math.floor(parsed);
+    }}
+    function laneMetaObject(lane) {{
+      if (!lane || typeof lane !== "object") return null;
+      if (!lane.meta || typeof lane.meta !== "object") return null;
+      return lane.meta;
+    }}
+    function laneRoutingEnabled(lane) {{
+      const meta = laneMetaObject(lane);
+      if (meta && Object.prototype.hasOwnProperty.call(meta, "routellm_enabled")) {{
+        return Boolean(meta.routellm_enabled);
+      }}
+      return Boolean(lane && lane.routellm_enabled);
+    }}
+    function laneRouterUrl(lane) {{
+      const meta = laneMetaObject(lane);
+      const metaUrl = String(meta && meta.routellm_url ? meta.routellm_url : "").trim();
+      if (metaUrl) return metaUrl;
+      return String(lane && lane.routellm_url ? lane.routellm_url : "").trim();
+    }}
+    function lanePolicyFile(lane) {{
+      const meta = laneMetaObject(lane);
+      const metaPolicy = String(meta && meta.routellm_policy_file ? meta.routellm_policy_file : "").trim();
+      if (metaPolicy) return metaPolicy;
+      return String(lane && lane.routellm_policy_file ? lane.routellm_policy_file : "").trim();
+    }}
+    function laneModelHint(lane) {{
+      const owner = String((lane && lane.owner) || "unknown").trim().toLowerCase();
+      const meta = laneMetaObject(lane);
+      const pick = (key) => {{
+        const metaValue = String(meta && meta[key] ? meta[key] : "").trim();
+        if (metaValue) return metaValue;
+        return String(lane && lane[key] ? lane[key] : "").trim();
+      }};
+      if (owner === "gemini") {{
+        const base = pick("gemini_model") || "auto";
+        const fallbackRaw = (meta && Array.isArray(meta.gemini_fallback_models))
+          ? meta.gemini_fallback_models
+          : ((lane && Array.isArray(lane.gemini_fallback_models)) ? lane.gemini_fallback_models : []);
+        const fallback = fallbackRaw.map((item) => String(item || "").trim()).filter((item) => item);
+        return fallback.length ? `${{base}} -> ${{fallback.join(",")}}` : base;
+      }}
+      if (owner === "claude") {{
+        return pick("claude_model") || "auto";
+      }}
+      if (owner === "codex") {{
+        return pick("codex_model") || "auto";
+      }}
+      return pick("codex_model") || pick("gemini_model") || pick("claude_model") || "auto";
+    }}
+    function laneHealthSeverity(lane) {{
+      const health = String((lane && lane.health) || "unknown").trim().toLowerCase();
+      const running = Boolean(lane && lane.running);
+      if (!running) return 4;
+      if (health === "error" || health === "degraded" || health === "stale" || health === "unknown") return 3;
+      if (health === "warn" || health === "warning") return 2;
+      if (health === "paused" || health === "idle") return 1;
+      return 0;
+    }}
+    function laneFilterValues() {{
+      return {{
+        owner: String(byId("laneFilterOwner").value || "all").trim().toLowerCase(),
+        health: String(byId("laneFilterHealth").value || "all").trim().toLowerCase(),
+        text: String(byId("laneFilterText").value || "").trim().toLowerCase(),
+        sort: String(byId("laneSortBy").value || "attention").trim().toLowerCase(),
+      }};
+    }}
+    function laneMatchesHealthFilter(lane, healthFilter) {{
+      const filterValue = String(healthFilter || "all").trim().toLowerCase();
+      if (!filterValue || filterValue === "all") return true;
+      const health = String((lane && lane.health) || "unknown").trim().toLowerCase();
+      const running = Boolean(lane && lane.running);
+      const operational = health === "ok" || health === "paused" || health === "idle";
+      if (filterValue === "degraded") return !operational || !running;
+      if (filterValue === "ok") return operational;
+      if (filterValue === "running") return running;
+      if (filterValue === "stopped") return !running;
+      return true;
     }}
     function conversationPath() {{
       const query = new URLSearchParams();
@@ -1694,73 +1822,157 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("laneSummary").textContent =
         `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}} · source_errors: ${{laneErrors.length}} · conversation_source_errors: ${{laneSourceErrorCount}} · recovered: ${{recoveredLanes}}`;
       byId("laneOwnerSummary").textContent = `owners: ${{ownerSummary || "none"}}`;
+      const filters = laneFilterValues();
+      const filterOwner = String(filters.owner || "all").trim().toLowerCase();
+      const filterText = String(filters.text || "").trim().toLowerCase();
+      const filteredLaneItems = laneItems.filter((lane) => {{
+        const owner = String((lane && lane.owner) || "unknown").trim().toLowerCase();
+        if (filterOwner && filterOwner !== "all" && owner !== filterOwner) return false;
+        if (!laneMatchesHealthFilter(lane, filters.health)) return false;
+        if (!filterText) return true;
+        const searchable = [
+          String((lane && lane.id) || ""),
+          String((lane && lane.owner) || ""),
+          String((lane && lane.description) || ""),
+          String((lane && lane.latest_log_line) || ""),
+          String((lane && lane.objective_file) || ""),
+          lanePolicyFile(lane),
+          laneModelHint(lane),
+        ].join(" ").toLowerCase();
+        return searchable.includes(filterText);
+      }});
+      filteredLaneItems.sort((a, b) => {{
+        const sortBy = String(filters.sort || "attention").trim().toLowerCase();
+        const aCounts = (a && a.state_counts && typeof a.state_counts === "object") ? a.state_counts : {{}};
+        const bCounts = (b && b.state_counts && typeof b.state_counts === "object") ? b.state_counts : {{}};
+        if (sortBy === "lane") {{
+          return String(a.id || "").localeCompare(String(b.id || ""));
+        }}
+        if (sortBy === "owner") {{
+          const ownerCmp = String(a.owner || "").localeCompare(String(b.owner || ""));
+          if (ownerCmp !== 0) return ownerCmp;
+          return String(a.id || "").localeCompare(String(b.id || ""));
+        }}
+        if (sortBy === "heartbeat") {{
+          const aAge = Number(a.heartbeat_age_sec ?? -1);
+          const bAge = Number(b.heartbeat_age_sec ?? -1);
+          if (aAge === bAge) return String(a.id || "").localeCompare(String(b.id || ""));
+          return bAge - aAge;
+        }}
+        if (sortBy === "tasks") {{
+          const aBlocked = Number(aCounts.blocked || 0);
+          const bBlocked = Number(bCounts.blocked || 0);
+          if (aBlocked !== bBlocked) return bBlocked - aBlocked;
+          const aPending = Number(aCounts.pending || 0);
+          const bPending = Number(bCounts.pending || 0);
+          if (aPending !== bPending) return bPending - aPending;
+          return String(a.id || "").localeCompare(String(b.id || ""));
+        }}
+        const aSeverity = laneHealthSeverity(a);
+        const bSeverity = laneHealthSeverity(b);
+        if (aSeverity !== bSeverity) return bSeverity - aSeverity;
+        const aAge = Number(a.heartbeat_age_sec ?? -1);
+        const bAge = Number(b.heartbeat_age_sec ?? -1);
+        if (aAge !== bAge) return bAge - aAge;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      }});
+      byId("laneVisibleSummary").textContent =
+        `visible lanes: ${{filteredLaneItems.length}}/${{laneItems.length}} · filters owner=${{filters.owner}} health=${{filters.health}} sort=${{filters.sort}}`;
+
+      const laneSourceErrors = [];
+      for (const [laneId, source] of Object.entries(laneSourceMap)) {{
+        if (!source || source.ok) continue;
+        laneSourceErrors.push(`source_error: lane=${{laneId}} errors=${{(source.errors || []).length}}`);
+      }}
       const laneErrorMarkup = laneErrors.length
         ? laneErrors.map((item) => `<div class="line bad">source_error: ${{escapeHtml(String(item || ""))}}</div>`).join("")
         : "";
-      byId("laneList").innerHTML = `${{laneErrorMarkup}}${{laneItems.length
-        ? laneItems.map((lane) => {{
-            const state = lane.running ? "running" : "stopped";
-            const health = lane.health || "unknown";
-            const age = lane.heartbeat_age_sec ?? -1;
-            const counts = lane.state_counts || {{}};
-            const done = Number(counts.done || 0);
-            const inProgress = Number(counts.in_progress || 0);
-            const pending = Number(counts.pending || 0);
-            const blocked = Number(counts.blocked || 0);
-            const buildCurrent = lane.build_current ? "current" : "stale";
-            const lastEvent = (lane.last_event && lane.last_event.event_type) ? ` · event=${{lane.last_event.event_type}}` : "";
-            const error = lane.error ? `<div class="line bad">error: ${{escapeHtml(lane.error)}}</div>` : "";
-            const laneId = String(lane.id || "").trim();
-            const source = laneSourceMap[laneId] || null;
-            const sourceFlags = [];
-            let sourceState = "unreported";
-            let sourceEvents = Number(lane.conversation_event_count || 0);
-            if (source) {{
-              sourceState = source.ok ? "ok" : "error";
-              sourceEvents = Number(source.event_count || 0);
-              if (source.fallback_used) sourceFlags.push("fallback");
-              if (source.missing && source.recoverable_missing) {{
-                sourceFlags.push("recoverable_missing");
-              }} else if (source.missing) {{
-                sourceFlags.push("missing");
-              }}
-              if ((source.errors || []).length) sourceFlags.push(`errors=${{(source.errors || []).length}}`);
-            }} else {{
-              if (lane.conversation_source_ok === true) {{
-                sourceState = "ok";
-              }} else if (lane.conversation_source_ok === false) {{
-                sourceState = "error";
-              }}
-              const fallbackCount = Number(lane.conversation_source_fallback_count || 0);
-              const missingCount = Number(lane.conversation_source_missing_count || 0);
-              const recoverableMissingCount = Number(lane.conversation_source_recoverable_missing_count || 0);
-              const sourceErrorCount = Number(lane.conversation_source_error_count || 0);
-              if (fallbackCount > 0) sourceFlags.push("fallback");
-              if (recoverableMissingCount > 0) {{
-                sourceFlags.push("recoverable_missing");
-              }} else if (missingCount > 0) {{
-                sourceFlags.push("missing");
-              }}
-              if (sourceErrorCount > 0) sourceFlags.push(`errors=${{sourceErrorCount}}`);
-            }}
-            const sourceExtras = sourceFlags.length ? ` (${{sourceFlags.join(",")}})` : "";
-            const conversationSourceLine =
-              `<div class="line mono">conversation_source=${{sourceState}} events=${{sourceEvents}}${{sourceExtras}}</div>`;
-            const latestConversation = (lane && lane.latest_conversation_event)
-              ? lane.latest_conversation_event
-              : (latestConversationByLane[laneId] || null);
-            const latestConversationLine = latestConversation
-              ? `<div class="line mono">latest_conversation=${{escapeHtml(formatTimestamp(String(latestConversation.timestamp || "")))}} owner=${{escapeHtml(String(latestConversation.owner || "unknown"))}} type=${{escapeHtml(String(latestConversation.event_type || "-"))}}${{String(latestConversation.content || "").trim() ? ` content=${{escapeHtml(String(latestConversation.content).trim().slice(0, 120))}}` : ""}}</div>`
-              : `<div class="line mono">latest_conversation=none</div>`;
-            return [
-              `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s · build=${{buildCurrent}}</div>`,
-              `<div class="line mono">tasks d=${{done}} p=${{pending}} w=${{inProgress}} b=${{blocked}}${{lastEvent}}</div>`,
-              conversationSourceLine,
-              latestConversationLine,
-              error,
-            ].join("");
-          }}).join("")
-        : '<div class="line">No lanes configured.</div>'}}`;
+      const laneSourceMarkup = laneSourceErrors.length
+        ? laneSourceErrors.map((item) => `<div class="line bad">${{escapeHtml(item)}}</div>`).join("")
+        : "";
+      byId("laneList").innerHTML = `${{laneErrorMarkup}}${{laneSourceMarkup}}${{(laneErrorMarkup || laneSourceMarkup) ? '' : '<div class="line mono">source_error: none</div>'}}`;
+
+      if (!filteredLaneItems.length) {{
+        byId("laneTableBody").innerHTML = '<tr><td colspan="11" class="mono">No lanes match current filters.</td></tr>';
+        return {{ runningLanes, totalLanes }};
+      }}
+      byId("laneTableBody").innerHTML = filteredLaneItems.map((lane) => {{
+        const state = lane.running ? "running" : "stopped";
+        const health = String(lane.health || "unknown").trim() || "unknown";
+        const healthClass = (health === "ok" || health === "paused" || health === "idle") ? "ok" : "bad";
+        const age = lane.heartbeat_age_sec ?? -1;
+        const counts = lane.state_counts || {{}};
+        const done = Number(counts.done || 0);
+        const inProgress = Number(counts.in_progress || 0);
+        const pending = Number(counts.pending || 0);
+        const blocked = Number(counts.blocked || 0);
+        const laneId = String(lane.id || "").trim();
+        const source = laneSourceMap[laneId] || null;
+        const sourceFlags = [];
+        let sourceState = "unreported";
+        let sourceEvents = Number(lane.conversation_event_count || 0);
+        if (source) {{
+          sourceState = source.ok ? "ok" : "error";
+          sourceEvents = Number(source.event_count || 0);
+          if (source.fallback_used) sourceFlags.push("fallback");
+          if (source.missing && source.recoverable_missing) {{
+            sourceFlags.push("recoverable_missing");
+          }} else if (source.missing) {{
+            sourceFlags.push("missing");
+          }}
+          if ((source.errors || []).length) sourceFlags.push(`errors=${{(source.errors || []).length}}`);
+        }} else {{
+          if (lane.conversation_source_ok === true) {{
+            sourceState = "ok";
+          }} else if (lane.conversation_source_ok === false) {{
+            sourceState = "error";
+          }}
+          const fallbackCount = Number(lane.conversation_source_fallback_count || 0);
+          const missingCount = Number(lane.conversation_source_missing_count || 0);
+          const recoverableMissingCount = Number(lane.conversation_source_recoverable_missing_count || 0);
+          const sourceErrorCount = Number(lane.conversation_source_error_count || 0);
+          if (fallbackCount > 0) sourceFlags.push("fallback");
+          if (recoverableMissingCount > 0) {{
+            sourceFlags.push("recoverable_missing");
+          }} else if (missingCount > 0) {{
+            sourceFlags.push("missing");
+          }}
+          if (sourceErrorCount > 0) sourceFlags.push(`errors=${{sourceErrorCount}}`);
+        }}
+        const sourceExtras = sourceFlags.length ? ` (${{sourceFlags.join(",")}})` : "";
+        const sourceText = `conversation_source=${{sourceState}} events=${{sourceEvents}}${{sourceExtras}}`;
+        const latestConversation = (lane && lane.latest_conversation_event)
+          ? lane.latest_conversation_event
+          : (latestConversationByLane[laneId] || null);
+        const latestConversationText = latestConversation
+          ? `latest_conversation=${{escapeHtml(formatTimestamp(String(latestConversation.timestamp || "")))}} owner=${{escapeHtml(String(latestConversation.owner || "unknown"))}} type=${{escapeHtml(String(latestConversation.event_type || "-"))}}`
+          : "latest_conversation=none";
+        const latestConversationContent = latestConversation && String(latestConversation.content || "").trim()
+          ? `<div class="mono">${{escapeHtml(String(latestConversation.content).trim().slice(0, 120))}}</div>`
+          : "";
+        const lastEventType = (lane.last_event && lane.last_event.event_type) ? String(lane.last_event.event_type) : "-";
+        const lastEventTs = (lane.last_event && lane.last_event.timestamp)
+          ? formatTimestamp(String(lane.last_event.timestamp))
+          : "-";
+        const routeEnabled = laneRoutingEnabled(lane);
+        const routeClass = routeEnabled ? "ok" : "warn";
+        const routeLabel = routeEnabled ? "enabled" : "disabled";
+        const policyFile = lanePolicyFile(lane);
+        const modelHint = laneModelHint(lane);
+        return `<tr>
+          <td><div class="mono">${{escapeHtml(laneId)}}</div><div>${{escapeHtml(String(lane.description || ""))}}</div></td>
+          <td class="mono">${{escapeHtml(String(lane.owner || "unknown"))}}</td>
+          <td><span class="${{lane.running ? "ok" : "warn"}}">${{escapeHtml(state)}}</span></td>
+          <td><span class="${{healthClass}}">${{escapeHtml(health)}}</span></td>
+          <td class="mono">${{formatAgeSeconds(age)}}</td>
+          <td class="mono">d=${{done}} p=${{pending}} w=${{inProgress}} b=${{blocked}}</td>
+          <td><span class="${{routeClass}}">${{routeLabel}}</span><div class="mono">${{escapeHtml(policyFile || "-")}}</div></td>
+          <td class="mono">${{escapeHtml(modelHint)}}</td>
+          <td><div class="mono">${{escapeHtml(lastEventType)}}</div><div class="mono">${{escapeHtml(lastEventTs)}}</div></td>
+          <td class="mono">${{escapeHtml(sourceText)}}</td>
+          <td><div class="mono">${{latestConversationText}}</div>${{latestConversationContent}}</td>
+        </tr>`;
+      }}).join("");
       return {{ runningLanes, totalLanes }};
     }}
 
@@ -2143,11 +2355,11 @@ def _dashboard_html(refresh_sec: int) -> str:
         latencyAvgSec = routerLatencySumDerived / Math.max(1, decisionCountDerived);
       }}
       if (!Number.isFinite(latencyAvgSec) || latencyAvgSec < 0) latencyAvgSec = 0;
-      const enabledLaneItems = laneItems.filter((lane) => Boolean(lane.routellm_enabled));
+      const enabledLaneItems = laneItems.filter((lane) => laneRoutingEnabled(lane));
       const enabledLaneCount = enabledLaneItems.length;
       const routerUrlSet = new Set(
         enabledLaneItems
-          .map((lane) => String(lane.routellm_url || "").trim())
+          .map((lane) => laneRouterUrl(lane))
           .filter((value) => Boolean(value))
       );
       const distinctRouterCount = routerUrlSet.size;
@@ -2244,7 +2456,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("routingLaneSummary").textContent =
         `lanes: ${{orderedLaneIds.length}} · enabled=${{enabledLaneCount}} · with_decisions=${{Object.keys(laneRoutingStats).length}}`;
       if (!orderedLaneIds.length) {{
-        byId("routingLaneBody").innerHTML = '<tr><td colspan="7" class="mono">No lane routing data available.</td></tr>';
+        byId("routingLaneBody").innerHTML = '<tr><td colspan="9" class="mono">No lane routing data available.</td></tr>';
       }} else {{
         byId("routingLaneBody").innerHTML = orderedLaneIds.map((laneId) => {{
           const lane = laneById[laneId] || {{}};
@@ -2252,10 +2464,12 @@ def _dashboard_html(refresh_sec: int) -> str:
           const owner = String(lane.owner || laneStats.owner || "unknown").trim() || "unknown";
           const laneHealth = String(lane.health || "unknown").trim() || "unknown";
           const healthClass = laneHealth === "ok" ? "ok" : (laneHealth === "error" ? "bad" : "warn");
-          const routeEnabled = Boolean(lane.routellm_enabled);
+          const routeEnabled = laneRoutingEnabled(lane);
           const routeClass = routeEnabled ? "ok" : "warn";
           const routeLabel = routeEnabled ? "enabled" : "disabled";
-          const routerUrl = String(lane.routellm_url || "").trim();
+          const routerUrl = laneRouterUrl(lane);
+          const policyFile = lanePolicyFile(lane);
+          const modelHint = laneModelHint(lane);
           const routerCell = routerUrl ? escapeHtml(routerUrl) : "-";
           const decisionCount = Number(laneStats.decisions || 0);
           const fallbackCountTail = Number(laneStats.fallback_count || 0);
@@ -2264,7 +2478,9 @@ def _dashboard_html(refresh_sec: int) -> str:
             <td><div class="mono">${{escapeHtml(laneId)}}</div><div class="mono">${{escapeHtml(owner)}}</div></td>
             <td><span class="${{healthClass}}">${{escapeHtml(laneHealth)}}</span></td>
             <td><span class="${{routeClass}}">${{routeLabel}}</span></td>
+            <td class="mono">${{escapeHtml(policyFile || "-")}}</td>
             <td class="mono">${{routerCell}}</td>
+            <td class="mono">${{escapeHtml(modelHint)}}</td>
             <td class="mono">${{decisionCount}}</td>
             <td class="mono">${{fallbackCountTail}}</td>
             <td class="mono">${{errorCountTail}}</td>
@@ -2668,6 +2884,21 @@ def _dashboard_html(refresh_sec: int) -> str:
       syncConversationInputs();
       refresh();
     }}
+    function resetLaneFilters() {{
+      byId("laneTarget").value = "";
+      byId("laneFilterOwner").value = "all";
+      byId("laneFilterHealth").value = "all";
+      byId("laneSortBy").value = "attention";
+      byId("laneFilterText").value = "";
+      refresh();
+    }}
+    function scheduleLaneFilterRefresh() {{
+      if (laneFilterTimer) clearTimeout(laneFilterTimer);
+      laneFilterTimer = setTimeout(() => {{
+        laneFilterTimer = null;
+        refresh();
+      }}, 220);
+    }}
 
     byId("refresh").addEventListener("click", refresh);
     byId("pause").addEventListener("click", () => {{
@@ -2680,6 +2911,11 @@ def _dashboard_html(refresh_sec: int) -> str:
     byId("laneEnsure").addEventListener("click", () => invokeLaneAction("ensure"));
     byId("laneStart").addEventListener("click", () => invokeLaneAction("start"));
     byId("laneStop").addEventListener("click", () => invokeLaneAction("stop"));
+    byId("laneFilterReset").addEventListener("click", resetLaneFilters);
+    byId("laneFilterOwner").addEventListener("change", refresh);
+    byId("laneFilterHealth").addEventListener("change", refresh);
+    byId("laneSortBy").addEventListener("change", refresh);
+    byId("laneFilterText").addEventListener("input", scheduleLaneFilterRefresh);
 
     initTabs();
     syncConversationInputs();

@@ -1467,6 +1467,26 @@ def main(argv: list[str] | None = None) -> int:
                     f"down={_safe_int(scaling_counts.get('scale_down', 0), 0)} "
                     f"hold={_safe_int(scaling_counts.get('scale_hold', 0), 0)}"
                 )
+            parallel_capacity = (
+                filtered.get("parallel_capacity", {})
+                if isinstance(filtered.get("parallel_capacity", {}), dict)
+                else {}
+            )
+            parallel_groups = (
+                parallel_capacity.get("groups", [])
+                if isinstance(parallel_capacity.get("groups", []), list)
+                else []
+            )
+            normalized_parallel_groups = [item for item in parallel_groups if isinstance(item, dict)]
+            if normalized_parallel_groups:
+                group_parts = []
+                for item in normalized_parallel_groups:
+                    group_parts.append(
+                        f"{item.get('provider', 'unknown')}:{item.get('model', 'default')}"
+                        f"={_safe_int(item.get('running_count', 0), 0)}/"
+                        f"{_safe_int(item.get('effective_limit', 1), 1)}"
+                    )
+                print(f"parallel_capacity: {' | '.join(group_parts)}")
             if filtered.get("errors"):
                 print(f"errors: {' | '.join(str(item) for item in filtered['errors'])}")
             if filtered.get("conversation_errors"):

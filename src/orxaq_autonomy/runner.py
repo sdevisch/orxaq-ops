@@ -80,6 +80,19 @@ DEFAULT_GEMINI_FALLBACK_MODELS = (
     "gemini-2.5-flash",
     "gemini-2.0-flash",
 )
+DEFAULT_CODEX_COMPAT_MODELS = (
+    "gpt-5.3-codex",
+    "gpt-5-codex",
+)
+CODEX_MODEL_SELECTION_ERROR_PATTERNS = (
+    "model is not supported when using codex with a chatgpt account",
+    "model is not supported",
+    "unsupported model",
+    "invalid model",
+    "model not found",
+    "unknown model",
+    "unrecognized model",
+)
 PROTECTED_BRANCH_REJECTION_PATTERNS = (
     "changes must be made through a pull request",
     "gh013",
@@ -2121,6 +2134,36 @@ def gemini_model_candidates(primary: str | None, fallbacks: list[str]) -> list[s
     return out
 
 
+def is_codex_model_selection_error(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(pattern in lowered for pattern in CODEX_MODEL_SELECTION_ERROR_PATTERNS)
+
+
+def codex_model_candidates(primary: str | None, route_decision: dict[str, Any]) -> list[str | None]:
+    allowed_models = _normalize_model_candidates(route_decision.get("allowed_models", []))
+    ordered: list[str | None] = [primary]
+    for key in ("fallback_model", "policy_fallback_model"):
+        candidate = str(route_decision.get(key, "")).strip()
+        if candidate:
+            ordered.append(candidate)
+    ordered.extend(allowed_models)
+    ordered.extend(DEFAULT_CODEX_COMPAT_MODELS)
+    # Final fallback: let Codex CLI choose its configured default model.
+    ordered.append(None)
+
+    seen: set[str] = set()
+    out: list[str | None] = []
+    for item in ordered:
+        key = "" if item is None else item.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def build_attempt_telemetry(
     *,
     owner: str,
@@ -2225,7 +2268,7 @@ def run_codex_task(
         meta={"agent": "codex", "provider": "codex"},
     )
 
-    cmd = [
+    base_cmd = [
         codex_cmd,
         "exec",
         "--cd",
@@ -2238,24 +2281,72 @@ def run_codex_task(
         str(output_file),
         prompt,
     ]
-    if routed_model:
-        cmd[2:2] = ["--model", routed_model]
+    candidate_models = codex_model_candidates(routed_model, route_decision)
+    attempt_errors: list[str] = []
+    result: subprocess.CompletedProcess[str] | None = None
+    latency = 0.0
+    model_name = routed_model or "codex_default"
+    route_decision_runtime = dict(route_decision)
 
-    _print(f"Running Codex task {task.id}")
-    started = time.monotonic()
-    result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
-    latency = time.monotonic() - started
-    model_name = routed_model or codex_cmd
-    if result.returncode != 0:
-        usage = extract_usage_metrics(stdout=result.stdout, stderr=result.stderr)
+    for idx, model_candidate in enumerate(candidate_models, start=1):
+        cmd = list(base_cmd)
+        if model_candidate:
+            cmd[2:2] = ["--model", model_candidate]
+        _print(
+            f"Running Codex task {task.id}"
+            + (f" (candidate {idx}/{len(candidate_models)}: {model_candidate or 'default'})")
+        )
+        started = time.monotonic()
+        result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
+        latency = time.monotonic() - started
+        model_name = model_candidate or "codex_default"
+        if result.returncode == 0:
+            if idx > 1:
+                route_decision_runtime["fallback_used"] = True
+                route_decision_runtime["reason"] = "unsupported_model_fallback"
+                route_decision_runtime["strategy"] = "static_fallback"
+                route_decision_runtime["selected_model"] = model_candidate or ""
+            break
+
+        error_text = (result.stdout + "\n" + result.stderr).strip()
+        attempt_errors.append(
+            f"[candidate {idx}/{len(candidate_models)} model={model_candidate or 'default'}]\n{error_text}"
+        )
+        if is_codex_model_selection_error(error_text) and idx < len(candidate_models):
+            next_model = candidate_models[idx]
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="agent_retry_fallback",
+                content=(
+                    "Codex model selection failed; retrying with fallback model "
+                    f"{next_model or 'default'}."
+                ),
+                meta={
+                    "agent": "codex",
+                    "failed_model": model_candidate or "",
+                    "next_model": next_model or "",
+                },
+            )
+            continue
+        break
+
+    if result is None or result.returncode != 0:
+        stdout_text = result.stdout if result is not None else ""
+        stderr_text = result.stderr if result is not None else ""
+        fail_text = "\n\n".join(attempt_errors).strip() or (stdout_text + "\n" + stderr_text).strip()
+        fail_text = fail_text or "Codex command failed with unknown error."
+        usage = extract_usage_metrics(stdout=stdout_text, stderr=stderr_text)
         telemetry = build_attempt_telemetry(
             owner=task.owner,
             model=model_name,
             prompt=prompt,
             latency_sec=latency,
-            response_text=(result.stdout + "\n" + result.stderr).strip(),
+            response_text=fail_text,
             usage=usage,
-            routing=route_decision,
+            routing=route_decision_runtime,
         )
         append_conversation_event(
             conversation_log_file,
@@ -2263,14 +2354,14 @@ def run_codex_task(
             task=task,
             owner=task.owner,
             event_type="agent_error",
-            content=(result.stdout + "\n" + result.stderr).strip(),
-            meta={"agent": "codex", "returncode": result.returncode},
+            content=fail_text,
+            meta={"agent": "codex", "returncode": (result.returncode if result is not None else -1)},
         )
         return False, normalize_outcome(
             {
                 "status": STATUS_BLOCKED,
                 "summary": "Codex command failed",
-                "blocker": (result.stdout + "\n" + result.stderr).strip(),
+                "blocker": fail_text,
                 "next_actions": [],
                 "_telemetry": telemetry,
             }
@@ -2286,7 +2377,7 @@ def run_codex_task(
             latency_sec=latency,
             response_text=(result.stdout + "\n" + result.stderr).strip(),
             usage=usage,
-            routing=route_decision,
+            routing=route_decision_runtime,
         )
         append_conversation_event(
             conversation_log_file,
@@ -2314,7 +2405,7 @@ def run_codex_task(
         latency_sec=latency,
         response_text=json.dumps(parsed, sort_keys=True),
         usage=usage,
-        routing=route_decision,
+        routing=route_decision_runtime,
     )
     parsed["usage"] = usage
     append_conversation_event(

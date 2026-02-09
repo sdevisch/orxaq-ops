@@ -48,6 +48,17 @@ class RetryClassificationTests(unittest.TestCase):
     def test_retryable_error_false(self):
         self.assertFalse(runner.is_retryable_error("assertion failed in unit test"))
 
+    def test_codex_model_selection_error_true(self):
+        self.assertTrue(
+            runner.is_codex_model_selection_error(
+                "The 'gpt-5-mini' model is not supported when using Codex with a ChatGPT account."
+            )
+        )
+        self.assertTrue(runner.is_codex_model_selection_error("invalid model requested"))
+
+    def test_codex_model_selection_error_false(self):
+        self.assertFalse(runner.is_codex_model_selection_error("network timeout while calling model"))
+
 
 class SchedulingTests(unittest.TestCase):
     def test_select_next_task_skips_cooldown(self):
@@ -950,6 +961,90 @@ class RuntimeSafeguardTests(unittest.TestCase):
 
 
 class AgentExecutionHardeningTests(unittest.TestCase):
+    def test_run_codex_task_retries_with_fallback_model_after_unsupported_model(self):
+        task = runner.Task(
+            id="task-codex-fallback",
+            owner="codex",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        calls: list[list[str]] = []
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            calls.append(list(cmd))
+            output_path: pathlib.Path | None = None
+            if "--output-last-message" in cmd:
+                output_path = pathlib.Path(cmd[cmd.index("--output-last-message") + 1])
+            if len(calls) == 1:
+                return runner.subprocess.CompletedProcess(
+                    cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "ERROR: {\"detail\":\"The 'gpt-5-mini' model is not supported when using Codex "
+                        "with a ChatGPT account.\"}"
+                    ),
+                )
+            if output_path is not None:
+                output_path.write_text(
+                    '{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                    encoding="utf-8",
+                )
+            return runner.subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            schema_path = repo / "schema.json"
+            schema_path.write_text("{}", encoding="utf-8")
+            output_dir = repo / "artifacts"
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_codex_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    schema_path=schema_path,
+                    output_dir=output_dir,
+                    codex_cmd="codex",
+                    codex_model="gpt-5-mini",
+                    routellm_enabled=False,
+                    routellm_policy={
+                        "enabled": True,
+                        "providers": {
+                            "codex": {
+                                "enabled": True,
+                                "fallback_model": "gpt-5.3-codex",
+                                "allowed_models": ["gpt-5.3-codex", "gpt-5-mini"],
+                            }
+                        },
+                    },
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--model", calls[0])
+        self.assertIn("gpt-5-mini", calls[0])
+        self.assertIn("--model", calls[1])
+        self.assertIn("gpt-5.3-codex", calls[1])
+        telemetry = outcome.get("_telemetry", {})
+        self.assertEqual(telemetry.get("model"), "gpt-5.3-codex")
+        routing = telemetry.get("routing", {})
+        self.assertTrue(routing.get("fallback_used"))
+        self.assertEqual(routing.get("reason"), "unsupported_model_fallback")
+
     def test_run_gemini_task_uses_fallback_model_after_capacity_error(self):
         task = runner.Task(
             id="task-g",

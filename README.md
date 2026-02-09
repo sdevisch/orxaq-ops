@@ -229,6 +229,12 @@ Auto-heal stopped lanes (restarts enabled, non-paused lanes):
 make lanes-ensure
 ```
 
+Provider/model adaptive parallel-capacity telemetry:
+- `make lanes-status` now prints `parallel_capacity` (`running/effective_limit`) per provider:model bucket.
+- State is persisted in `artifacts/autonomy/parallel_capacity_state.json`.
+- Every `lanes-start`/`lanes-ensure` decision is appended to `artifacts/autonomy/parallel_capacity.ndjson`.
+- Capacity limits start from `ORXAQ_AUTONOMY_PARALLEL_CAPACITY_DEFAULT_LIMIT` and auto-adjust down on capacity signals, then recover upward after stable cycles.
+
 Manual startup flow (if you want finer control):
 
 ```bash

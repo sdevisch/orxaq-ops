@@ -19,18 +19,12 @@
     },
     "codex": {
       "enabled": true,
-      "fallback_model": "gpt-5-mini",
+      "fallback_model": "gpt-5.3-codex",
       "respect_requested_model": false,
       "default_objective": "balanced",
       "allowed_models": [
-        "gpt-5-mini",
-        "gpt-5-codex",
-        "gpt-4.1-mini",
-        "gpt-4.1",
-        "qwen2.5-coder-7b-instruct",
-        "qwen2.5-coder-14b-instruct",
-        "qwen2.5-coder-32b-instruct",
-        "deepseek-coder-v2-instruct"
+        "gpt-5.3-codex",
+        "gpt-5-codex"
       ]
     },
     "gemini": {
@@ -46,6 +40,15 @@
     }
   },
   "model_catalog": {
+    "gpt-5.3-codex": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 2.0,
+      "output_per_million": 8.0,
+      "speed_tps": 95,
+      "quality_score": 92,
+      "max_context_tokens": 256000
+    },
     "gpt-4.1-mini": {
       "family": "openai",
       "local": false,

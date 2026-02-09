@@ -261,6 +261,11 @@ class ManagerConfig:
     scaling_daily_budget_usd: float
     scaling_max_parallel_agents: int
     scaling_max_subagents_per_agent: int
+    parallel_capacity_state_file: Path
+    parallel_capacity_log_file: Path
+    parallel_capacity_default_limit: int
+    parallel_capacity_recovery_cycles: int
+    parallel_capacity_max_limit: int
     auto_push_guard: bool
     auto_push_interval_sec: int
 
@@ -366,6 +371,26 @@ class ManagerConfig:
             1,
             _int("ORXAQ_AUTONOMY_SCALING_MAX_SUBAGENTS_PER_AGENT", default_scale_max_subagents),
         )
+        parallel_capacity_state_file = _path(
+            "ORXAQ_AUTONOMY_PARALLEL_CAPACITY_STATE_FILE",
+            artifacts / "parallel_capacity_state.json",
+        )
+        parallel_capacity_log_file = _path(
+            "ORXAQ_AUTONOMY_PARALLEL_CAPACITY_LOG_FILE",
+            artifacts / "parallel_capacity.ndjson",
+        )
+        parallel_capacity_default_limit = max(
+            1,
+            _int("ORXAQ_AUTONOMY_PARALLEL_CAPACITY_DEFAULT_LIMIT", 2),
+        )
+        parallel_capacity_recovery_cycles = max(
+            1,
+            _int("ORXAQ_AUTONOMY_PARALLEL_CAPACITY_RECOVERY_CYCLES", 3),
+        )
+        parallel_capacity_max_limit = max(
+            1,
+            _int("ORXAQ_AUTONOMY_PARALLEL_CAPACITY_MAX_LIMIT", 24),
+        )
 
         validate_raw = merged.get("ORXAQ_AUTONOMY_VALIDATE_COMMANDS", "make lint;make test")
         validate_commands = [chunk.strip() for chunk in validate_raw.split(";") if chunk.strip()]
@@ -438,6 +463,11 @@ class ManagerConfig:
             scaling_daily_budget_usd=scaling_daily_budget_usd,
             scaling_max_parallel_agents=scaling_max_parallel_agents,
             scaling_max_subagents_per_agent=scaling_max_subagents_per_agent,
+            parallel_capacity_state_file=parallel_capacity_state_file,
+            parallel_capacity_log_file=parallel_capacity_log_file,
+            parallel_capacity_default_limit=parallel_capacity_default_limit,
+            parallel_capacity_recovery_cycles=parallel_capacity_recovery_cycles,
+            parallel_capacity_max_limit=parallel_capacity_max_limit,
             auto_push_guard=_bool("ORXAQ_AUTONOMY_AUTO_PUSH_GUARD", True),
             auto_push_interval_sec=_int("ORXAQ_AUTONOMY_AUTO_PUSH_INTERVAL_SEC", 180),
         )
@@ -842,6 +872,19 @@ def ensure_background(config: ManagerConfig) -> None:
 
     if config.lanes_file.exists():
         lane_payload = ensure_lanes_background(config)
+        parallel_groups = (
+            lane_payload.get("parallel_capacity", {}).get("groups", {})
+            if isinstance(lane_payload.get("parallel_capacity", {}), dict)
+            else {}
+        )
+        at_limit = 0
+        if isinstance(parallel_groups, dict):
+            at_limit = sum(
+                1
+                for payload in parallel_groups.values()
+                if isinstance(payload, dict)
+                and _int_value(payload.get("running_count", 0), 0) >= _int_value(payload.get("effective_limit", 1), 1)
+            )
         _log(
             "lane ensure: "
             f"ensured={lane_payload['ensured_count']} "
@@ -849,6 +892,7 @@ def ensure_background(config: ManagerConfig) -> None:
             f"restarted={lane_payload['restarted_count']} "
             f"scaled_up={lane_payload.get('scaled_up_count', 0)} "
             f"scaled_down={lane_payload.get('scaled_down_count', 0)} "
+            f"parallel_groups_at_limit={at_limit} "
             f"failed={lane_payload['failed_count']}"
         )
 
@@ -2273,6 +2317,11 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     _mark_source("handoffs", len(handoff_errors) == 0, "; ".join(handoff_errors))
     lane_running_count = max(0, _int_value(lanes.get("running_count", 0), 0))
     lane_scaling_counts = lanes.get("scaling_event_counts", {}) if isinstance(lanes.get("scaling_event_counts", {}), dict) else {}
+    parallel_capacity = lanes.get("parallel_capacity", {}) if isinstance(lanes.get("parallel_capacity", {}), dict) else {}
+    parallel_groups = parallel_capacity.get("groups", []) if isinstance(parallel_capacity.get("groups", []), list) else []
+    normalized_parallel_groups = [item for item in parallel_groups if isinstance(item, dict)]
+    parallel_groups_at_limit = sum(1 for item in normalized_parallel_groups if bool(item.get("at_limit", False)))
+    parallel_groups_over_limit = sum(1 for item in normalized_parallel_groups if bool(item.get("over_limit", False)))
 
     snapshot = {
         "timestamp": _now_iso(),
@@ -2288,9 +2337,13 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "lane_scale_up_events": _int_value(lane_scaling_counts.get("scale_up", 0), 0),
             "lane_scale_down_events": _int_value(lane_scaling_counts.get("scale_down", 0), 0),
             "lane_scale_hold_events": _int_value(lane_scaling_counts.get("scale_hold", 0), 0),
+            "parallel_capacity_group_count": len(normalized_parallel_groups),
+            "parallel_capacity_groups_at_limit": parallel_groups_at_limit,
+            "parallel_capacity_groups_over_limit": parallel_groups_over_limit,
         },
         "progress": progress,
         "lanes": lanes,
+        "parallel_capacity": parallel_capacity,
         "response_metrics": response_metrics,
         "conversations": {
             "ok": conversation_ok,
@@ -2356,6 +2409,16 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
     impl = repos.get("implementation", {})
     tests = repos.get("tests", {})
     scaling_counts = lanes.get("scaling_event_counts", {}) if isinstance(lanes.get("scaling_event_counts", {}), dict) else {}
+    parallel_capacity = snapshot.get("parallel_capacity", {}) if isinstance(snapshot.get("parallel_capacity", {}), dict) else {}
+    parallel_groups = parallel_capacity.get("groups", []) if isinstance(parallel_capacity.get("groups", []), list) else []
+    normalized_parallel_groups = [item for item in parallel_groups if isinstance(item, dict)]
+    parallel_parts: list[str] = []
+    for item in normalized_parallel_groups:
+        parallel_parts.append(
+            f"{item.get('provider', 'unknown')}:{item.get('model', 'default')}"
+            f"={item.get('running_count', 0)}/{item.get('effective_limit', 1)}"
+            f"{'!' if bool(item.get('over_limit', False)) else ''}"
+        )
     latest_log_line = str(snapshot.get("latest_log_line", "")).strip()
 
     def _repo_line(label: str, payload: dict[str, Any]) -> str:
@@ -2394,6 +2457,7 @@ def render_monitor_text(snapshot: dict[str, Any]) -> str:
             f"down={_int_value(scaling_counts.get('scale_down', 0), 0)} "
             f"hold={_int_value(scaling_counts.get('scale_hold', 0), 0)}"
         ),
+        f"parallel_capacity: {' | '.join(parallel_parts) if parallel_parts else 'none'}",
         (
             f"conversations: events={conversations.get('total_events', 0)} "
             f"owners={conversations.get('owner_counts', {})}"
@@ -2998,6 +3062,371 @@ def _coerce_bool(raw: Any, default: bool = False) -> bool:
     return default
 
 
+_PARALLEL_CAPACITY_SIGNAL_TERMS = (
+    "rate limit",
+    "429",
+    "too many requests",
+    "resource exhausted",
+    "over quota",
+    "quota exceeded",
+    "provider capacity limit",
+    "service capacity",
+    "capacity exceeded",
+    "temporarily unavailable",
+    "service unavailable",
+    "throttle",
+    "concurrency",
+)
+
+
+def _parallel_owner_model(lane: dict[str, Any]) -> tuple[str, str]:
+    owner = str(lane.get("owner", "unknown")).strip().lower() or "unknown"
+    model = ""
+    if owner == "codex":
+        model = str(lane.get("codex_model", "") or "").strip()
+    elif owner == "gemini":
+        model = str(lane.get("gemini_model", "") or "").strip()
+    elif owner == "claude":
+        model = str(lane.get("claude_model", "") or "").strip()
+    if not model:
+        model = "default"
+    return owner, model
+
+
+def _parallel_key(owner: str, model: str) -> str:
+    normalized_owner = owner.strip().lower() or "unknown"
+    normalized_model = model.strip() or "default"
+    return f"{normalized_owner}::{normalized_model}"
+
+
+def _split_parallel_key(key: str) -> tuple[str, str]:
+    raw = key.strip()
+    if not raw:
+        return "unknown", "default"
+    if "::" in raw:
+        owner, model = raw.split("::", 1)
+        return owner.strip().lower() or "unknown", model.strip() or "default"
+    return raw.lower(), "default"
+
+
+def _parallel_identity(lane: dict[str, Any]) -> dict[str, str]:
+    owner, model = _parallel_owner_model(lane)
+    key = _parallel_key(owner, model)
+    return {"owner": owner, "model": model, "key": key}
+
+
+def _contains_parallel_capacity_signal(text: str) -> str:
+    normalized = text.strip().lower()
+    if not normalized:
+        return ""
+    for term in _PARALLEL_CAPACITY_SIGNAL_TERMS:
+        if term in normalized:
+            return term
+    return ""
+
+
+def _lane_parallel_capacity_signal(lane_status: dict[str, Any]) -> dict[str, Any]:
+    lane_id = str(lane_status.get("id", "")).strip()
+    candidates: list[str] = []
+    latest_log = str(lane_status.get("latest_log_line", "")).strip()
+    if latest_log:
+        candidates.append(latest_log)
+    lane_error = str(lane_status.get("error", "")).strip()
+    if lane_error:
+        candidates.append(lane_error)
+    last_event = lane_status.get("last_event", {})
+    if isinstance(last_event, dict) and last_event:
+        try:
+            candidates.append(json.dumps(last_event, sort_keys=True))
+        except Exception:
+            candidates.append(str(last_event))
+    for candidate in candidates:
+        term = _contains_parallel_capacity_signal(candidate)
+        if term:
+            return {
+                "lane_id": lane_id,
+                "matched_term": term,
+                "sample": candidate[-240:],
+            }
+    return {}
+
+
+def _read_parallel_capacity_state(config: ManagerConfig) -> dict[str, Any]:
+    raw = _read_json_file(config.parallel_capacity_state_file)
+    keys = raw.get("keys", {}) if isinstance(raw.get("keys", {}), dict) else {}
+    return {"timestamp": str(raw.get("timestamp", "")).strip(), "keys": keys}
+
+
+def _write_parallel_capacity_state(config: ManagerConfig, payload: dict[str, Any]) -> None:
+    _write_json_file(config.parallel_capacity_state_file, payload)
+
+
+def _append_parallel_capacity_event(config: ManagerConfig, payload: dict[str, Any]) -> None:
+    path = config.parallel_capacity_log_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "timestamp": _now_iso(),
+        "event_type": "parallel_capacity_plan",
+        "payload": payload,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def _parallel_capacity_plan(
+    config: ManagerConfig,
+    lanes: list[dict[str, Any]],
+    *,
+    scaling_plan: dict[str, Any],
+    status_by_id: dict[str, dict[str, Any]],
+    operation: str,
+    requested_lane: str,
+) -> dict[str, Any]:
+    now_iso = _now_iso()
+    scaling_by_lane = scaling_plan.get("by_lane", {}) if isinstance(scaling_plan.get("by_lane", {}), dict) else {}
+    lane_order = {
+        str(item.get("id", "")).strip(): idx
+        for idx, item in enumerate(lanes)
+        if str(item.get("id", "")).strip()
+    }
+
+    groups: dict[str, dict[str, Any]] = {}
+    lane_details: dict[str, dict[str, Any]] = {}
+    for lane in lanes:
+        lane_id = str(lane.get("id", "")).strip()
+        if not lane_id:
+            continue
+        identity = _parallel_identity(lane)
+        key = identity["key"]
+        lane_scaling = scaling_by_lane.get(lane_id, {})
+        scaling_allowed = bool(lane_scaling.get("allowed", True))
+        enabled = bool(lane.get("enabled", False))
+        lane_status = status_by_id.get(lane_id, {})
+        running = bool(lane_status.get("running", False))
+        signal = _lane_parallel_capacity_signal(lane_status)
+
+        group = groups.setdefault(
+            key,
+            {
+                "provider": identity["owner"],
+                "model": identity["model"],
+                "enabled_lane_count": 0,
+                "scaling_eligible_lane_count": 0,
+                "running_count": 0,
+                "running_lane_ids": [],
+                "signal_count": 0,
+                "signals": [],
+                "lane_ids": [],
+            },
+        )
+        if enabled:
+            group["enabled_lane_count"] += 1
+            if scaling_allowed:
+                group["scaling_eligible_lane_count"] += 1
+        if running:
+            group["running_count"] += 1
+            group["running_lane_ids"].append(lane_id)
+        if signal:
+            group["signal_count"] += 1
+            group["signals"].append(signal)
+        group["lane_ids"].append(lane_id)
+
+        lane_details[lane_id] = {
+            "provider": identity["owner"],
+            "model": identity["model"],
+            "parallel_key": key,
+            "enabled": enabled,
+            "scaling_allowed": scaling_allowed,
+            "running": running,
+            "priority": (
+                _int_value(lane_scaling.get("slot", 1), 1),
+                _int_value(lane_scaling.get("rank", lane.get("scaling_rank", 1)), 1),
+                _int_value(lane_order.get(lane_id, 0), 0),
+                lane_id,
+            ),
+        }
+
+    state_payload = _read_parallel_capacity_state(config)
+    previous_keys = state_payload.get("keys", {}) if isinstance(state_payload.get("keys", {}), dict) else {}
+    next_keys: dict[str, dict[str, Any]] = {}
+    key_summaries: dict[str, dict[str, Any]] = {}
+    all_keys = sorted(set(groups) | set(previous_keys))
+
+    for key in all_keys:
+        group = groups.get(key, {})
+        previous = previous_keys.get(key, {})
+        owner, model = _split_parallel_key(key)
+        enabled_count = _int_value(group.get("enabled_lane_count", previous.get("enabled_lane_count", 0)), 0)
+        eligible_count = _int_value(group.get("scaling_eligible_lane_count", previous.get("scaling_eligible_lane_count", 0)), 0)
+        running_count = _int_value(group.get("running_count", previous.get("running_count", 0)), 0)
+        signal_count = _int_value(group.get("signal_count", 0), 0)
+        signals = group.get("signals", [])
+        configured_limit = max(1, min(config.parallel_capacity_max_limit, eligible_count if eligible_count > 0 else max(1, enabled_count)))
+        initial_limit = max(1, min(configured_limit, config.parallel_capacity_default_limit))
+        current_limit = max(1, _int_value(previous.get("limit", initial_limit), initial_limit))
+        current_limit = min(current_limit, configured_limit)
+        stable_cycles = max(0, _int_value(previous.get("stable_cycles", 0), 0))
+        signal_total = max(0, _int_value(previous.get("signal_total", 0), 0))
+        decision = "hold"
+        decision_reason = "stable"
+        last_signal_at = str(previous.get("last_signal_at", "")).strip()
+        last_recovery_at = str(previous.get("last_recovery_at", "")).strip()
+
+        if signal_count > 0:
+            target_limit = max(1, running_count - 1) if running_count > 1 else 1
+            target_limit = max(1, min(current_limit, target_limit))
+            if target_limit < current_limit:
+                decision = "decrease"
+                decision_reason = "capacity_signal"
+            else:
+                decision_reason = "capacity_signal_hold"
+            current_limit = target_limit
+            stable_cycles = 0
+            signal_total += signal_count
+            last_signal_at = now_iso
+        elif running_count <= current_limit:
+            stable_cycles += 1
+            if stable_cycles >= config.parallel_capacity_recovery_cycles and current_limit < configured_limit:
+                current_limit += 1
+                stable_cycles = 0
+                decision = "increase"
+                decision_reason = "recovery_window"
+                last_recovery_at = now_iso
+        else:
+            stable_cycles = 0
+            decision_reason = "running_above_limit"
+
+        effective_limit = max(1, min(current_limit, configured_limit))
+        next_keys[key] = {
+            "provider": owner,
+            "model": model,
+            "limit": effective_limit,
+            "configured_limit": configured_limit,
+            "enabled_lane_count": enabled_count,
+            "scaling_eligible_lane_count": eligible_count,
+            "running_count": running_count,
+            "signal_total": signal_total,
+            "signal_count_last_cycle": signal_count,
+            "stable_cycles": stable_cycles,
+            "last_signal_at": last_signal_at,
+            "last_recovery_at": last_recovery_at,
+            "updated_at": now_iso,
+        }
+        key_summaries[key] = {
+            "provider": owner,
+            "model": model,
+            "parallel_key": key,
+            "effective_limit": effective_limit,
+            "configured_limit": configured_limit,
+            "enabled_lane_count": enabled_count,
+            "scaling_eligible_lane_count": eligible_count,
+            "running_count": running_count,
+            "overflow_count": max(0, running_count - effective_limit),
+            "signal_count": signal_count,
+            "signal_total": signal_total,
+            "signals": signals,
+            "decision": decision,
+            "decision_reason": decision_reason,
+            "last_signal_at": last_signal_at,
+            "last_recovery_at": last_recovery_at,
+        }
+
+    _write_parallel_capacity_state(
+        config,
+        {
+            "timestamp": now_iso,
+            "keys": next_keys,
+        },
+    )
+    _append_parallel_capacity_event(
+        config,
+        {
+            "operation": operation,
+            "requested_lane": requested_lane or "all",
+            "state_file": str(config.parallel_capacity_state_file),
+            "groups": [key_summaries[key] for key in sorted(key_summaries)],
+        },
+    )
+
+    for lane_id, detail in lane_details.items():
+        key = detail["parallel_key"]
+        group = key_summaries.get(key, {})
+        detail["effective_limit"] = _int_value(group.get("effective_limit", config.parallel_capacity_default_limit), config.parallel_capacity_default_limit)
+        detail["running_count"] = _int_value(group.get("running_count", 0), 0)
+
+    return {
+        "timestamp": now_iso,
+        "operation": operation,
+        "requested_lane": requested_lane or "all",
+        "state_file": str(config.parallel_capacity_state_file),
+        "log_file": str(config.parallel_capacity_log_file),
+        "groups": {key: key_summaries[key] for key in sorted(key_summaries)},
+        "by_lane": lane_details,
+    }
+
+
+def _parallel_capacity_snapshot(config: ManagerConfig, lane_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    state_payload = _read_parallel_capacity_state(config)
+    stored = state_payload.get("keys", {}) if isinstance(state_payload.get("keys", {}), dict) else {}
+    aggregates: dict[str, dict[str, Any]] = {}
+    for lane in lane_rows:
+        if not isinstance(lane, dict):
+            continue
+        identity = _parallel_identity(lane)
+        key = identity["key"]
+        entry = aggregates.setdefault(
+            key,
+            {
+                "provider": identity["owner"],
+                "model": identity["model"],
+                "parallel_key": key,
+                "lane_count": 0,
+                "running_count": 0,
+            },
+        )
+        entry["lane_count"] += 1
+        if bool(lane.get("running", False)):
+            entry["running_count"] += 1
+    for key, stored_entry in stored.items():
+        provider, model = _split_parallel_key(key)
+        entry = aggregates.setdefault(
+            key,
+            {
+                "provider": provider,
+                "model": model,
+                "parallel_key": key,
+                "lane_count": 0,
+                "running_count": 0,
+            },
+        )
+        configured_limit = max(1, _int_value(stored_entry.get("configured_limit", entry["lane_count"] or config.parallel_capacity_default_limit), 1))
+        effective_limit = max(1, _int_value(stored_entry.get("limit", min(config.parallel_capacity_default_limit, configured_limit)), 1))
+        entry["configured_limit"] = configured_limit
+        entry["effective_limit"] = min(configured_limit, effective_limit)
+        entry["signal_total"] = max(0, _int_value(stored_entry.get("signal_total", 0), 0))
+        entry["last_signal_at"] = str(stored_entry.get("last_signal_at", "")).strip()
+        entry["last_recovery_at"] = str(stored_entry.get("last_recovery_at", "")).strip()
+    for key, entry in aggregates.items():
+        if "configured_limit" not in entry:
+            configured_limit = max(1, entry["lane_count"])
+            entry["configured_limit"] = configured_limit
+            entry["effective_limit"] = max(1, min(configured_limit, config.parallel_capacity_default_limit))
+            entry["signal_total"] = 0
+            entry["last_signal_at"] = ""
+            entry["last_recovery_at"] = ""
+        entry["at_limit"] = entry["running_count"] >= entry["effective_limit"]
+        entry["over_limit"] = entry["running_count"] > entry["effective_limit"]
+    groups = [aggregates[key] for key in sorted(aggregates)]
+    return {
+        "timestamp": _now_iso(),
+        "state_file": str(config.parallel_capacity_state_file),
+        "log_file": str(config.parallel_capacity_log_file),
+        "groups": groups,
+        "by_key": {item["parallel_key"]: item for item in groups},
+        "ok": True,
+    }
+
+
 def _evaluate_lane_scaling_plan(
     config: ManagerConfig,
     lanes: list[dict[str, Any]],
@@ -3395,6 +3824,7 @@ def _lane_unavailable_snapshot(
     pause_path = _lane_pause_file(config, lane_id)
     heartbeat_file = Path(lane.get("heartbeat_file", runtime_dir / "heartbeat.json"))
     scaling_summary = _lane_scaling_event_summary(events_path)
+    identity = _parallel_identity(lane)
     return {
         "id": lane_id,
         "enabled": bool(lane.get("enabled", False)),
@@ -3421,6 +3851,9 @@ def _lane_unavailable_snapshot(
         "codex_model": str(lane.get("codex_model", "") or ""),
         "gemini_model": str(lane.get("gemini_model", "") or ""),
         "claude_model": str(lane.get("claude_model", "") or ""),
+        "parallel_provider": identity["owner"],
+        "parallel_model": identity["model"],
+        "parallel_key": identity["key"],
         "gemini_fallback_models": [str(model) for model in lane.get("gemini_fallback_models", []) if str(model)],
         "exclusive_paths": [str(path) for path in lane.get("exclusive_paths", []) if str(path)],
         "scaling_mode": str(lane.get("scaling_mode", "static")).strip() or "static",
@@ -3563,6 +3996,7 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
             continue
         for key in scaling_event_counts:
             scaling_event_counts[key] += _int_value(scaling_counts.get(key, 0), 0)
+    parallel_capacity = _parallel_capacity_snapshot(config, snapshots)
     return {
         "timestamp": _now_iso(),
         "lanes_file": str(config.lanes_file),
@@ -3572,6 +4006,7 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
         "health_counts": health_counts,
         "owner_counts": owner_counts,
         "scaling_event_counts": scaling_event_counts,
+        "parallel_capacity": parallel_capacity,
         "partial": True,
         "ok": False,
         "errors": errors,
@@ -3648,6 +4083,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "codex_model": str(lane["codex_model"] or ""),
                     "gemini_model": str(lane["gemini_model"] or ""),
                     "claude_model": str(lane["claude_model"] or ""),
+                    "parallel_provider": _parallel_identity(lane)["owner"],
+                    "parallel_model": _parallel_identity(lane)["model"],
+                    "parallel_key": _parallel_identity(lane)["key"],
                     "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
                     "exclusive_paths": lane["exclusive_paths"],
                     "scaling_mode": str(lane.get("scaling_mode", "static")).strip() or "static",
@@ -3728,6 +4166,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "codex_model": str(lane["codex_model"] or ""),
                     "gemini_model": str(lane["gemini_model"] or ""),
                     "claude_model": str(lane["claude_model"] or ""),
+                    "parallel_provider": _parallel_identity(lane)["owner"],
+                    "parallel_model": _parallel_identity(lane)["model"],
+                    "parallel_key": _parallel_identity(lane)["key"],
                     "gemini_fallback_models": [str(model) for model in lane["gemini_fallback_models"]],
                     "exclusive_paths": lane["exclusive_paths"],
                     "scaling_mode": str(lane.get("scaling_mode", "static")).strip() or "static",
@@ -3808,6 +4249,9 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "codex_model": "",
                 "gemini_model": "",
                 "claude_model": "",
+                "parallel_provider": str(lane_owner).strip().lower() or "unknown",
+                "parallel_model": "default",
+                "parallel_key": _parallel_key(str(lane_owner).strip().lower() or "unknown", "default"),
                 "gemini_fallback_models": [],
                 "exclusive_paths": [],
                 "scaling_mode": "static",
@@ -3870,6 +4314,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
             continue
         for key in scaling_event_counts:
             scaling_event_counts[key] += _int_value(scaling_counts.get(key, 0), 0)
+    parallel_capacity = _parallel_capacity_snapshot(config, snapshots)
     return {
         "timestamp": _now_iso(),
         "lanes_file": str(config.lanes_file),
@@ -3879,6 +4324,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "health_counts": health_counts,
         "owner_counts": owner_counts,
         "scaling_event_counts": scaling_event_counts,
+        "parallel_capacity": parallel_capacity,
         "partial": len(errors) > 0,
         "ok": len(errors) == 0,
         "errors": errors,
@@ -4202,6 +4648,125 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
 
     snapshot = lane_status_snapshot(config)
     by_id = {lane["id"]: lane for lane in snapshot.get("lanes", [])}
+    parallel_plan = _parallel_capacity_plan(
+        config,
+        lanes,
+        scaling_plan=scaling_plan,
+        status_by_id=by_id,
+        operation="ensure",
+        requested_lane=resolved_lane or "",
+    )
+    parallel_groups = parallel_plan.get("groups", {})
+    parallel_by_lane = parallel_plan.get("by_lane", {})
+    running_by_parallel_key = {
+        key: _int_value(payload.get("running_count", 0), 0)
+        for key, payload in parallel_groups.items()
+        if isinstance(payload, dict)
+    }
+    scaling_by_lane = scaling_plan.get("by_lane", {}) if isinstance(scaling_plan.get("by_lane", {}), dict) else {}
+
+    def _parallel_lane_context(lane_payload: dict[str, Any]) -> dict[str, Any]:
+        lane_identity = _parallel_identity(lane_payload)
+        lane_key = lane_identity["key"]
+        lane_plan = parallel_by_lane.get(str(lane_payload.get("id", "")).strip(), {})
+        if isinstance(lane_plan, dict) and str(lane_plan.get("parallel_key", "")).strip():
+            lane_key = str(lane_plan.get("parallel_key")).strip()
+            lane_identity["owner"], lane_identity["model"] = _split_parallel_key(lane_key)
+        group = parallel_groups.get(lane_key, {}) if isinstance(parallel_groups.get(lane_key, {}), dict) else {}
+        limit = max(
+            1,
+            _int_value(
+                group.get("effective_limit", config.parallel_capacity_default_limit),
+                config.parallel_capacity_default_limit,
+            ),
+        )
+        return {
+            "parallel_key": lane_key,
+            "parallel_provider": lane_identity["owner"],
+            "parallel_model": lane_identity["model"],
+            "parallel_limit": limit,
+        }
+
+    if resolved_lane is None:
+        running_by_key: dict[str, list[str]] = {}
+        for lane in selected:
+            current_lane_id = lane["id"]
+            current = by_id.get(current_lane_id, {})
+            if not bool(current.get("running", False)):
+                continue
+            lane_scaling = scaling_by_lane.get(current_lane_id, {})
+            if not bool(lane_scaling.get("allowed", True)):
+                continue
+            lane_context = _parallel_lane_context(lane)
+            running_by_key.setdefault(lane_context["parallel_key"], []).append(current_lane_id)
+        for parallel_key, running_ids in running_by_key.items():
+            group = parallel_groups.get(parallel_key, {}) if isinstance(parallel_groups.get(parallel_key, {}), dict) else {}
+            limit = max(
+                1,
+                _int_value(
+                    group.get("effective_limit", config.parallel_capacity_default_limit),
+                    config.parallel_capacity_default_limit,
+                ),
+            )
+            if len(running_ids) <= limit:
+                continue
+            prioritized = sorted(
+                running_ids,
+                key=lambda lane_name: (
+                    _int_value(scaling_by_lane.get(lane_name, {}).get("slot", 1), 1),
+                    _int_value(scaling_by_lane.get(lane_name, {}).get("rank", 1), 1),
+                    lane_name,
+                ),
+            )
+            overflow = prioritized[limit:]
+            for overflow_lane_id in overflow:
+                lane_spec = next((item for item in selected if item["id"] == overflow_lane_id), None)
+                if lane_spec is None:
+                    continue
+                lane_context = _parallel_lane_context(lane_spec)
+                try:
+                    stop_lane_background(
+                        config,
+                        overflow_lane_id,
+                        reason="scale_down_parallel_limit",
+                        pause=False,
+                    )
+                    running_by_parallel_key[parallel_key] = max(0, running_by_parallel_key.get(parallel_key, 0) - 1)
+                    if isinstance(by_id.get(overflow_lane_id, {}), dict):
+                        by_id[overflow_lane_id]["running"] = False
+                    scaled_down.append(
+                        {
+                            "id": overflow_lane_id,
+                            "status": "scaled_down",
+                            "reason": "provider_model_parallel_limit",
+                            "parallel_key": parallel_key,
+                            "provider": lane_context["parallel_provider"],
+                            "model": lane_context["parallel_model"],
+                            "parallel_limit": lane_context["parallel_limit"],
+                            "running_count": len(prioritized),
+                        }
+                    )
+                    _append_lane_event(
+                        config,
+                        overflow_lane_id,
+                        "scale_down",
+                        {
+                            "reason": "provider_model_parallel_limit",
+                            "parallel_key": parallel_key,
+                            "provider": lane_context["parallel_provider"],
+                            "model": lane_context["parallel_model"],
+                            "parallel_limit": lane_context["parallel_limit"],
+                            "running_count": len(prioritized),
+                        },
+                    )
+                except Exception as err:
+                    failed.append(
+                        {
+                            "id": overflow_lane_id,
+                            "error": str(err),
+                            "source": "lane_runtime",
+                        }
+                    )
 
     for lane in selected:
         if not lane["enabled"]:
@@ -4213,6 +4778,10 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
         running = bool(current.get("running", False))
         stale = bool(current.get("heartbeat_stale", False))
         build_current = bool(current.get("build_current", False))
+        lane_context = _parallel_lane_context(lane)
+        parallel_key = lane_context["parallel_key"]
+        parallel_limit = lane_context["parallel_limit"]
+        current_parallel_running = max(0, _int_value(running_by_parallel_key.get(parallel_key, 0), 0))
         lane_scaling = scaling_plan.get("by_lane", {}).get(current_lane_id, {})
         lane_allowed = bool(lane_scaling.get("allowed", True))
         lane_scale_reason = str(lane_scaling.get("reason", "npv_gate_hold")).strip() or "npv_gate_hold"
@@ -4232,6 +4801,7 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
                     reason="scale_down_npv_gate",
                     pause=False,
                 )
+                running_by_parallel_key[parallel_key] = max(0, current_parallel_running - 1)
                 scaled_down.append(
                     {
                         "id": current_lane_id,
@@ -4256,15 +4826,43 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
         if running and not stale and build_current:
             ensured.append({"id": current_lane_id, "status": "running"})
             continue
+        if not running and current_parallel_running >= parallel_limit:
+            skip_payload = {
+                "id": current_lane_id,
+                "reason": "provider_model_parallel_limit",
+                "parallel_key": parallel_key,
+                "provider": lane_context["parallel_provider"],
+                "model": lane_context["parallel_model"],
+                "parallel_limit": parallel_limit,
+                "running_count": current_parallel_running,
+            }
+            skipped.append(skip_payload)
+            _append_lane_event(
+                config,
+                current_lane_id,
+                "scale_hold",
+                {
+                    "reason": "provider_model_parallel_limit",
+                    "parallel_key": parallel_key,
+                    "provider": lane_context["parallel_provider"],
+                    "model": lane_context["parallel_model"],
+                    "parallel_limit": parallel_limit,
+                    "running_count": current_parallel_running,
+                },
+            )
+            continue
         try:
             if running and (stale or not build_current):
                 reason = "stale_heartbeat" if stale else "build_update"
                 stop_lane_background(config, current_lane_id, reason=reason)
+                running_by_parallel_key[parallel_key] = max(0, current_parallel_running - 1)
                 started_lane = start_lane_background(config, current_lane_id)
+                running_by_parallel_key[parallel_key] = running_by_parallel_key.get(parallel_key, 0) + 1
                 restarted.append({"id": current_lane_id, "status": "restarted", "pid": started_lane.get("pid")})
                 _append_lane_event(config, current_lane_id, "auto_restarted", {"reason": reason})
             else:
                 started_lane = start_lane_background(config, current_lane_id)
+                running_by_parallel_key[parallel_key] = running_by_parallel_key.get(parallel_key, 0) + 1
                 started.append({"id": current_lane_id, "status": "started", "pid": started_lane.get("pid")})
                 _append_lane_event(config, current_lane_id, "auto_started", {"reason": "not_running"})
                 if (
@@ -4298,6 +4896,7 @@ def ensure_lanes_background(config: ManagerConfig, lane_id: str | None = None) -
         "config_errors": [item["error"] for item in config_failures],
         "failed_count": len(failed),
         "scaling": scaling_plan,
+        "parallel_capacity": parallel_plan,
         "ensured": ensured,
         "started": started,
         "restarted": restarted,
@@ -4317,12 +4916,58 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
     if requested_lane is not None and resolved_lane is None:
         raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {config.lanes_file}.")
     scaling_plan = _evaluate_lane_scaling_plan(config, lanes, requested_lane=resolved_lane)
+    snapshot = lane_status_snapshot(config)
+    by_id = {lane["id"]: lane for lane in snapshot.get("lanes", [])}
+    parallel_plan = _parallel_capacity_plan(
+        config,
+        lanes,
+        scaling_plan=scaling_plan,
+        status_by_id=by_id,
+        operation="start",
+        requested_lane=resolved_lane or "",
+    )
+    parallel_groups = parallel_plan.get("groups", {})
+    parallel_by_lane = parallel_plan.get("by_lane", {})
+    running_by_parallel_key = {
+        key: _int_value(payload.get("running_count", 0), 0)
+        for key, payload in parallel_groups.items()
+        if isinstance(payload, dict)
+    }
     started: list[dict[str, Any]] = []
     scaled_up: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     config_failures = _lane_load_error_entries(load_errors) if requested_lane is None else []
     failed: list[dict[str, Any]] = list(config_failures)
+
+    def _parallel_lane_context(lane_payload: dict[str, Any]) -> dict[str, Any]:
+        lane_identity = _parallel_identity(lane_payload)
+        lane_key = lane_identity["key"]
+        lane_plan = parallel_by_lane.get(str(lane_payload.get("id", "")).strip(), {})
+        if isinstance(lane_plan, dict) and str(lane_plan.get("parallel_key", "")).strip():
+            lane_key = str(lane_plan.get("parallel_key")).strip()
+            lane_identity["owner"], lane_identity["model"] = _split_parallel_key(lane_key)
+        group = parallel_groups.get(lane_key, {}) if isinstance(parallel_groups.get(lane_key, {}), dict) else {}
+        limit = max(
+            1,
+            _int_value(
+                group.get("effective_limit", config.parallel_capacity_default_limit),
+                config.parallel_capacity_default_limit,
+            ),
+        )
+        return {
+            "parallel_key": lane_key,
+            "parallel_provider": lane_identity["owner"],
+            "parallel_model": lane_identity["model"],
+            "parallel_limit": limit,
+        }
+
     for lane in selected:
+        lane_context = _parallel_lane_context(lane)
+        parallel_key = lane_context["parallel_key"]
+        parallel_limit = lane_context["parallel_limit"]
+        current = by_id.get(str(lane.get("id", "")).strip(), {})
+        lane_running = bool(current.get("running", False))
+        current_parallel_running = max(0, _int_value(running_by_parallel_key.get(parallel_key, 0), 0))
         lane_scaling = scaling_plan.get("by_lane", {}).get(str(lane.get("id", "")).strip(), {})
         if not bool(lane_scaling.get("allowed", True)):
             skipped.append(
@@ -4334,9 +4979,38 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
                 }
             )
             continue
+        if not lane_running and current_parallel_running >= parallel_limit:
+            skipped.append(
+                {
+                    "id": str(lane.get("id", "")).strip(),
+                    "owner": str(lane.get("owner", "unknown")).strip() or "unknown",
+                    "reason": "provider_model_parallel_limit",
+                    "provider": lane_context["parallel_provider"],
+                    "model": lane_context["parallel_model"],
+                    "parallel_key": parallel_key,
+                    "parallel_limit": parallel_limit,
+                    "running_count": current_parallel_running,
+                }
+            )
+            _append_lane_event(
+                config,
+                str(lane.get("id", "")).strip(),
+                "scale_hold",
+                {
+                    "reason": "provider_model_parallel_limit",
+                    "provider": lane_context["parallel_provider"],
+                    "model": lane_context["parallel_model"],
+                    "parallel_key": parallel_key,
+                    "parallel_limit": parallel_limit,
+                    "running_count": current_parallel_running,
+                },
+            )
+            continue
         try:
             lane_payload = start_lane_background(config, lane["id"])
             started.append(lane_payload)
+            if not lane_running:
+                running_by_parallel_key[parallel_key] = current_parallel_running + 1
             if (
                 str(lane_scaling.get("mode", "static")).strip().lower() == "npv"
                 and _int_value(lane_scaling.get("slot", 1), 1) > 1
@@ -4374,6 +5048,7 @@ def start_lanes_background(config: ManagerConfig, lane_id: str | None = None) ->
         "config_errors": [item["error"] for item in config_failures],
         "failed_count": len(failed),
         "scaling": scaling_plan,
+        "parallel_capacity": parallel_plan,
         "failed": failed,
         "ok": len(failed) == 0,
     }
