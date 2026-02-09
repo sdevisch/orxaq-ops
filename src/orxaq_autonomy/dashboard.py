@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -474,6 +475,7 @@ def _dashboard_html(refresh_sec: int) -> str:
           </div>
         </div>
         <div id="conversationSummary" class="mono">events: loading...</div>
+        <div id="conversationSources" class="mono">source health: loading...</div>
         <div id="conversationFeed" class="feed"></div>
       </article>
 
@@ -836,8 +838,23 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (filters.contains) filterParts.push(`contains=${{filters.contains}}`);
       if (Number(filters.tail || 0) > 0) filterParts.push(`tail=${{filters.tail}}`);
       const filterLabel = filterParts.length ? ` · filters: ${{filterParts.join(", ")}}` : "";
+      const sourceSummary = sourceReports.length
+        ? sourceReports.map((source) => {{
+            const item = source || {{}};
+            const label = String(item.lane_id || item.owner || item.kind || "source");
+            const state = item.ok ? "ok" : "error";
+            const flags = [];
+            if (item.fallback_used) flags.push("fallback");
+            if (item.recoverable_missing) flags.push("recoverable_missing");
+            if (item.missing && !item.recoverable_missing) flags.push("missing");
+            const eventCount = Number(item.event_count || 0);
+            const extras = flags.length ? ` (${{flags.join(",")}})` : "";
+            return `${{label}}:${{state}}#${{eventCount}}${{extras}}`;
+          }}).join(" | ")
+        : "none reported";
       byId("conversationSummary").textContent =
         `events: ${{payload.total_events ?? 0}} · owners: ${{JSON.stringify(ownerCounts)}} · sources: ${{healthySources}}/${{sourceReports.length}} healthy${{partial}}${{errors}}${{filterLabel}}`;
+      byId("conversationSources").textContent = `source health: ${{sourceSummary}}`;
       if (!events.length) {{
         byId("conversationFeed").innerHTML = '<div class="feed-item">No conversation events yet.</div>';
         return;
@@ -956,20 +973,33 @@ def _dashboard_html(refresh_sec: int) -> str:
         const fallbackEvents = monitorRecentEvents.length
           ? monitorRecentEvents
           : (monitorLatestEvent ? [monitorLatestEvent] : []);
+        const fallbackFilters = {{
+          owner: conversationFilters.owner,
+          lane: conversationFilters.lane,
+          event_type: conversationFilters.event_type,
+          contains: conversationFilters.contains,
+          tail: conversationFilters.tail,
+        }};
         const fallbackConv = monitorPayload && monitorPayload.conversations
           ? {{
               total_events: monitorPayload.conversations.total_events || 0,
               owner_counts: monitorPayload.conversations.owner_counts || {{}},
               events: fallbackEvents,
+              sources: Array.isArray(monitorPayload.conversations.sources) ? monitorPayload.conversations.sources : [],
               partial: true,
               errors: [convResult.error || 'conversation endpoint unavailable'],
+              filters: fallbackFilters,
+              unfiltered_total_events: monitorPayload.conversations.total_events || 0,
             }}
           : {{
               total_events: 0,
               owner_counts: {{}},
               events: [],
+              sources: [],
               partial: true,
               errors: [convResult.error || 'conversation endpoint unavailable'],
+              filters: fallbackFilters,
+              unfiltered_total_events: 0,
             }};
         renderConversations(fallbackConv);
       }}
@@ -1583,13 +1613,30 @@ def _safe_conversations_snapshot(
         )
     except Exception as err:
         message = str(err)
+        source_path = Path(config.conversation_log_file)
+        source_missing = not source_path.exists()
         return {
             "timestamp": "",
-            "conversation_files": [str(config.conversation_log_file)],
+            "conversation_files": [str(source_path)],
             "total_events": 0,
             "events": [],
             "owner_counts": {},
-            "sources": [],
+            "sources": [
+                {
+                    "path": str(source_path),
+                    "resolved_path": str(source_path),
+                    "kind": "primary",
+                    "resolved_kind": "primary",
+                    "lane_id": "",
+                    "owner": "",
+                    "ok": False,
+                    "missing": source_missing,
+                    "recoverable_missing": False,
+                    "fallback_used": False,
+                    "error": message,
+                    "event_count": 0,
+                }
+            ],
             "partial": True,
             "ok": False,
             "errors": [message],

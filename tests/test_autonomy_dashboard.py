@@ -37,6 +37,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("laneActionStatus", html)
         self.assertIn("laneOwnerSummary", html)
         self.assertIn("convOwner", html)
+        self.assertIn("conversationSources", html)
         self.assertIn("conversationPath", html)
         self.assertIn("FETCH_TIMEOUT_MS", html)
         self.assertIn("timeout after", html)
@@ -72,6 +73,10 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["partial"])
         self.assertIn("bad lane source", payload["errors"][0])
         self.assertEqual(payload["filters"]["owner"], "codex")
+        self.assertEqual(len(payload["sources"]), 1)
+        self.assertEqual(payload["sources"][0]["kind"], "primary")
+        self.assertFalse(payload["sources"][0]["ok"])
+        self.assertEqual(payload["sources"][0]["path"], str(cfg.conversation_log_file))
 
     def test_apply_conversation_filters_matches_owner_and_lane(self):
         payload = {
