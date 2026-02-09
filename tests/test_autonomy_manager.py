@@ -152,6 +152,10 @@ class ManagerTests(unittest.TestCase):
                     "ORXAQ_AUTONOMY_SCALING_DAILY_BUDGET_USD=45\n"
                     "ORXAQ_AUTONOMY_SCALING_MAX_PARALLEL_AGENTS=4\n"
                     "ORXAQ_AUTONOMY_SCALING_MAX_SUBAGENTS_PER_AGENT=3\n"
+                    "ORXAQ_AUTONOMY_SCALING_DISCOUNT_RATE_ANNUAL=0.11\n"
+                    "ORXAQ_AUTONOMY_SCALING_UNCERTAINTY_PENALTY_RATIO=0.27\n"
+                    "ORXAQ_AUTONOMY_SCALING_VALUE_HORIZON_DAYS=9\n"
+                    "ORXAQ_AUTONOMY_SCALING_COST_HORIZON_DAYS=5\n"
                 ),
                 encoding="utf-8",
             )
@@ -162,6 +166,64 @@ class ManagerTests(unittest.TestCase):
             self.assertAlmostEqual(cfg.scaling_daily_budget_usd, 45.0, places=4)
             self.assertEqual(cfg.scaling_max_parallel_agents, 4)
             self.assertEqual(cfg.scaling_max_subagents_per_agent, 3)
+            self.assertAlmostEqual(cfg.scaling_discount_rate_annual, 0.11, places=6)
+            self.assertAlmostEqual(cfg.scaling_uncertainty_penalty_ratio, 0.27, places=6)
+            self.assertEqual(cfg.scaling_value_horizon_days, 9)
+            self.assertEqual(cfg.scaling_cost_horizon_days, 5)
+
+    def test_manager_config_supports_legacy_routing_scaling_aliases(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                (
+                    "OPENAI_API_KEY=test\n"
+                    "GEMINI_API_KEY=test\n"
+                    f"ORXAQ_IMPL_REPO={root / 'impl_repo'}\n"
+                    f"ORXAQ_TEST_REPO={root / 'test_repo'}\n"
+                    "ORXAQ_ROUTING_MIN_NPV_USD=3.5\n"
+                    "ORXAQ_ROUTING_DAILY_BUDGET_USD=75\n"
+                    "ORXAQ_ROUTING_MAX_PARALLEL_AGENTS=7\n"
+                    "ORXAQ_ROUTING_MAX_SUBAGENTS_PER_AGENT=4\n"
+                    "ORXAQ_ROUTING_NPV_DISCOUNT_RATE_ANNUAL=0.09\n"
+                    "ORXAQ_ROUTING_NPV_UNCERTAINTY_PENALTY_RATIO=0.12\n"
+                    "ORXAQ_ROUTING_NPV_VALUE_HORIZON_DAYS=8\n"
+                    "ORXAQ_ROUTING_NPV_COST_HORIZON_DAYS=6\n"
+                ),
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            self.assertAlmostEqual(cfg.scaling_min_marginal_npv_usd, 3.5, places=6)
+            self.assertAlmostEqual(cfg.scaling_daily_budget_usd, 75.0, places=6)
+            self.assertEqual(cfg.scaling_max_parallel_agents, 7)
+            self.assertEqual(cfg.scaling_max_subagents_per_agent, 4)
+            self.assertAlmostEqual(cfg.scaling_discount_rate_annual, 0.09, places=6)
+            self.assertAlmostEqual(cfg.scaling_uncertainty_penalty_ratio, 0.12, places=6)
+            self.assertEqual(cfg.scaling_value_horizon_days, 8)
+            self.assertEqual(cfg.scaling_cost_horizon_days, 6)
+
+    def test_scaling_economics_payload_computes_discounted_marginal_npv(self):
+        economics = manager._scaling_economics_payload(
+            {
+                "expected_daily_value_uplift_usd": 8.0,
+                "expected_daily_incremental_cost_usd": 3.0,
+                "confidence_score": 0.5,
+            },
+            discount_rate_annual_default=0.2,
+            uncertainty_penalty_ratio_default=0.1,
+            value_horizon_days_default=4,
+            cost_horizon_days_default=4,
+        )
+        self.assertEqual(economics["source"], "computed_components")
+        self.assertTrue(economics["has_component_inputs"])
+        computed = economics["computed"]
+        self.assertGreater(computed["discounted_expected_value_usd"], computed["discounted_expected_incremental_cost_usd"])
+        self.assertGreater(computed["uncertainty_penalty_usd"], 0.0)
+        self.assertAlmostEqual(
+            computed["selected_marginal_npv_usd"],
+            computed["computed_marginal_npv_usd"],
+            places=6,
+        )
 
     def test_manager_config_reads_parallel_capacity_env(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2456,6 +2518,12 @@ class ManagerTests(unittest.TestCase):
             )
             decision_file = root / "artifacts" / "autonomy" / "scaling_decision.json"
             decision_file.parent.mkdir(parents=True, exist_ok=True)
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8")
+                + "ORXAQ_AUTONOMY_SCALING_ENABLED=1\n",
+                encoding="utf-8",
+            )
             decision_file.write_text(
                 json.dumps(
                     {
@@ -3960,6 +4028,86 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(lane["latest_scale_event"]["event_type"], "scale_down")
             self.assertEqual(snapshot["scaling_event_counts"]["scale_up"], 1)
             self.assertEqual(snapshot["scaling_event_counts"]["scale_down"], 1)
+
+    def test_lane_status_snapshot_includes_npv_scaling_decision_details(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            decision_file = root / "artifacts" / "autonomy" / "scaling_decision.json"
+            decision_file.parent.mkdir(parents=True, exist_ok=True)
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8") + "ORXAQ_AUTONOMY_SCALING_ENABLED=1\n",
+                encoding="utf-8",
+            )
+            decision_file.write_text(
+                json.dumps(
+                    {
+                        "decision": "scale_up",
+                        "should_scale": True,
+                        "expected_daily_value_uplift_usd": 8.0,
+                        "expected_daily_incremental_cost_usd": 2.5,
+                        "confidence_score": 0.75,
+                        "capacity": {
+                            "requested_parallel_agents": 1,
+                            "requested_subagents_per_agent": 1,
+                        },
+                        "constraints": {
+                            "projected_daily_spend_usd": 2.5,
+                            "daily_budget_usd": 15.0,
+                            "max_parallel_agents": 3,
+                            "max_subagents_per_agent": 2,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "scaling_mode": "npv",
+                                "scaling_group": "codex-core",
+                                "scaling_rank": 1,
+                                "scaling_decision_file": str(decision_file),
+                                "scaling_min_marginal_npv_usd": 1.0,
+                                "scaling_daily_budget_usd": 15.0,
+                                "scaling_max_parallel_agents": 3,
+                                "scaling_max_subagents_per_agent": 2,
+                                "scaling_discount_rate_annual": 0.1,
+                                "scaling_uncertainty_penalty_ratio": 0.2,
+                                "scaling_value_horizon_days": 4,
+                                "scaling_cost_horizon_days": 4,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            snapshot = manager.lane_status_snapshot(cfg)
+            lane = snapshot["lanes"][0]
+            self.assertTrue(lane["scaling_allowed"])
+            self.assertEqual(lane["scaling_decision_reason"], "approved")
+            decision = lane["scaling_decision"]
+            self.assertEqual(decision["decision"], "scale_up")
+            self.assertEqual(decision["requested_parallel_agents"], 1)
+            self.assertIn("economics", decision)
+            self.assertEqual(decision["economics"]["source"], "computed_components")
+            self.assertGreater(
+                decision["economics"]["computed"]["selected_marginal_npv_usd"],
+                0.0,
+            )
+            self.assertEqual(snapshot["scaling"]["groups"]["codex-core"]["reason"], "approved")
 
     def test_lane_status_fallback_snapshot_preserves_lane_owner_identity(self):
         with tempfile.TemporaryDirectory() as td:

@@ -1525,11 +1525,39 @@ def main(argv: list[str] | None = None) -> int:
                     latest_scale = lane.get("latest_scale_event", {})
                     if not isinstance(latest_scale, dict):
                         latest_scale = {}
+                    decision_payload = lane.get("scaling_decision", {})
+                    if not isinstance(decision_payload, dict):
+                        decision_payload = {}
+                    economics_payload = decision_payload.get("economics", {})
+                    if not isinstance(economics_payload, dict):
+                        economics_payload = {}
+                    computed_payload = economics_payload.get("computed", {})
+                    if not isinstance(computed_payload, dict):
+                        computed_payload = {}
+                    selected_npv_raw = computed_payload.get(
+                        "selected_marginal_npv_usd",
+                        decision_payload.get("marginal_npv_usd", 0.0),
+                    )
+                    projected_spend_raw = decision_payload.get("projected_daily_spend_usd", 0.0)
+                    try:
+                        selected_npv = float(selected_npv_raw)
+                    except (TypeError, ValueError):
+                        selected_npv = 0.0
+                    try:
+                        projected_spend = float(projected_spend_raw)
+                    except (TypeError, ValueError):
+                        projected_spend = 0.0
                     print(
                         "  scaling: "
                         f"mode={str(lane.get('scaling_mode', 'static')).strip() or 'static'} "
                         f"group={str(lane.get('scaling_group', '')).strip() or '-'} "
                         f"rank={_safe_int(lane.get('scaling_rank', 1), 1)} "
+                        f"allowed={bool(lane.get('scaling_allowed', True))} "
+                        f"reason={str(lane.get('scaling_decision_reason', 'unknown')).strip() or 'unknown'} "
+                        f"slot={_safe_int(lane.get('scaling_slot', 1), 1)}/"
+                        f"{_safe_int(lane.get('scaling_allowed_parallel_lanes', 1), 1)} "
+                        f"npv=${selected_npv:.2f} "
+                        f"spend=${projected_spend:.2f} "
                         f"up={_safe_int(lane.get('scale_up_events', 0), 0)} "
                         f"down={_safe_int(lane.get('scale_down_events', 0), 0)} "
                         f"hold={_safe_int(lane.get('scale_hold_events', 0), 0)} "

@@ -1959,6 +1959,29 @@ def _dashboard_html(refresh_sec: int) -> str:
         const routeLabel = routeEnabled ? "enabled" : "disabled";
         const policyFile = lanePolicyFile(lane);
         const modelHint = laneModelHint(lane);
+        const scalingMode = String((lane && lane.scaling_mode) || "static").trim().toLowerCase() || "static";
+        const scalingReason = String((lane && lane.scaling_decision_reason) || "unknown").trim() || "unknown";
+        const scalingAllowed = !!(lane && lane.scaling_allowed);
+        const scalingDecision = (lane && lane.scaling_decision && typeof lane.scaling_decision === "object")
+          ? lane.scaling_decision
+          : {{}};
+        const economics = (scalingDecision.economics && typeof scalingDecision.economics === "object")
+          ? scalingDecision.economics
+          : {{}};
+        const computed = (economics.computed && typeof economics.computed === "object")
+          ? economics.computed
+          : {{}};
+        let selectedNpv = Number(
+          computed.selected_marginal_npv_usd !== undefined
+            ? computed.selected_marginal_npv_usd
+            : scalingDecision.marginal_npv_usd
+        );
+        if (!Number.isFinite(selectedNpv)) selectedNpv = 0;
+        let projectedSpend = Number(scalingDecision.projected_daily_spend_usd);
+        if (!Number.isFinite(projectedSpend)) projectedSpend = 0;
+        const scalingSummary = scalingMode === "npv"
+          ? `npv:${{scalingAllowed ? "allow" : "hold"}} ${{selectedNpv.toFixed(2)}} spend:${{projectedSpend.toFixed(2)}} reason=${{scalingReason}}`
+          : `scaling:${{scalingMode}}`;
         return `<tr>
           <td><div class="mono">${{escapeHtml(laneId)}}</div><div>${{escapeHtml(String(lane.description || ""))}}</div></td>
           <td class="mono">${{escapeHtml(String(lane.owner || "unknown"))}}</td>
@@ -1967,7 +1990,7 @@ def _dashboard_html(refresh_sec: int) -> str:
           <td class="mono">${{formatAgeSeconds(age)}}</td>
           <td class="mono">d=${{done}} p=${{pending}} w=${{inProgress}} b=${{blocked}}</td>
           <td><span class="${{routeClass}}">${{routeLabel}}</span><div class="mono">${{escapeHtml(policyFile || "-")}}</div></td>
-          <td class="mono">${{escapeHtml(modelHint)}}</td>
+          <td><div class="mono">${{escapeHtml(modelHint)}}</div><div class="mono">${{escapeHtml(scalingSummary)}}</div></td>
           <td><div class="mono">${{escapeHtml(lastEventType)}}</div><div class="mono">${{escapeHtml(lastEventTs)}}</div></td>
           <td class="mono">${{escapeHtml(sourceText)}}</td>
           <td><div class="mono">${{latestConversationText}}</div>${{latestConversationContent}}</td>

@@ -261,6 +261,10 @@ class ManagerConfig:
     scaling_daily_budget_usd: float
     scaling_max_parallel_agents: int
     scaling_max_subagents_per_agent: int
+    scaling_discount_rate_annual: float
+    scaling_uncertainty_penalty_ratio: float
+    scaling_value_horizon_days: int
+    scaling_cost_horizon_days: int
     parallel_capacity_state_file: Path
     parallel_capacity_log_file: Path
     parallel_capacity_default_limit: int
@@ -345,11 +349,29 @@ class ManagerConfig:
         default_scale_enabled = _bool("ORXAQ_ROUTELLM_SCALE_ENABLED", False)
         default_scale_min_npv = _float(
             "ORXAQ_ROUTELLM_SCALE_MIN_NPV_USD",
-            _float("ORXAQ_ROUTELLM_MIN_NPV_USD", 0.0),
+            _float(
+                "ORXAQ_ROUTELLM_MIN_NPV_USD",
+                _float("ORXAQ_ROUTING_MIN_NPV_USD", 0.0),
+            ),
         )
-        default_scale_daily_budget = _float("ORXAQ_ROUTELLM_DAILY_BUDGET_USD", 0.0)
-        default_scale_max_parallel = max(1, _int("ORXAQ_ROUTELLM_MAX_PARALLEL_AGENTS", 1))
-        default_scale_max_subagents = max(1, _int("ORXAQ_ROUTELLM_MAX_SUBAGENTS_PER_AGENT", 1))
+        default_scale_daily_budget = _float(
+            "ORXAQ_ROUTELLM_DAILY_BUDGET_USD",
+            _float("ORXAQ_ROUTING_DAILY_BUDGET_USD", 0.0),
+        )
+        default_scale_max_parallel = max(
+            1,
+            _int(
+                "ORXAQ_ROUTELLM_MAX_PARALLEL_AGENTS",
+                _int("ORXAQ_ROUTING_MAX_PARALLEL_AGENTS", 1),
+            ),
+        )
+        default_scale_max_subagents = max(
+            1,
+            _int(
+                "ORXAQ_ROUTELLM_MAX_SUBAGENTS_PER_AGENT",
+                _int("ORXAQ_ROUTING_MAX_SUBAGENTS_PER_AGENT", 1),
+            ),
+        )
         scaling_enabled = _bool("ORXAQ_AUTONOMY_SCALING_ENABLED", default_scale_enabled)
         scaling_decision_file = _path(
             "ORXAQ_AUTONOMY_SCALING_DECISION_FILE",
@@ -370,6 +392,74 @@ class ManagerConfig:
         scaling_max_subagents_per_agent = max(
             1,
             _int("ORXAQ_AUTONOMY_SCALING_MAX_SUBAGENTS_PER_AGENT", default_scale_max_subagents),
+        )
+        default_discount_rate = max(
+            0.0,
+            _float(
+                "ORXAQ_ROUTELLM_NPV_DISCOUNT_RATE_ANNUAL",
+                _float(
+                    "ORXAQ_ROUTELLM_SCALE_DISCOUNT_RATE_ANNUAL",
+                    _float("ORXAQ_ROUTING_NPV_DISCOUNT_RATE_ANNUAL", 0.0),
+                ),
+            ),
+        )
+        default_uncertainty_penalty = max(
+            0.0,
+            _float(
+                "ORXAQ_ROUTELLM_NPV_UNCERTAINTY_PENALTY_RATIO",
+                _float(
+                    "ORXAQ_ROUTELLM_SCALE_UNCERTAINTY_PENALTY_RATIO",
+                    _float("ORXAQ_ROUTING_NPV_UNCERTAINTY_PENALTY_RATIO", 0.0),
+                ),
+            ),
+        )
+        default_value_horizon_days = max(
+            1,
+            _int(
+                "ORXAQ_ROUTELLM_NPV_VALUE_HORIZON_DAYS",
+                _int(
+                    "ORXAQ_ROUTELLM_SCALE_VALUE_HORIZON_DAYS",
+                    _int("ORXAQ_ROUTING_NPV_VALUE_HORIZON_DAYS", 1),
+                ),
+            ),
+        )
+        default_cost_horizon_days = max(
+            1,
+            _int(
+                "ORXAQ_ROUTELLM_NPV_COST_HORIZON_DAYS",
+                _int(
+                    "ORXAQ_ROUTELLM_SCALE_COST_HORIZON_DAYS",
+                    _int("ORXAQ_ROUTING_NPV_COST_HORIZON_DAYS", default_value_horizon_days),
+                ),
+            ),
+        )
+        scaling_discount_rate_annual = max(
+            0.0,
+            _float(
+                "ORXAQ_AUTONOMY_SCALING_DISCOUNT_RATE_ANNUAL",
+                default_discount_rate,
+            ),
+        )
+        scaling_uncertainty_penalty_ratio = max(
+            0.0,
+            _float(
+                "ORXAQ_AUTONOMY_SCALING_UNCERTAINTY_PENALTY_RATIO",
+                default_uncertainty_penalty,
+            ),
+        )
+        scaling_value_horizon_days = max(
+            1,
+            _int(
+                "ORXAQ_AUTONOMY_SCALING_VALUE_HORIZON_DAYS",
+                default_value_horizon_days,
+            ),
+        )
+        scaling_cost_horizon_days = max(
+            1,
+            _int(
+                "ORXAQ_AUTONOMY_SCALING_COST_HORIZON_DAYS",
+                default_cost_horizon_days,
+            ),
         )
         parallel_capacity_state_file = _path(
             "ORXAQ_AUTONOMY_PARALLEL_CAPACITY_STATE_FILE",
@@ -463,6 +553,10 @@ class ManagerConfig:
             scaling_daily_budget_usd=scaling_daily_budget_usd,
             scaling_max_parallel_agents=scaling_max_parallel_agents,
             scaling_max_subagents_per_agent=scaling_max_subagents_per_agent,
+            scaling_discount_rate_annual=scaling_discount_rate_annual,
+            scaling_uncertainty_penalty_ratio=scaling_uncertainty_penalty_ratio,
+            scaling_value_horizon_days=scaling_value_horizon_days,
+            scaling_cost_horizon_days=scaling_cost_horizon_days,
             parallel_capacity_state_file=parallel_capacity_state_file,
             parallel_capacity_log_file=parallel_capacity_log_file,
             parallel_capacity_default_limit=parallel_capacity_default_limit,
@@ -1137,6 +1231,10 @@ def _lane_build_id(config: ManagerConfig, lane: dict[str, Any]) -> str:
         "scaling_daily_budget_usd",
         "scaling_max_parallel_agents",
         "scaling_max_subagents_per_agent",
+        "scaling_discount_rate_annual",
+        "scaling_uncertainty_penalty_ratio",
+        "scaling_value_horizon_days",
+        "scaling_cost_horizon_days",
     )
     for key in lane_keys:
         hasher.update(str(key).encode("utf-8"))
@@ -2218,6 +2316,14 @@ def _augment_lane_payload_with_conversation_rollup(
                     "scaling_daily_budget_usd": 0.0,
                     "scaling_max_parallel_agents": 1,
                     "scaling_max_subagents_per_agent": 1,
+                    "scaling_discount_rate_annual": 0.0,
+                    "scaling_uncertainty_penalty_ratio": 0.0,
+                    "scaling_value_horizon_days": 1,
+                    "scaling_cost_horizon_days": 1,
+                    "scaling_allowed": False,
+                    "scaling_decision_reason": "unknown",
+                    "scaling_decision_reasons": [],
+                    "scaling_decision": {},
                     "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
                     "scale_up_events": 0,
                     "scale_down_events": 0,
@@ -3028,6 +3134,22 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         1,
         _lane_int("scaling_max_subagents_per_agent", config.scaling_max_subagents_per_agent),
     )
+    scaling_discount_rate_annual = max(
+        0.0,
+        _lane_float("scaling_discount_rate_annual", config.scaling_discount_rate_annual),
+    )
+    scaling_uncertainty_penalty_ratio = max(
+        0.0,
+        _lane_float("scaling_uncertainty_penalty_ratio", config.scaling_uncertainty_penalty_ratio),
+    )
+    scaling_value_horizon_days = max(
+        1,
+        _lane_int("scaling_value_horizon_days", config.scaling_value_horizon_days),
+    )
+    scaling_cost_horizon_days = max(
+        1,
+        _lane_int("scaling_cost_horizon_days", config.scaling_cost_horizon_days),
+    )
 
     return {
         "id": lane_id,
@@ -3088,6 +3210,10 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
         "scaling_daily_budget_usd": scaling_daily_budget_usd,
         "scaling_max_parallel_agents": scaling_max_parallel_agents,
         "scaling_max_subagents_per_agent": scaling_max_subagents_per_agent,
+        "scaling_discount_rate_annual": scaling_discount_rate_annual,
+        "scaling_uncertainty_penalty_ratio": scaling_uncertainty_penalty_ratio,
+        "scaling_value_horizon_days": scaling_value_horizon_days,
+        "scaling_cost_horizon_days": scaling_cost_horizon_days,
         "runtime_dir": runtime_dir,
     }
 
@@ -3219,6 +3345,213 @@ def _coerce_bool(raw: Any, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _discounted_cashflow_usd(amount_usd: float, day: int, annual_discount_rate: float) -> float:
+    value = float(amount_usd)
+    if value == 0.0:
+        return 0.0
+    normalized_day = max(0, int(day))
+    rate = max(0.0, float(annual_discount_rate))
+    if rate <= 0.0:
+        return value
+    return value / pow(1.0 + rate, normalized_day / 365.0)
+
+
+def _parse_cashflow_schedule(raw: Any) -> list[dict[str, float]]:
+    if not isinstance(raw, list):
+        return []
+    points: list[dict[str, float]] = []
+    for index, item in enumerate(raw, start=1):
+        if isinstance(item, dict):
+            day = max(1, _int_value(item.get("day", index), index))
+            amount = _float_value(
+                item.get("usd", item.get("value_usd", item.get("amount_usd", 0.0))),
+                0.0,
+            )
+        else:
+            day = index
+            amount = _float_value(item, 0.0)
+        if amount == 0.0:
+            continue
+        points.append({"day": float(day), "usd": float(amount)})
+    return points
+
+
+def _daily_cashflow_points(daily_amount_usd: float, horizon_days: int) -> list[dict[str, float]]:
+    amount = float(daily_amount_usd)
+    if amount == 0.0:
+        return []
+    return [{"day": float(day), "usd": amount} for day in range(1, max(1, int(horizon_days)) + 1)]
+
+
+def _sum_undiscounted(points: list[dict[str, float]]) -> float:
+    return float(sum(_float_value(item.get("usd", 0.0), 0.0) for item in points))
+
+
+def _sum_discounted(points: list[dict[str, float]], annual_discount_rate: float) -> float:
+    total = 0.0
+    for item in points:
+        total += _discounted_cashflow_usd(
+            _float_value(item.get("usd", 0.0), 0.0),
+            max(0, _int_value(item.get("day", 0), 0)),
+            annual_discount_rate,
+        )
+    return float(total)
+
+
+def _scaling_economics_payload(
+    raw_decision: dict[str, Any],
+    *,
+    discount_rate_annual_default: float,
+    uncertainty_penalty_ratio_default: float,
+    value_horizon_days_default: int,
+    cost_horizon_days_default: int,
+) -> dict[str, Any]:
+    constraints = raw_decision.get("constraints", {})
+    if not isinstance(constraints, dict):
+        constraints = {}
+
+    annual_discount_rate = max(
+        0.0,
+        _float_value(raw_decision.get("annual_discount_rate", discount_rate_annual_default), discount_rate_annual_default),
+    )
+    value_horizon_days = max(
+        1,
+        _int_value(raw_decision.get("value_horizon_days", value_horizon_days_default), value_horizon_days_default),
+    )
+    cost_horizon_days = max(
+        1,
+        _int_value(raw_decision.get("cost_horizon_days", cost_horizon_days_default), cost_horizon_days_default),
+    )
+    uncertainty_penalty_ratio = max(
+        0.0,
+        _float_value(
+            raw_decision.get("uncertainty_penalty_ratio", uncertainty_penalty_ratio_default),
+            uncertainty_penalty_ratio_default,
+        ),
+    )
+    confidence_score_raw = _float_value(raw_decision.get("confidence_score", 1.0), 1.0)
+    confidence_score = min(1.0, max(0.0, confidence_score_raw))
+    explicit_marginal_npv = _float_value(raw_decision.get("marginal_npv_usd", 0.0), 0.0)
+
+    expected_value_uplift_usd = _float_value(raw_decision.get("expected_value_uplift_usd", 0.0), 0.0)
+    expected_daily_value_uplift_usd = _float_value(raw_decision.get("expected_daily_value_uplift_usd", 0.0), 0.0)
+    expected_incremental_cost_usd = max(
+        0.0,
+        _float_value(
+            raw_decision.get("expected_incremental_cost_usd", raw_decision.get("incremental_cost_usd", 0.0)),
+            0.0,
+        ),
+    )
+    expected_daily_incremental_cost_usd = max(
+        0.0,
+        _float_value(raw_decision.get("expected_daily_incremental_cost_usd", 0.0), 0.0),
+    )
+    projected_daily_spend_usd = max(
+        0.0,
+        _float_value(
+            constraints.get("projected_daily_spend_usd", raw_decision.get("projected_daily_spend_usd", 0.0)),
+            0.0,
+        ),
+    )
+
+    value_schedule = _parse_cashflow_schedule(
+        raw_decision.get("value_schedule_usd", raw_decision.get("value_schedule", []))
+    )
+    cost_schedule = _parse_cashflow_schedule(
+        raw_decision.get("cost_schedule_usd", raw_decision.get("cost_schedule", []))
+    )
+
+    if not value_schedule:
+        if expected_daily_value_uplift_usd != 0.0:
+            value_schedule = _daily_cashflow_points(expected_daily_value_uplift_usd, value_horizon_days)
+        elif expected_value_uplift_usd != 0.0:
+            realization_day = max(
+                1,
+                _int_value(raw_decision.get("value_realization_days", value_horizon_days), value_horizon_days),
+            )
+            value_schedule = [{"day": float(realization_day), "usd": float(expected_value_uplift_usd)}]
+
+    if not cost_schedule:
+        if expected_daily_incremental_cost_usd > 0.0:
+            cost_schedule = _daily_cashflow_points(expected_daily_incremental_cost_usd, cost_horizon_days)
+        elif projected_daily_spend_usd > 0.0:
+            cost_schedule = _daily_cashflow_points(projected_daily_spend_usd, cost_horizon_days)
+        elif expected_incremental_cost_usd > 0.0:
+            cost_schedule = [{"day": 1.0, "usd": float(expected_incremental_cost_usd)}]
+
+    has_value_signal = bool(value_schedule) or expected_value_uplift_usd != 0.0 or expected_daily_value_uplift_usd != 0.0
+    has_cost_signal = bool(cost_schedule) or expected_incremental_cost_usd > 0.0 or expected_daily_incremental_cost_usd > 0.0
+    has_component_inputs = has_value_signal and (has_cost_signal or projected_daily_spend_usd > 0.0 or "marginal_npv_usd" not in raw_decision)
+
+    discounted_value_usd = _sum_discounted(value_schedule, annual_discount_rate)
+    discounted_cost_usd = _sum_discounted(cost_schedule, annual_discount_rate)
+    undiscounted_cost_usd = _sum_undiscounted(cost_schedule)
+    derived_projected_daily_spend = (
+        undiscounted_cost_usd / max(1, cost_horizon_days)
+        if undiscounted_cost_usd > 0.0
+        else 0.0
+    )
+    effective_projected_daily_spend_usd = (
+        projected_daily_spend_usd
+        if projected_daily_spend_usd > 0.0
+        else derived_projected_daily_spend
+    )
+
+    uncertainty_penalty_raw = raw_decision.get("uncertainty_penalty_usd")
+    if uncertainty_penalty_raw is not None:
+        uncertainty_penalty_usd = max(0.0, _float_value(uncertainty_penalty_raw, 0.0))
+    else:
+        confidence_multiplier = max(0.0, 1.0 - confidence_score)
+        if "confidence_score" in raw_decision:
+            uncertainty_penalty_usd = max(0.0, discounted_value_usd) * uncertainty_penalty_ratio * confidence_multiplier
+        else:
+            uncertainty_penalty_usd = max(0.0, discounted_value_usd) * uncertainty_penalty_ratio
+
+    computed_marginal_npv_usd = discounted_value_usd - discounted_cost_usd - uncertainty_penalty_usd
+    prefer_explicit = _coerce_bool(raw_decision.get("prefer_explicit_marginal_npv", False), False)
+    if prefer_explicit:
+        selected_source = "explicit_override"
+        selected_marginal_npv_usd = explicit_marginal_npv
+    elif has_component_inputs:
+        selected_source = "computed_components"
+        selected_marginal_npv_usd = computed_marginal_npv_usd
+    else:
+        selected_source = "explicit_decision"
+        selected_marginal_npv_usd = explicit_marginal_npv
+
+    return {
+        "source": selected_source,
+        "has_component_inputs": has_component_inputs,
+        "assumptions": {
+            "annual_discount_rate": round(annual_discount_rate, 6),
+            "uncertainty_penalty_ratio": round(uncertainty_penalty_ratio, 6),
+            "value_horizon_days": value_horizon_days,
+            "cost_horizon_days": cost_horizon_days,
+            "confidence_score": round(confidence_score, 6),
+        },
+        "inputs": {
+            "expected_value_uplift_usd": round(expected_value_uplift_usd, 6),
+            "expected_daily_value_uplift_usd": round(expected_daily_value_uplift_usd, 6),
+            "expected_incremental_cost_usd": round(expected_incremental_cost_usd, 6),
+            "expected_daily_incremental_cost_usd": round(expected_daily_incremental_cost_usd, 6),
+            "projected_daily_spend_usd": round(projected_daily_spend_usd, 6),
+            "effective_projected_daily_spend_usd": round(effective_projected_daily_spend_usd, 6),
+            "value_schedule_count": len(value_schedule),
+            "cost_schedule_count": len(cost_schedule),
+        },
+        "computed": {
+            "discounted_expected_value_usd": round(discounted_value_usd, 6),
+            "discounted_expected_incremental_cost_usd": round(discounted_cost_usd, 6),
+            "undiscounted_expected_incremental_cost_usd": round(undiscounted_cost_usd, 6),
+            "uncertainty_penalty_usd": round(uncertainty_penalty_usd, 6),
+            "computed_marginal_npv_usd": round(computed_marginal_npv_usd, 6),
+            "explicit_marginal_npv_usd": round(explicit_marginal_npv, 6),
+            "selected_marginal_npv_usd": round(selected_marginal_npv_usd, 6),
+            "selected_minus_explicit_usd": round(selected_marginal_npv_usd - explicit_marginal_npv, 6),
+        },
+    }
 
 
 _PARALLEL_CAPACITY_SIGNAL_TERMS = (
@@ -3673,6 +4006,46 @@ def _evaluate_lane_scaling_plan(
             max(1, _int_value(item.get("scaling_max_subagents_per_agent", 1), 1))
             for item in ordered
         )
+        configured_discount_rate = max(
+            0.0,
+            max(
+                _float_value(
+                    item.get("scaling_discount_rate_annual", config.scaling_discount_rate_annual),
+                    config.scaling_discount_rate_annual,
+                )
+                for item in ordered
+            ),
+        )
+        configured_uncertainty_penalty_ratio = max(
+            0.0,
+            max(
+                _float_value(
+                    item.get("scaling_uncertainty_penalty_ratio", config.scaling_uncertainty_penalty_ratio),
+                    config.scaling_uncertainty_penalty_ratio,
+                )
+                for item in ordered
+            ),
+        )
+        configured_value_horizon_days = max(
+            1,
+            min(
+                max(
+                    1,
+                    _int_value(item.get("scaling_value_horizon_days", config.scaling_value_horizon_days), config.scaling_value_horizon_days),
+                )
+                for item in ordered
+            ),
+        )
+        configured_cost_horizon_days = max(
+            1,
+            max(
+                max(
+                    1,
+                    _int_value(item.get("scaling_cost_horizon_days", config.scaling_cost_horizon_days), config.scaling_cost_horizon_days),
+                )
+                for item in ordered
+            ),
+        )
         decision_payload = {
             "group": group_id,
             "decision_file": str(decision_file),
@@ -3687,6 +4060,13 @@ def _evaluate_lane_scaling_plan(
             "constraint_daily_budget_usd": 0.0,
             "constraint_max_parallel_agents": configured_max_parallel,
             "constraint_max_subagents_per_agent": configured_max_subagents,
+            "npv_assumptions": {
+                "annual_discount_rate": configured_discount_rate,
+                "uncertainty_penalty_ratio": configured_uncertainty_penalty_ratio,
+                "value_horizon_days": configured_value_horizon_days,
+                "cost_horizon_days": configured_cost_horizon_days,
+            },
+            "economics": {},
             "decision": "hold",
         }
         reasons: list[str] = []
@@ -3730,7 +4110,19 @@ def _evaluate_lane_scaling_plan(
                         1,
                     ),
                 )
-                marginal_npv_usd = _float_value(raw_decision.get("marginal_npv_usd", 0.0), 0.0)
+                economics = _scaling_economics_payload(
+                    raw_decision,
+                    discount_rate_annual_default=configured_discount_rate,
+                    uncertainty_penalty_ratio_default=configured_uncertainty_penalty_ratio,
+                    value_horizon_days_default=configured_value_horizon_days,
+                    cost_horizon_days_default=configured_cost_horizon_days,
+                )
+                economics_computed = economics.get("computed", {}) if isinstance(economics.get("computed", {}), dict) else {}
+                economics_inputs = economics.get("inputs", {}) if isinstance(economics.get("inputs", {}), dict) else {}
+                marginal_npv_usd = _float_value(
+                    economics_computed.get("selected_marginal_npv_usd", raw_decision.get("marginal_npv_usd", 0.0)),
+                    _float_value(raw_decision.get("marginal_npv_usd", 0.0), 0.0),
+                )
                 projected_daily_spend_usd = max(
                     0.0,
                     _float_value(
@@ -3740,6 +4132,10 @@ def _evaluate_lane_scaling_plan(
                         ),
                         0.0,
                     ),
+                )
+                projected_daily_spend_usd = max(
+                    projected_daily_spend_usd,
+                    max(0.0, _float_value(economics_inputs.get("effective_projected_daily_spend_usd", 0.0), 0.0)),
                 )
                 constraint_daily_budget = max(
                     0.0,
@@ -3775,6 +4171,8 @@ def _evaluate_lane_scaling_plan(
                         "constraint_daily_budget_usd": constraint_daily_budget,
                         "constraint_max_parallel_agents": constraint_max_parallel,
                         "constraint_max_subagents_per_agent": constraint_max_subagents,
+                        "npv_assumptions": economics.get("assumptions", {}),
+                        "economics": economics,
                     }
                 )
 
@@ -3843,6 +4241,47 @@ def _evaluate_lane_scaling_plan(
         "errors": errors,
         "ok": len(errors) == 0,
     }
+
+
+def _apply_scaling_plan_to_lane_snapshots(
+    lane_rows: list[dict[str, Any]],
+    scaling_plan: dict[str, Any],
+) -> None:
+    by_lane = scaling_plan.get("by_lane", {}) if isinstance(scaling_plan.get("by_lane", {}), dict) else {}
+    if not by_lane:
+        return
+    for lane in lane_rows:
+        if not isinstance(lane, dict):
+            continue
+        lane_id = str(lane.get("id", "")).strip()
+        if not lane_id:
+            continue
+        lane_plan = by_lane.get(lane_id, {})
+        if not isinstance(lane_plan, dict):
+            continue
+        decision_payload = lane_plan.get("decision", {})
+        reasons = lane_plan.get("reasons", [])
+        lane["scaling_allowed"] = bool(lane_plan.get("allowed", lane.get("scaling_allowed", True)))
+        lane["scaling_decision_reason"] = str(
+            lane_plan.get("reason", lane.get("scaling_decision_reason", "unknown"))
+        ).strip() or "unknown"
+        lane["scaling_decision_reasons"] = [
+            str(item).strip()
+            for item in reasons
+            if str(item).strip()
+        ] if isinstance(reasons, list) else []
+        lane["scaling_slot"] = max(1, _int_value(lane_plan.get("slot", lane.get("scaling_slot", 1)), 1))
+        lane["scaling_allowed_parallel_lanes"] = max(
+            1,
+            _int_value(
+                lane_plan.get(
+                    "allowed_parallel_lanes",
+                    lane.get("scaling_allowed_parallel_lanes", 1),
+                ),
+                1,
+            ),
+        )
+        lane["scaling_decision"] = decision_payload if isinstance(decision_payload, dict) else {}
 
 
 def _read_lane_state_counts(state_file: Path) -> dict[str, int]:
@@ -4033,6 +4472,14 @@ def _lane_unavailable_snapshot(
         "scaling_daily_budget_usd": _float_value(lane.get("scaling_daily_budget_usd", 0.0), 0.0),
         "scaling_max_parallel_agents": max(1, _int_value(lane.get("scaling_max_parallel_agents", 1), 1)),
         "scaling_max_subagents_per_agent": max(1, _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1)),
+        "scaling_discount_rate_annual": max(0.0, _float_value(lane.get("scaling_discount_rate_annual", 0.0), 0.0)),
+        "scaling_uncertainty_penalty_ratio": max(0.0, _float_value(lane.get("scaling_uncertainty_penalty_ratio", 0.0), 0.0)),
+        "scaling_value_horizon_days": max(1, _int_value(lane.get("scaling_value_horizon_days", 1), 1)),
+        "scaling_cost_horizon_days": max(1, _int_value(lane.get("scaling_cost_horizon_days", 1), 1)),
+        "scaling_allowed": True,
+        "scaling_decision_reason": "unknown",
+        "scaling_decision_reasons": [],
+        "scaling_decision": {},
         "scaling_event_counts": scaling_summary.get("counts", {}),
         "scale_up_events": _int_value(scaling_summary.get("counts", {}).get("scale_up", 0), 0),
         "scale_down_events": _int_value(scaling_summary.get("counts", {}).get("scale_down", 0), 0),
@@ -4125,6 +4572,14 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
                 "scaling_daily_budget_usd": 0.0,
                 "scaling_max_parallel_agents": 1,
                 "scaling_max_subagents_per_agent": 1,
+                "scaling_discount_rate_annual": 0.0,
+                "scaling_uncertainty_penalty_ratio": 0.0,
+                "scaling_value_horizon_days": 1,
+                "scaling_cost_horizon_days": 1,
+                "scaling_allowed": False,
+                "scaling_decision_reason": "unknown",
+                "scaling_decision_reasons": [],
+                "scaling_decision": {},
                 "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
                 "scale_up_events": 0,
                 "scale_down_events": 0,
@@ -4157,6 +4612,13 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
         )
         errors.append(lane_error)
 
+    scaling_plan = _evaluate_lane_scaling_plan(config, lanes)
+    _apply_scaling_plan_to_lane_snapshots(snapshots, scaling_plan)
+    for scaling_error in scaling_plan.get("errors", []):
+        message = str(scaling_error).strip()
+        if message:
+            errors.append(f"scaling: {message}")
+
     health_counts, owner_counts = _lane_health_owner_counts(snapshots)
     scaling_event_counts = {"scale_up": 0, "scale_down": 0, "scale_hold": 0}
     for lane in snapshots:
@@ -4174,6 +4636,7 @@ def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[
         "lanes": snapshots,
         "health_counts": health_counts,
         "owner_counts": owner_counts,
+        "scaling": scaling_plan,
         "scaling_event_counts": scaling_event_counts,
         "parallel_capacity": parallel_capacity,
         "partial": True,
@@ -4274,6 +4737,26 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                         1,
                         _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1),
                     ),
+                    "scaling_discount_rate_annual": max(
+                        0.0,
+                        _float_value(lane.get("scaling_discount_rate_annual", 0.0), 0.0),
+                    ),
+                    "scaling_uncertainty_penalty_ratio": max(
+                        0.0,
+                        _float_value(lane.get("scaling_uncertainty_penalty_ratio", 0.0), 0.0),
+                    ),
+                    "scaling_value_horizon_days": max(
+                        1,
+                        _int_value(lane.get("scaling_value_horizon_days", 1), 1),
+                    ),
+                    "scaling_cost_horizon_days": max(
+                        1,
+                        _int_value(lane.get("scaling_cost_horizon_days", 1), 1),
+                    ),
+                    "scaling_allowed": True,
+                    "scaling_decision_reason": "unknown",
+                    "scaling_decision_reasons": [],
+                    "scaling_decision": {},
                     "scaling_event_counts": scaling_summary.get("counts", {}),
                     "scale_up_events": _int_value(scaling_summary.get("counts", {}).get("scale_up", 0), 0),
                     "scale_down_events": _int_value(scaling_summary.get("counts", {}).get("scale_down", 0), 0),
@@ -4357,6 +4840,26 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                         1,
                         _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1),
                     ),
+                    "scaling_discount_rate_annual": max(
+                        0.0,
+                        _float_value(lane.get("scaling_discount_rate_annual", 0.0), 0.0),
+                    ),
+                    "scaling_uncertainty_penalty_ratio": max(
+                        0.0,
+                        _float_value(lane.get("scaling_uncertainty_penalty_ratio", 0.0), 0.0),
+                    ),
+                    "scaling_value_horizon_days": max(
+                        1,
+                        _int_value(lane.get("scaling_value_horizon_days", 1), 1),
+                    ),
+                    "scaling_cost_horizon_days": max(
+                        1,
+                        _int_value(lane.get("scaling_cost_horizon_days", 1), 1),
+                    ),
+                    "scaling_allowed": False,
+                    "scaling_decision_reason": "unknown",
+                    "scaling_decision_reasons": [],
+                    "scaling_decision": {},
                     "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
                     "scale_up_events": 0,
                     "scale_down_events": 0,
@@ -4431,6 +4934,14 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "scaling_daily_budget_usd": 0.0,
                 "scaling_max_parallel_agents": 1,
                 "scaling_max_subagents_per_agent": 1,
+                "scaling_discount_rate_annual": 0.0,
+                "scaling_uncertainty_penalty_ratio": 0.0,
+                "scaling_value_horizon_days": 1,
+                "scaling_cost_horizon_days": 1,
+                "scaling_allowed": False,
+                "scaling_decision_reason": "unknown",
+                "scaling_decision_reasons": [],
+                "scaling_decision": {},
                 "scaling_event_counts": {"scale_up": 0, "scale_down": 0, "scale_hold": 0},
                 "scale_up_events": 0,
                 "scale_down_events": 0,
@@ -4461,6 +4972,12 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "meta": {},
             }
         )
+    scaling_plan = _evaluate_lane_scaling_plan(config, lanes)
+    _apply_scaling_plan_to_lane_snapshots(snapshots, scaling_plan)
+    for scaling_error in scaling_plan.get("errors", []):
+        message = str(scaling_error).strip()
+        if message:
+            errors.append(f"scaling: {message}")
     health_counts: dict[str, int] = {}
     owner_counts: dict[str, dict[str, int]] = {}
     healthy_states = {"ok", "paused", "idle"}
@@ -4492,6 +5009,7 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "lanes": snapshots,
         "health_counts": health_counts,
         "owner_counts": owner_counts,
+        "scaling": scaling_plan,
         "scaling_event_counts": scaling_event_counts,
         "parallel_capacity": parallel_capacity,
         "partial": len(errors) > 0,
@@ -4734,6 +5252,22 @@ def start_lane_background(config: ManagerConfig, lane_id: str) -> dict[str, Any]
             "scaling_max_subagents_per_agent": max(
                 1,
                 _int_value(lane.get("scaling_max_subagents_per_agent", 1), 1),
+            ),
+            "scaling_discount_rate_annual": max(
+                0.0,
+                _float_value(lane.get("scaling_discount_rate_annual", 0.0), 0.0),
+            ),
+            "scaling_uncertainty_penalty_ratio": max(
+                0.0,
+                _float_value(lane.get("scaling_uncertainty_penalty_ratio", 0.0), 0.0),
+            ),
+            "scaling_value_horizon_days": max(
+                1,
+                _int_value(lane.get("scaling_value_horizon_days", 1), 1),
+            ),
+            "scaling_cost_horizon_days": max(
+                1,
+                _int_value(lane.get("scaling_cost_horizon_days", 1), 1),
             ),
         },
     )
