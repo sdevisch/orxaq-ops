@@ -49,6 +49,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("conversationSources", html)
         self.assertIn("conversationPath", html)
         self.assertIn("laneStatusPath", html)
+        self.assertIn("include_conversations", html)
+        self.assertIn("conversation_lines", html)
         self.assertIn("fallbackLanePayloadFromMonitor", html)
         self.assertIn("lane endpoint:", html)
         self.assertIn("filterFallbackConversationEvents", html)
@@ -61,6 +63,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("stale cache used", html)
         self.assertIn("using cached snapshot", html)
         self.assertIn("buildConversationSourceMap", html)
+        self.assertIn("buildLatestConversationByLane", html)
+        self.assertIn("latest_conversation=", html)
         self.assertIn("FETCH_TIMEOUT_MS", html)
         self.assertIn("timeout after", html)
         self.assertIn("const rawBody = await response.text();", html)
@@ -128,6 +132,9 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(payload["runtime"]["lane_operational_count"], 1)
         self.assertEqual(payload["runtime"]["lane_owner_health"]["codex"]["total"], 1)
         self.assertEqual(payload["conversations"]["recent_events"][0]["lane_id"], "lane-a")
+        self.assertEqual(payload["lanes"]["lanes"][0]["conversation_event_count"], 1)
+        self.assertEqual(payload["lanes"]["lanes"][0]["conversation_source_state"], "ok")
+        self.assertEqual(payload["lanes"]["lanes"][0]["latest_conversation_event"]["event_type"], "status")
         self.assertTrue(payload["diagnostics"]["sources"]["lanes"]["ok"])
         self.assertTrue(payload["diagnostics"]["sources"]["conversations"]["ok"])
         self.assertFalse(payload["diagnostics"]["sources"]["monitor"]["ok"])
@@ -463,6 +470,84 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(payload["suppressed_source_error_count"], 1)
         self.assertEqual(len(payload["sources"]), 2)
         self.assertEqual(payload["errors"], [])
+
+    def test_lane_conversation_rollup_tracks_latest_event_and_source_health(self):
+        payload = {
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "older",
+                },
+                {
+                    "timestamp": "2026-01-01T00:00:02+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "message",
+                    "content": "newer",
+                },
+            ],
+            "sources": [
+                {
+                    "lane_id": "lane-a",
+                    "ok": False,
+                    "error": "lane file unavailable",
+                    "event_count": 1,
+                    "missing": True,
+                    "recoverable_missing": False,
+                    "fallback_used": True,
+                }
+            ],
+        }
+        rollup = dashboard._lane_conversation_rollup(payload)
+        self.assertIn("lane-a", rollup)
+        lane_rollup = rollup["lane-a"]
+        self.assertEqual(lane_rollup["source_state"], "error")
+        self.assertEqual(lane_rollup["source_error_count"], 1)
+        self.assertEqual(lane_rollup["missing_count"], 1)
+        self.assertEqual(lane_rollup["fallback_count"], 1)
+        self.assertEqual(lane_rollup["event_count"], 2)
+        self.assertEqual(lane_rollup["latest_event"]["event_type"], "message")
+        self.assertEqual(lane_rollup["latest_event"]["content"], "newer")
+
+    def test_augment_lane_payload_with_conversation_rollup_embeds_lane_fields(self):
+        lane_payload = {
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+                {"id": "lane-b", "owner": "gemini", "running": False, "health": "stopped"},
+            ]
+        }
+        conversation_payload = {
+            "ok": False,
+            "partial": True,
+            "errors": ["lane-b stream unavailable"],
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "ready",
+                }
+            ],
+            "sources": [
+                {"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1},
+                {"lane_id": "lane-b", "ok": False, "error": "lane-b stream unavailable", "event_count": 0},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        lane_a = next(item for item in enriched["lanes"] if item["id"] == "lane-a")
+        lane_b = next(item for item in enriched["lanes"] if item["id"] == "lane-b")
+        self.assertEqual(lane_a["conversation_source_state"], "ok")
+        self.assertEqual(lane_a["conversation_event_count"], 1)
+        self.assertEqual(lane_a["latest_conversation_event"]["event_type"], "status")
+        self.assertEqual(lane_b["conversation_source_state"], "error")
+        self.assertEqual(lane_b["conversation_source_error_count"], 1)
+        self.assertEqual(enriched["conversation_errors"], ["lane-b stream unavailable"])
+        self.assertTrue(enriched["conversation_partial"])
+        self.assertFalse(enriched["conversation_ok"])
 
     def test_safe_lane_action_returns_structured_error(self):
         cfg = mock.Mock()

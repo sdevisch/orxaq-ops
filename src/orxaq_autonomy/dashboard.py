@@ -530,9 +530,10 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
     function laneStatusPath() {{
       const laneTarget = String(byId("laneTarget").value || "").trim();
-      if (!laneTarget) return "/api/lanes";
       const query = new URLSearchParams();
-      query.set("lane", laneTarget);
+      query.set("include_conversations", "1");
+      query.set("conversation_lines", "200");
+      if (laneTarget) query.set("lane", laneTarget);
       return `/api/lanes?${{query.toString()}}`;
     }}
     function fallbackLanePayloadFromMonitor(monitorPayload, laneTarget, laneEndpointError) {{
@@ -847,6 +848,23 @@ def _dashboard_html(refresh_sec: int) -> str:
       return byLane;
     }}
 
+    function buildLatestConversationByLane(payload) {{
+      const events = payload && Array.isArray(payload.events) ? payload.events : [];
+      const byLane = {{}};
+      for (const entry of events) {{
+        const event = entry || {{}};
+        const laneId = String(event.lane_id || "").trim();
+        if (!laneId) continue;
+        const existing = byLane[laneId];
+        const ts = String(event.timestamp || "").trim();
+        const existingTs = existing ? String(existing.timestamp || "").trim() : "";
+        if (!existing || ts >= existingTs) {{
+          byLane[laneId] = event;
+        }}
+      }}
+      return byLane;
+    }}
+
     function renderLanes(lanes, runtime, conversations) {{
       const lanePayload = lanes || {{}};
       const laneItems = lanePayload.lanes || [];
@@ -854,7 +872,15 @@ def _dashboard_html(refresh_sec: int) -> str:
         ? lanePayload.errors.filter((item) => String(item || "").trim())
         : [];
       const laneSourceMap = buildConversationSourceMap(conversations || {{}});
-      const laneSourceErrorCount = Object.values(laneSourceMap).filter((item) => !item.ok).length;
+      const latestConversationByLane = buildLatestConversationByLane(conversations || {{}});
+      const laneSourceErrorCount = laneItems.filter((lane) => {{
+        const laneId = String((lane && lane.id) || "").trim();
+        const source = laneSourceMap[laneId] || null;
+        if (source) {{
+          return !source.ok;
+        }}
+        return lane && lane.conversation_source_ok === false;
+      }}).length;
       const runningLanes = Number(lanePayload.running_count || 0);
       const totalLanes = Number(lanePayload.total_count || 0);
       const laneHealthCounts = lanePayload.health_counts || {{}};
@@ -910,10 +936,11 @@ def _dashboard_html(refresh_sec: int) -> str:
             const buildCurrent = lane.build_current ? "current" : "stale";
             const lastEvent = (lane.last_event && lane.last_event.event_type) ? ` · event=${{lane.last_event.event_type}}` : "";
             const error = lane.error ? `<div class="line bad">error: ${{escapeHtml(lane.error)}}</div>` : "";
-            const source = laneSourceMap[String(lane.id || "").trim()] || null;
+            const laneId = String(lane.id || "").trim();
+            const source = laneSourceMap[laneId] || null;
             const sourceFlags = [];
             let sourceState = "unreported";
-            let sourceEvents = 0;
+            let sourceEvents = Number(lane.conversation_event_count || 0);
             if (source) {{
               sourceState = source.ok ? "ok" : "error";
               sourceEvents = Number(source.event_count || 0);
@@ -924,14 +951,38 @@ def _dashboard_html(refresh_sec: int) -> str:
                 sourceFlags.push("missing");
               }}
               if ((source.errors || []).length) sourceFlags.push(`errors=${{(source.errors || []).length}}`);
+            }} else {{
+              if (lane.conversation_source_ok === true) {{
+                sourceState = "ok";
+              }} else if (lane.conversation_source_ok === false) {{
+                sourceState = "error";
+              }}
+              const fallbackCount = Number(lane.conversation_source_fallback_count || 0);
+              const missingCount = Number(lane.conversation_source_missing_count || 0);
+              const recoverableMissingCount = Number(lane.conversation_source_recoverable_missing_count || 0);
+              const sourceErrorCount = Number(lane.conversation_source_error_count || 0);
+              if (fallbackCount > 0) sourceFlags.push("fallback");
+              if (recoverableMissingCount > 0) {{
+                sourceFlags.push("recoverable_missing");
+              }} else if (missingCount > 0) {{
+                sourceFlags.push("missing");
+              }}
+              if (sourceErrorCount > 0) sourceFlags.push(`errors=${{sourceErrorCount}}`);
             }}
             const sourceExtras = sourceFlags.length ? ` (${{sourceFlags.join(",")}})` : "";
             const conversationSourceLine =
               `<div class="line mono">conversation_source=${{sourceState}} events=${{sourceEvents}}${{sourceExtras}}</div>`;
+            const latestConversation = (lane && lane.latest_conversation_event)
+              ? lane.latest_conversation_event
+              : (latestConversationByLane[laneId] || null);
+            const latestConversationLine = latestConversation
+              ? `<div class="line mono">latest_conversation=${{escapeHtml(String(latestConversation.timestamp || ""))}} owner=${{escapeHtml(String(latestConversation.owner || "unknown"))}} type=${{escapeHtml(String(latestConversation.event_type || "-"))}}${{String(latestConversation.content || "").trim() ? ` content=${{escapeHtml(String(latestConversation.content).trim().slice(0, 120))}}` : ""}}</div>`
+              : `<div class="line mono">latest_conversation=none</div>`;
             return [
               `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s · build=${{buildCurrent}}</div>`,
               `<div class="line mono">tasks d=${{done}} p=${{pending}} w=${{inProgress}} b=${{blocked}}${{lastEvent}}</div>`,
               conversationSourceLine,
+              latestConversationLine,
               error,
             ].join("");
           }}).join("")
@@ -1411,6 +1462,22 @@ def start_dashboard(
                         _safe_lane_status_snapshot(config),
                         lane_id=query.get("lane", [""])[0],
                     )
+                    include_conversations = _parse_bool(query, "include_conversations", default=True)
+                    if include_conversations:
+                        conversation_lines = _parse_bounded_int(
+                            query,
+                            "conversation_lines",
+                            default=200,
+                            minimum=1,
+                            maximum=2000,
+                        )
+                        conversation_payload = _safe_conversations_snapshot(
+                            config,
+                            lines=conversation_lines,
+                            include_lanes=True,
+                            lane_id=query.get("lane", [""])[0],
+                        )
+                        payload = _augment_lane_payload_with_conversation_rollup(payload, conversation_payload)
                     self._send_json(payload)
                     return
                 if parsed.path == "/api/conversations":
@@ -1829,6 +1896,166 @@ def _filter_conversation_payload_for_lane(
     return filtered
 
 
+def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    source_reports = conversation_payload.get("sources", [])
+    if not isinstance(source_reports, list):
+        source_reports = []
+    events = conversation_payload.get("events", [])
+    if not isinstance(events, list):
+        events = []
+
+    rollup_raw: dict[str, dict[str, Any]] = {}
+
+    def _entry(lane_id: str) -> dict[str, Any]:
+        return rollup_raw.setdefault(
+            lane_id,
+            {
+                "lane_id": lane_id,
+                "source_count": 0,
+                "source_ok": None,
+                "source_event_count": 0,
+                "source_error_count": 0,
+                "missing_count": 0,
+                "recoverable_missing_count": 0,
+                "fallback_count": 0,
+                "observed_event_count": 0,
+                "latest_event": {},
+            },
+        )
+
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    for item in source_reports:
+        if not isinstance(item, dict):
+            continue
+        lane_key = str(item.get("lane_id", "")).strip()
+        if not lane_key:
+            continue
+        current = _entry(lane_key)
+        current["source_count"] += 1
+        current_ok = bool(item.get("ok", False))
+        if current["source_ok"] is None:
+            current["source_ok"] = current_ok
+        else:
+            current["source_ok"] = bool(current["source_ok"]) and current_ok
+        current["source_event_count"] += max(0, _safe_int(item.get("event_count", 0)))
+        if str(item.get("error", "")).strip():
+            current["source_error_count"] += 1
+        if bool(item.get("missing", False)):
+            current["missing_count"] += 1
+        if bool(item.get("recoverable_missing", False)):
+            current["recoverable_missing_count"] += 1
+        if bool(item.get("fallback_used", False)):
+            current["fallback_count"] += 1
+
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        lane_key = str(item.get("lane_id", "")).strip()
+        if not lane_key:
+            continue
+        current = _entry(lane_key)
+        current["observed_event_count"] += 1
+        candidate = {
+            "timestamp": str(item.get("timestamp", "")).strip(),
+            "owner": str(item.get("owner", "unknown")).strip() or "unknown",
+            "lane_id": lane_key,
+            "task_id": str(item.get("task_id", "")).strip(),
+            "event_type": str(item.get("event_type", "")).strip(),
+            "content": str(item.get("content", "")).strip(),
+            "source": str(item.get("source", "")).strip(),
+            "source_kind": str(item.get("source_kind", "")).strip(),
+        }
+        existing = current.get("latest_event", {})
+        existing_ts = _parse_event_timestamp(existing.get("timestamp")) if isinstance(existing, dict) else None
+        candidate_ts = _parse_event_timestamp(candidate.get("timestamp"))
+        if existing_ts is None and candidate_ts is None:
+            should_replace = str(candidate.get("timestamp", "")) >= str(existing.get("timestamp", "")) if isinstance(existing, dict) else True
+        elif existing_ts is None:
+            should_replace = True
+        elif candidate_ts is None:
+            should_replace = False
+        else:
+            should_replace = candidate_ts >= existing_ts
+        if should_replace:
+            current["latest_event"] = candidate
+
+    rollup: dict[str, dict[str, Any]] = {}
+    for lane_key, item in rollup_raw.items():
+        source_ok = item.get("source_ok")
+        source_state = "unreported"
+        if source_ok is True:
+            source_state = "ok"
+        elif source_ok is False:
+            source_state = "error"
+        rollup[lane_key] = {
+            "lane_id": lane_key,
+            "source_count": _safe_int(item.get("source_count", 0)),
+            "source_ok": source_ok,
+            "source_state": source_state,
+            "event_count": max(
+                _safe_int(item.get("source_event_count", 0)),
+                _safe_int(item.get("observed_event_count", 0)),
+            ),
+            "source_error_count": _safe_int(item.get("source_error_count", 0)),
+            "missing_count": _safe_int(item.get("missing_count", 0)),
+            "recoverable_missing_count": _safe_int(item.get("recoverable_missing_count", 0)),
+            "fallback_count": _safe_int(item.get("fallback_count", 0)),
+            "latest_event": item.get("latest_event", {}) if isinstance(item.get("latest_event", {}), dict) else {},
+        }
+    return rollup
+
+
+def _augment_lane_payload_with_conversation_rollup(
+    lane_payload: dict[str, Any],
+    conversation_payload: dict[str, Any],
+) -> dict[str, Any]:
+    rollup = _lane_conversation_rollup(conversation_payload)
+    lane_items = lane_payload.get("lanes", [])
+    if not isinstance(lane_items, list):
+        lane_items = []
+
+    enriched_lanes: list[dict[str, Any]] = []
+    for lane in lane_items:
+        if not isinstance(lane, dict):
+            continue
+        lane_id = str(lane.get("id", "")).strip()
+        lane_rollup = rollup.get(lane_id, {})
+        lane_copy = dict(lane)
+        lane_copy["conversation_event_count"] = int(lane_rollup.get("event_count", 0))
+        lane_copy["conversation_source_count"] = int(lane_rollup.get("source_count", 0))
+        lane_copy["conversation_source_state"] = str(lane_rollup.get("source_state", "unreported"))
+        source_ok = lane_rollup.get("source_ok")
+        lane_copy["conversation_source_ok"] = source_ok if isinstance(source_ok, bool) else None
+        lane_copy["conversation_source_error_count"] = int(lane_rollup.get("source_error_count", 0))
+        lane_copy["conversation_source_missing_count"] = int(lane_rollup.get("missing_count", 0))
+        lane_copy["conversation_source_recoverable_missing_count"] = int(lane_rollup.get("recoverable_missing_count", 0))
+        lane_copy["conversation_source_fallback_count"] = int(lane_rollup.get("fallback_count", 0))
+        lane_copy["latest_conversation_event"] = (
+            lane_rollup.get("latest_event", {})
+            if isinstance(lane_rollup.get("latest_event", {}), dict)
+            else {}
+        )
+        enriched_lanes.append(lane_copy)
+
+    conversation_errors = conversation_payload.get("errors", [])
+    if not isinstance(conversation_errors, list):
+        conversation_errors = [str(conversation_errors)] if str(conversation_errors).strip() else []
+    normalized_errors = [str(item).strip() for item in conversation_errors if str(item).strip()]
+
+    result = dict(lane_payload)
+    result["lanes"] = enriched_lanes
+    result["conversation_by_lane"] = rollup
+    result["conversation_partial"] = bool(conversation_payload.get("partial", False))
+    result["conversation_ok"] = bool(conversation_payload.get("ok", False))
+    result["conversation_errors"] = normalized_errors
+    return result
+
+
 def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") -> dict[str, Any]:
     normalized_action = action.strip().lower()
     normalized_lane = lane_id.strip() or None
@@ -2107,6 +2334,20 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             progress_counts["unknown"] = 1
 
         running_count = sum(1 for lane in lane_items if bool(lane.get("running", False)))
+        lanes_snapshot_payload = _augment_lane_payload_with_conversation_rollup(
+            {
+                **lane_payload,
+                "running_count": running_count,
+                "total_count": len(lane_items),
+                "lanes": lane_items,
+                "health_counts": lane_health_counts,
+                "owner_counts": lane_owner_counts,
+                "partial": bool(lane_payload.get("partial", False)) or bool(lane_errors),
+                "ok": bool(lane_payload.get("ok", False)) and not bool(lane_errors),
+                "errors": lane_errors,
+            },
+            conversation_payload,
+        )
         return {
             "timestamp": "",
             "latest_log_line": f"monitor snapshot error: {message}",
@@ -2124,17 +2365,7 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "blocked_tasks": sorted(set(blocked_tasks)),
                 "source": "fallback_partial",
             },
-            "lanes": {
-                **lane_payload,
-                "running_count": running_count,
-                "total_count": len(lane_items),
-                "lanes": lane_items,
-                "health_counts": lane_health_counts,
-                "owner_counts": lane_owner_counts,
-                "partial": bool(lane_payload.get("partial", False)) or bool(lane_errors),
-                "ok": bool(lane_payload.get("ok", False)) and not bool(lane_errors),
-                "errors": lane_errors,
-            },
+            "lanes": lanes_snapshot_payload,
             "runtime": {
                 "primary_runner_running": False,
                 "lane_agents_running": running_count > 0,

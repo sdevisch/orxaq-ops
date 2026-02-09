@@ -832,6 +832,53 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "lanes-status"])
             self.assertEqual(rc, 0)
 
+    def test_lanes_status_command_with_conversations_embeds_rollup(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "lanes_file": "config/lanes.json",
+                "running_count": 1,
+                "total_count": 1,
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "pid": 123, "health": "ok"}],
+            }
+            conversation_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "ready",
+                    }
+                ],
+                "sources": [
+                    {"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1},
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conversation_payload,
+            ) as conversations:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--with-conversations"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            lane = data["lanes"][0]
+            self.assertEqual(lane["conversation_source_state"], "ok")
+            self.assertEqual(lane["conversation_event_count"], 1)
+            self.assertEqual(lane["latest_conversation_event"]["event_type"], "status")
+            self.assertIn("conversation_by_lane", data)
+            self.assertTrue(data["conversation_ok"])
+            self.assertFalse(data["conversation_partial"])
+            kwargs = conversations.call_args.kwargs
+            self.assertEqual(kwargs["lines"], 200)
+            self.assertTrue(kwargs["include_lanes"])
+
     def test_lanes_status_command_with_lane_filter(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -467,6 +468,175 @@ def _lane_conversation_source_health(payload: dict[str, Any], *, lane_id: str) -
     }
 
 
+def _parse_event_timestamp(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _lane_conversation_rollup(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    reports = payload.get("sources", [])
+    if not isinstance(reports, list):
+        reports = []
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        events = []
+
+    by_lane_raw: dict[str, dict[str, Any]] = {}
+
+    def _entry(lane_id: str) -> dict[str, Any]:
+        return by_lane_raw.setdefault(
+            lane_id,
+            {
+                "lane_id": lane_id,
+                "source_count": 0,
+                "source_ok": None,
+                "source_event_count": 0,
+                "source_error_count": 0,
+                "missing_count": 0,
+                "recoverable_missing_count": 0,
+                "fallback_count": 0,
+                "observed_event_count": 0,
+                "latest_event": {},
+            },
+        )
+
+    for source in reports:
+        if not isinstance(source, dict):
+            continue
+        lane_id = str(source.get("lane_id", "")).strip()
+        if not lane_id:
+            continue
+        current = _entry(lane_id)
+        current["source_count"] += 1
+        source_ok = bool(source.get("ok", False))
+        if current["source_ok"] is None:
+            current["source_ok"] = source_ok
+        else:
+            current["source_ok"] = bool(current["source_ok"]) and source_ok
+        current["source_event_count"] += max(0, _safe_int(source.get("event_count", 0), 0))
+        if str(source.get("error", "")).strip():
+            current["source_error_count"] += 1
+        if bool(source.get("missing", False)):
+            current["missing_count"] += 1
+        if bool(source.get("recoverable_missing", False)):
+            current["recoverable_missing_count"] += 1
+        if bool(source.get("fallback_used", False)):
+            current["fallback_count"] += 1
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        lane_id = str(event.get("lane_id", "")).strip()
+        if not lane_id:
+            continue
+        current = _entry(lane_id)
+        current["observed_event_count"] += 1
+        candidate = {
+            "timestamp": str(event.get("timestamp", "")).strip(),
+            "owner": str(event.get("owner", "unknown")).strip() or "unknown",
+            "lane_id": lane_id,
+            "task_id": str(event.get("task_id", "")).strip(),
+            "event_type": str(event.get("event_type", "")).strip(),
+            "content": str(event.get("content", "")).strip(),
+            "source": str(event.get("source", "")).strip(),
+            "source_kind": str(event.get("source_kind", "")).strip(),
+        }
+        existing = current.get("latest_event", {})
+        existing_ts = _parse_event_timestamp(existing.get("timestamp")) if isinstance(existing, dict) else None
+        candidate_ts = _parse_event_timestamp(candidate.get("timestamp"))
+        if existing_ts is None and candidate_ts is None:
+            should_replace = str(candidate.get("timestamp", "")) >= str(existing.get("timestamp", "")) if isinstance(existing, dict) else True
+        elif existing_ts is None:
+            should_replace = True
+        elif candidate_ts is None:
+            should_replace = False
+        else:
+            should_replace = candidate_ts >= existing_ts
+        if should_replace:
+            current["latest_event"] = candidate
+
+    rollup: dict[str, dict[str, Any]] = {}
+    for lane_id, item in by_lane_raw.items():
+        source_ok = item.get("source_ok")
+        source_state = "unreported"
+        if source_ok is True:
+            source_state = "ok"
+        elif source_ok is False:
+            source_state = "error"
+        rollup[lane_id] = {
+            "lane_id": lane_id,
+            "event_count": max(
+                _safe_int(item.get("source_event_count", 0), 0),
+                _safe_int(item.get("observed_event_count", 0), 0),
+            ),
+            "source_count": _safe_int(item.get("source_count", 0), 0),
+            "source_ok": source_ok,
+            "source_state": source_state,
+            "source_error_count": _safe_int(item.get("source_error_count", 0), 0),
+            "missing_count": _safe_int(item.get("missing_count", 0), 0),
+            "recoverable_missing_count": _safe_int(item.get("recoverable_missing_count", 0), 0),
+            "fallback_count": _safe_int(item.get("fallback_count", 0), 0),
+            "latest_event": item.get("latest_event", {}) if isinstance(item.get("latest_event", {}), dict) else {},
+        }
+    return rollup
+
+
+def _augment_lane_status_with_conversations(
+    lane_payload: dict[str, Any],
+    conversation_payload: dict[str, Any],
+) -> dict[str, Any]:
+    lane_items = lane_payload.get("lanes", [])
+    if not isinstance(lane_items, list):
+        lane_items = []
+    rollup = _lane_conversation_rollup(conversation_payload)
+
+    enriched_lanes: list[dict[str, Any]] = []
+    for lane in lane_items:
+        if not isinstance(lane, dict):
+            continue
+        lane_id = str(lane.get("id", "")).strip()
+        lane_rollup = rollup.get(lane_id, {})
+        lane_copy = dict(lane)
+        lane_copy["conversation_event_count"] = int(lane_rollup.get("event_count", 0))
+        lane_copy["conversation_source_count"] = int(lane_rollup.get("source_count", 0))
+        lane_copy["conversation_source_state"] = str(lane_rollup.get("source_state", "unreported"))
+        source_ok = lane_rollup.get("source_ok")
+        lane_copy["conversation_source_ok"] = source_ok if isinstance(source_ok, bool) else None
+        lane_copy["conversation_source_error_count"] = int(lane_rollup.get("source_error_count", 0))
+        lane_copy["conversation_source_missing_count"] = int(lane_rollup.get("missing_count", 0))
+        lane_copy["conversation_source_recoverable_missing_count"] = int(
+            lane_rollup.get("recoverable_missing_count", 0)
+        )
+        lane_copy["conversation_source_fallback_count"] = int(lane_rollup.get("fallback_count", 0))
+        lane_copy["latest_conversation_event"] = (
+            lane_rollup.get("latest_event", {})
+            if isinstance(lane_rollup.get("latest_event", {}), dict)
+            else {}
+        )
+        enriched_lanes.append(lane_copy)
+
+    conversation_errors = conversation_payload.get("errors", [])
+    if not isinstance(conversation_errors, list):
+        conversation_errors = [str(conversation_errors)] if str(conversation_errors).strip() else []
+    normalized_errors = [str(item).strip() for item in conversation_errors if str(item).strip()]
+
+    out = dict(lane_payload)
+    out["lanes"] = enriched_lanes
+    out["conversation_by_lane"] = rollup
+    out["conversation_partial"] = bool(conversation_payload.get("partial", False))
+    out["conversation_ok"] = bool(conversation_payload.get("ok", False))
+    out["conversation_errors"] = normalized_errors
+    return out
+
+
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
     root = Path(args.root).resolve()
     env_file = Path(args.env_file).resolve() if args.env_file else None
@@ -571,10 +741,14 @@ def main(argv: list[str] | None = None) -> int:
     lanes_status = sub.add_parser("lanes-status")
     lanes_status.add_argument("--json", action="store_true")
     lanes_status.add_argument("--lane", default="")
+    lanes_status.add_argument("--with-conversations", action="store_true")
+    lanes_status.add_argument("--conversation-lines", type=int, default=200)
 
     lane_status = sub.add_parser("lane-status")
     lane_status.add_argument("--json", action="store_true")
     lane_status.add_argument("--lane", required=True)
+    lane_status.add_argument("--with-conversations", action="store_true")
+    lane_status.add_argument("--conversation-lines", type=int, default=200)
 
     lanes_start = sub.add_parser("lanes-start")
     lanes_start.add_argument("--lane", default="")
@@ -852,6 +1026,15 @@ def main(argv: list[str] | None = None) -> int:
                 requested_lane=args.lane,
                 lanes_file=cfg.lanes_file,
             )
+            if getattr(args, "with_conversations", False):
+                conversation_lines = max(1, min(2000, _safe_int(getattr(args, "conversation_lines", 200), 200)))
+                conversation_payload = _safe_conversations_snapshot(
+                    cfg,
+                    lines=conversation_lines,
+                    include_lanes=True,
+                    lane_id=args.lane,
+                )
+                filtered = _augment_lane_status_with_conversations(filtered, conversation_payload)
             requested_lane = str(filtered.get("requested_lane", "")).strip()
             if requested_lane and requested_lane != "all":
                 if not filtered.get("lanes") and any(
@@ -891,12 +1074,26 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"owner_counts: {' | '.join(owner_parts)}")
             if filtered.get("errors"):
                 print(f"errors: {' | '.join(str(item) for item in filtered['errors'])}")
+            if filtered.get("conversation_errors"):
+                print(f"conversation_errors: {' | '.join(str(item) for item in filtered['conversation_errors'])}")
             for lane in filtered["lanes"]:
                 state = "running" if lane["running"] else "stopped"
                 print(
                     f"- {lane['id']} [{lane['owner']}] {state} pid={lane['pid']} "
                     f"health={lane.get('health', 'unknown')} heartbeat_age={lane.get('heartbeat_age_sec', -1)}s"
                 )
+                if getattr(args, "with_conversations", False):
+                    latest = lane.get("latest_conversation_event", {})
+                    if not isinstance(latest, dict):
+                        latest = {}
+                    print(
+                        "  conversations: "
+                        f"state={lane.get('conversation_source_state', 'unreported')} "
+                        f"events={lane.get('conversation_event_count', 0)} "
+                        f"latest_ts={latest.get('timestamp', '') or '-'} "
+                        f"latest_owner={latest.get('owner', '') or '-'} "
+                        f"latest_type={latest.get('event_type', '') or '-'}"
+                    )
                 if lane.get("error"):
                     print(f"  error: {lane['error']}")
             return 0
