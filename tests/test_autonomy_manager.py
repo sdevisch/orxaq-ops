@@ -1182,6 +1182,68 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["conversations"]["source_recoverable_missing_count"], 1)
             self.assertEqual(snapshot["conversations"]["source_fallback_count"], 1)
 
+    def test_monitor_snapshot_normalizes_scalar_errors_and_malformed_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": False,
+                    "errors": "lane status source unavailable",
+                    "running_count": "not-a-number",
+                    "total_count": 0,
+                    "lanes": [],
+                    "health_counts": {},
+                    "owner_counts": {},
+                    "partial": True,
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": "2",
+                    "events": [
+                        {"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "a"},
+                        {"timestamp": "2026-01-01T00:00:01+00:00", "owner": "gemini", "content": "b"},
+                    ],
+                    "owner_counts": "invalid-owner-counts",
+                    "partial": False,
+                    "ok": False,
+                    "errors": "conversation source unavailable",
+                    "sources": "invalid-sources",
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertFalse(snapshot["runtime"]["lane_agents_running"])
+            self.assertEqual(snapshot["diagnostics"]["sources"]["lanes"]["error"], "lane status source unavailable")
+            self.assertEqual(
+                snapshot["diagnostics"]["sources"]["conversations"]["error"],
+                "conversation source unavailable",
+            )
+            self.assertEqual(snapshot["conversations"]["errors"], ["conversation source unavailable"])
+            self.assertEqual(snapshot["conversations"]["total_events"], 2)
+            self.assertEqual(snapshot["conversations"]["owner_counts"], {})
+            self.assertEqual(snapshot["conversations"]["sources"], [])
+            self.assertEqual(snapshot["conversations"]["source_error_count"], 0)
+            self.assertEqual(snapshot["conversations"]["source_missing_count"], 0)
+            self.assertEqual(snapshot["conversations"]["source_recoverable_missing_count"], 0)
+            self.assertEqual(snapshot["conversations"]["source_fallback_count"], 0)
+
     def test_monitor_snapshot_counts_idle_lane_as_operational(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

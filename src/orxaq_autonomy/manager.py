@@ -1814,6 +1814,9 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     status = status_snapshot(config)
     diagnostics: dict[str, Any] = {"ok": True, "errors": [], "sources": {}}
 
+    def _error_text(raw: Any) -> str:
+        return "; ".join(_normalize_error_messages(raw))
+
     def _mark_source(name: str, ok: bool, error: str = "") -> None:
         diagnostics["sources"][name] = {"ok": bool(ok), "error": error}
         if not ok:
@@ -1842,7 +1845,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
             lanes["errors"] = [str(err), f"lane_status_fallback: {fallback_err}"]
             lanes["error"] = str(err)
             lanes["partial"] = True
-    _mark_source("lanes", bool(lanes.get("ok", False)), "; ".join(lanes.get("errors", [])))
+    _mark_source("lanes", bool(lanes.get("ok", False)), _error_text(lanes.get("errors", [])))
     progress = _combined_progress_snapshot(config, lanes)
 
     conv: dict[str, Any] = {
@@ -1879,7 +1882,8 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 "event_count": 0,
             }
         ]
-    _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
+    conversation_errors = _normalize_error_messages(conv.get("errors", []))
+    _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conversation_errors))
     conv_events = conv.get("events", [])
     if not isinstance(conv_events, list):
         conv_events = []
@@ -1894,12 +1898,20 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     source_missing_count = sum(1 for item in normalized_conv_sources if bool(item.get("missing", False)))
     source_recoverable_missing_count = sum(1 for item in normalized_conv_sources if bool(item.get("recoverable_missing", False)))
     source_fallback_count = sum(1 for item in normalized_conv_sources if bool(item.get("fallback_used", False)))
+    conversation_total_events = _int_value(conv.get("total_events", len(normalized_conv_events)), len(normalized_conv_events))
+    if conversation_total_events < 0:
+        conversation_total_events = len(normalized_conv_events)
+    conversation_owner_counts = conv.get("owner_counts", {})
+    if not isinstance(conversation_owner_counts, dict):
+        conversation_owner_counts = {}
+    conversation_partial = bool(conv.get("partial", False)) or bool(conversation_errors)
+    conversation_ok = bool(conv.get("ok", False)) and not conversation_partial
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
     try:
         response_metrics = _response_metrics_snapshot(config, lane_items)
     except Exception as err:
         response_metrics = _empty_response_metrics(str(err))
-    _mark_source("response_metrics", bool(response_metrics.get("ok", False)), "; ".join(response_metrics.get("errors", [])))
+    _mark_source("response_metrics", bool(response_metrics.get("ok", False)), _error_text(response_metrics.get("errors", [])))
     lanes = _augment_lane_payload_with_conversation_rollup(lanes, conv)
     runtime_lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
     runtime_lane_items = [item for item in runtime_lane_items if isinstance(item, dict)]
@@ -1966,14 +1978,15 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         to_gemini_events = []
         handoff_errors.append(f"to_gemini: {err}")
     _mark_source("handoffs", len(handoff_errors) == 0, "; ".join(handoff_errors))
+    lane_running_count = max(0, _int_value(lanes.get("running_count", 0), 0))
 
     snapshot = {
         "timestamp": _now_iso(),
         "status": status,
         "runtime": {
             "primary_runner_running": bool(status.get("runner_running", False)),
-            "lane_agents_running": int(lanes.get("running_count", 0)) > 0,
-            "effective_agents_running": bool(status.get("runner_running", False)) or int(lanes.get("running_count", 0)) > 0,
+            "lane_agents_running": lane_running_count > 0,
+            "effective_agents_running": bool(status.get("runner_running", False)) or lane_running_count > 0,
             "lane_operational_count": len(operational_lanes),
             "lane_degraded_count": len(degraded_lanes),
             "lane_health_counts": lanes.get("health_counts", {}),
@@ -1983,13 +1996,13 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "lanes": lanes,
         "response_metrics": response_metrics,
         "conversations": {
-            "ok": bool(conv.get("ok", False)),
-            "total_events": conv.get("total_events", 0),
-            "owner_counts": conv.get("owner_counts", {}),
+            "ok": conversation_ok,
+            "total_events": conversation_total_events,
+            "owner_counts": conversation_owner_counts,
             "latest": (recent_conversations[-1] if recent_conversations else {}),
             "recent_events": recent_conversations,
-            "partial": bool(conv.get("partial", False)),
-            "errors": conv.get("errors", []),
+            "partial": conversation_partial,
+            "errors": conversation_errors,
             "sources": normalized_conv_sources,
             "source_error_count": source_error_count,
             "source_missing_count": source_missing_count,
