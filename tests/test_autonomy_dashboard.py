@@ -549,6 +549,49 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(enriched["conversation_partial"])
         self.assertFalse(enriched["conversation_ok"])
 
+    def test_augment_lane_payload_with_conversation_rollup_recovers_missing_lane(self):
+        lane_payload = {
+            "requested_lane": "lane-a",
+            "errors": ["Unknown lane id 'lane-a'. Update /tmp/lanes.json."],
+            "lanes": [],
+            "health_counts": {},
+            "owner_counts": {},
+            "ok": False,
+            "partial": True,
+        }
+        conversation_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:01+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "ready",
+                }
+            ],
+            "sources": [
+                {"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        self.assertEqual(enriched["recovered_lane_count"], 1)
+        self.assertEqual(enriched["recovered_lanes"], ["lane-a"])
+        self.assertEqual(enriched["total_count"], 1)
+        lane = enriched["lanes"][0]
+        self.assertEqual(lane["id"], "lane-a")
+        self.assertEqual(lane["owner"], "codex")
+        self.assertTrue(lane["conversation_lane_fallback"])
+        self.assertEqual(lane["conversation_source_state"], "ok")
+        self.assertEqual(
+            enriched["errors"],
+            ["Lane status missing for 'lane-a'; using conversation-derived fallback."],
+        )
+        self.assertTrue(enriched["partial"])
+        self.assertFalse(enriched["ok"])
+
     def test_safe_lane_action_returns_structured_error(self):
         cfg = mock.Mock()
         payload = dashboard._safe_lane_action(cfg, action="unknown", lane_id="lane-a")

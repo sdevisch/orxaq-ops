@@ -2010,6 +2010,39 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
     return rollup
 
 
+def _lane_error_mentions_unknown_lane(error: str, lane_id: str) -> bool:
+    message = str(error).strip().lower()
+    lane = lane_id.strip().lower()
+    if not message or not lane:
+        return False
+    if not message.startswith("unknown lane id "):
+        return False
+    return lane in message
+
+
+def _lane_owner_health_counts(lanes: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, dict[str, int]], int]:
+    health_counts: dict[str, int] = {}
+    owner_counts: dict[str, dict[str, int]] = {}
+    running_count = 0
+    healthy_states = {"ok", "paused", "idle"}
+    for lane in lanes:
+        if not isinstance(lane, dict):
+            continue
+        health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
+        health_counts[health] = health_counts.get(health, 0) + 1
+        owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+        owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
+        owner_entry["total"] += 1
+        if bool(lane.get("running", False)):
+            running_count += 1
+            owner_entry["running"] += 1
+        if health in healthy_states:
+            owner_entry["healthy"] += 1
+        else:
+            owner_entry["degraded"] += 1
+    return health_counts, owner_counts, running_count
+
+
 def _augment_lane_payload_with_conversation_rollup(
     lane_payload: dict[str, Any],
     conversation_payload: dict[str, Any],
@@ -2019,11 +2052,15 @@ def _augment_lane_payload_with_conversation_rollup(
     if not isinstance(lane_items, list):
         lane_items = []
 
+    requested_lane = str(lane_payload.get("requested_lane", "all")).strip() or "all"
     enriched_lanes: list[dict[str, Any]] = []
+    seen_lanes: set[str] = set()
     for lane in lane_items:
         if not isinstance(lane, dict):
             continue
         lane_id = str(lane.get("id", "")).strip()
+        if lane_id:
+            seen_lanes.add(lane_id)
         lane_rollup = rollup.get(lane_id, {})
         lane_copy = dict(lane)
         lane_copy["conversation_event_count"] = int(lane_rollup.get("event_count", 0))
@@ -2042,13 +2079,84 @@ def _augment_lane_payload_with_conversation_rollup(
         )
         enriched_lanes.append(lane_copy)
 
+    recovered_lanes: list[str] = []
+    synthesize_lane_ids: list[str] = []
+    if requested_lane != "all":
+        if requested_lane in rollup and requested_lane not in seen_lanes:
+            synthesize_lane_ids.append(requested_lane)
+    elif not enriched_lanes:
+        synthesize_lane_ids.extend(sorted(lane_id for lane_id in rollup if lane_id not in seen_lanes))
+
+    for lane_id in synthesize_lane_ids:
+        lane_rollup = rollup.get(lane_id, {})
+        latest_event = lane_rollup.get("latest_event", {})
+        if not isinstance(latest_event, dict):
+            latest_event = {}
+        owner = str(latest_event.get("owner", "unknown")).strip() or "unknown"
+        lane_copy = {
+            "id": lane_id,
+            "owner": owner,
+            "running": False,
+            "pid": None,
+            "health": "unknown",
+            "heartbeat_age_sec": -1,
+            "state_counts": {},
+            "build_current": False,
+            "error": "lane status missing; derived from conversation logs",
+            "conversation_lane_fallback": True,
+            "conversation_event_count": int(lane_rollup.get("event_count", 0)),
+            "conversation_source_count": int(lane_rollup.get("source_count", 0)),
+            "conversation_source_state": str(lane_rollup.get("source_state", "unreported")),
+            "conversation_source_ok": (
+                lane_rollup.get("source_ok")
+                if isinstance(lane_rollup.get("source_ok"), bool)
+                else None
+            ),
+            "conversation_source_error_count": int(lane_rollup.get("source_error_count", 0)),
+            "conversation_source_missing_count": int(lane_rollup.get("missing_count", 0)),
+            "conversation_source_recoverable_missing_count": int(lane_rollup.get("recoverable_missing_count", 0)),
+            "conversation_source_fallback_count": int(lane_rollup.get("fallback_count", 0)),
+            "latest_conversation_event": latest_event,
+        }
+        enriched_lanes.append(lane_copy)
+        recovered_lanes.append(lane_id)
+
     conversation_errors = conversation_payload.get("errors", [])
     if not isinstance(conversation_errors, list):
         conversation_errors = [str(conversation_errors)] if str(conversation_errors).strip() else []
     normalized_errors = [str(item).strip() for item in conversation_errors if str(item).strip()]
+    lane_errors = lane_payload.get("errors", [])
+    if not isinstance(lane_errors, list):
+        lane_errors = [str(lane_errors)] if str(lane_errors).strip() else []
+    combined_lane_errors = [str(item).strip() for item in lane_errors if str(item).strip()]
+    if recovered_lanes:
+        combined_lane_errors = [
+            message
+            for message in combined_lane_errors
+            if not any(_lane_error_mentions_unknown_lane(message, lane_id) for lane_id in recovered_lanes)
+        ]
+        for lane_id in recovered_lanes:
+            warning = f"Lane status missing for {lane_id!r}; using conversation-derived fallback."
+            if warning not in combined_lane_errors:
+                combined_lane_errors.append(warning)
+
+    health_counts, owner_counts, running_count = _lane_owner_health_counts(enriched_lanes)
+    lane_partial = bool(lane_payload.get("partial", False))
+    conversation_partial = bool(conversation_payload.get("partial", False))
+    partial = lane_partial or conversation_partial or bool(combined_lane_errors) or bool(recovered_lanes)
+    ok = bool(lane_payload.get("ok", not combined_lane_errors)) and not partial
 
     result = dict(lane_payload)
     result["lanes"] = enriched_lanes
+    result["running_count"] = running_count
+    result["total_count"] = len(enriched_lanes)
+    result["health_counts"] = health_counts
+    result["owner_counts"] = owner_counts
+    result["errors"] = combined_lane_errors
+    result["partial"] = partial
+    result["ok"] = ok
+    result["recovered_lanes"] = recovered_lanes
+    result["recovered_lane_count"] = len(recovered_lanes)
     result["conversation_by_lane"] = rollup
     result["conversation_partial"] = bool(conversation_payload.get("partial", False))
     result["conversation_ok"] = bool(conversation_payload.get("ok", False))
