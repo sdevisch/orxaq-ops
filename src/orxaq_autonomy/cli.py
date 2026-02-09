@@ -111,6 +111,91 @@ def _apply_conversation_filters(
     return result
 
 
+def _conversation_error_payload(
+    cfg: ManagerConfig,
+    *,
+    error: str,
+    owner: str = "",
+    lane_id: str = "",
+    event_type: str = "",
+    contains: str = "",
+    tail: int = 0,
+) -> dict[str, Any]:
+    source_path = Path(cfg.conversation_log_file)
+    source_missing = not source_path.exists()
+    return {
+        "timestamp": "",
+        "conversation_files": [str(source_path)],
+        "total_events": 0,
+        "events": [],
+        "owner_counts": {},
+        "sources": [
+            {
+                "path": str(source_path),
+                "resolved_path": str(source_path),
+                "kind": "primary",
+                "resolved_kind": "primary",
+                "lane_id": "",
+                "owner": "",
+                "ok": False,
+                "missing": source_missing,
+                "recoverable_missing": False,
+                "fallback_used": False,
+                "error": error,
+                "event_count": 0,
+            }
+        ],
+        "partial": True,
+        "ok": False,
+        "errors": [error],
+        "unfiltered_total_events": 0,
+        "filters": {
+            "owner": owner.strip(),
+            "lane": lane_id.strip(),
+            "event_type": event_type.strip(),
+            "contains": contains.strip(),
+            "tail": max(0, int(tail)),
+        },
+    }
+
+
+def _safe_conversations_snapshot(
+    cfg: ManagerConfig,
+    *,
+    lines: int,
+    include_lanes: bool,
+    owner: str = "",
+    lane_id: str = "",
+    event_type: str = "",
+    contains: str = "",
+    tail: int = 0,
+) -> dict[str, Any]:
+    try:
+        payload = conversations_snapshot(
+            cfg,
+            lines=lines,
+            include_lanes=include_lanes,
+        )
+    except Exception as err:
+        payload = _conversation_error_payload(
+            cfg,
+            error=str(err),
+            owner=owner,
+            lane_id=lane_id,
+            event_type=event_type,
+            contains=contains,
+            tail=tail,
+        )
+    return _apply_conversation_filters(
+        payload,
+        owner=owner,
+        lane_id=lane_id,
+        event_type=event_type,
+        contains=contains,
+        tail=tail,
+    )
+
+
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
     root = Path(args.root).resolve()
     env_file = Path(args.env_file).resolve() if args.env_file else None
@@ -373,13 +458,10 @@ def main(argv: list[str] | None = None) -> int:
             print(tail_dashboard_logs(cfg, lines=args.lines))
             return 0
         if args.command == "conversations":
-            payload = conversations_snapshot(
+            payload = _safe_conversations_snapshot(
                 cfg,
                 lines=args.lines,
                 include_lanes=not args.no_lanes,
-            )
-            payload = _apply_conversation_filters(
-                payload,
                 owner=args.owner,
                 lane_id=args.lane,
                 event_type=args.event_type,
@@ -399,13 +481,10 @@ def main(argv: list[str] | None = None) -> int:
             selected = [item for item in lane_items if str(item.get("id", "")).strip() == requested_lane]
             if not selected:
                 raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {cfg.lanes_file}.")
-            conv_payload = conversations_snapshot(
+            conv_payload = _safe_conversations_snapshot(
                 cfg,
                 lines=args.lines,
                 include_lanes=not args.no_lanes,
-            )
-            conv_payload = _apply_conversation_filters(
-                conv_payload,
                 owner=args.owner,
                 lane_id=requested_lane,
                 event_type=args.event_type,
