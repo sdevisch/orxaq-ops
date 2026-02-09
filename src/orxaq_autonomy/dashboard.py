@@ -3983,7 +3983,7 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
         if lane_items:
             normalized_errors = lane_specific_errors
         else:
-            normalized_errors = lane_specific_errors or normalized_errors
+            normalized_errors = lane_specific_errors
             if normalized_errors:
                 normalized_errors.append(
                     f"Requested lane {requested_lane!r} is unavailable because lane status sources failed."

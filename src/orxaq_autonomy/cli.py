@@ -444,7 +444,7 @@ def _filter_lane_status_payload(
         if lane_items:
             normalized_errors = lane_specific_errors
         else:
-            normalized_errors = lane_specific_errors or normalized_errors
+            normalized_errors = lane_specific_errors
             if normalized_errors:
                 normalized_errors.append(
                     f"Requested lane {lane_filter!r} is unavailable because lane status sources failed."

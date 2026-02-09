@@ -1416,6 +1416,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(filtered["lanes"][1]["id"], "unknown")
         self.assertEqual(filtered["lanes"][1]["owner"], "gemini")
 
+    def test_filter_lane_status_payload_missing_lane_suppresses_unrelated_lane_errors(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": False,
+            "partial": True,
+            "errors": ["lane-b: heartbeat stale"],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+                {"id": "lane-b", "owner": "gemini", "running": True, "health": "stale"},
+            ],
+        }
+        filtered = cli._filter_lane_status_payload(
+            payload,
+            requested_lane="missing-lane",
+            lanes_file=pathlib.Path("/tmp/lanes.json"),
+        )
+        self.assertEqual(filtered["requested_lane"], "missing-lane")
+        self.assertEqual(filtered["total_count"], 0)
+        self.assertFalse(filtered["ok"])
+        self.assertTrue(filtered["partial"])
+        self.assertEqual(filtered["suppressed_errors"], ["lane-b: heartbeat stale"])
+        self.assertEqual(filtered["errors"], ["Unknown lane id 'missing-lane'. Update /tmp/lanes.json."])
+
     def test_lanes_status_command_handles_missing_lane_fields(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
