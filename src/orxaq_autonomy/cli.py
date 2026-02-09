@@ -120,6 +120,7 @@ def _filter_conversation_payload_for_lane(
     lane_id: str = "",
 ) -> dict[str, Any]:
     requested_lane = lane_id.strip()
+    requested_lane_normalized = requested_lane.lower()
     source_reports = payload.get("sources", [])
     if not isinstance(source_reports, list):
         source_reports = []
@@ -138,7 +139,7 @@ def _filter_conversation_payload_for_lane(
     suppressed_sources: list[dict[str, Any]] = []
     for source in normalized_sources:
         source_lane = str(source.get("lane_id", "")).strip()
-        if source_lane and source_lane != requested_lane:
+        if source_lane and source_lane.lower() != requested_lane_normalized:
             suppressed_sources.append(source)
             continue
         retained_sources.append(source)
@@ -146,14 +147,15 @@ def _filter_conversation_payload_for_lane(
     # When a lane-specific source is healthy, treat a failed primary/global
     # source as non-blocking for lane-filtered inspection.
     lane_source_healthy = any(
-        str(source.get("lane_id", "")).strip() == requested_lane and bool(source.get("ok", False))
+        str(source.get("lane_id", "")).strip().lower() == requested_lane_normalized
+        and bool(source.get("ok", False))
         for source in retained_sources
     )
     if lane_source_healthy:
         lane_scoped_sources: list[dict[str, Any]] = []
         for source in retained_sources:
             source_lane = str(source.get("lane_id", "")).strip()
-            if source_lane:
+            if source_lane and source_lane.lower() == requested_lane_normalized:
                 lane_scoped_sources.append(source)
                 continue
             source_kind = str(source.get("resolved_kind", source.get("kind", ""))).strip().lower()
