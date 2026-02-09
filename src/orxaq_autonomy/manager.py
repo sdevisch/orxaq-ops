@@ -1330,12 +1330,14 @@ def _empty_response_metrics(error: str = "") -> dict[str, Any]:
         "cost_usd_total": 0.0,
         "cost_usd_avg": 0.0,
         "tokens_total": 0,
+        "estimated_tokens_total": 0,
         "tokens_input_total": 0,
         "tokens_output_total": 0,
         "tokens_avg": 0.0,
         "token_exact_count": 0,
         "token_exact_coverage": 0.0,
         "token_rate_per_minute": 0.0,
+        "estimated_cost_per_million_tokens": 0.0,
         "routing_decisions_total": 0,
         "routing_routellm_count": 0,
         "routing_routellm_rate": 0.0,
@@ -1394,6 +1396,7 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
     exact_cost_count = 0
     cost_usd_total = 0.0
     tokens_total = 0
+    estimated_tokens_total = 0
     tokens_input_total = 0
     tokens_output_total = 0
     token_exact_count = 0
@@ -1464,6 +1467,7 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         )
         source_cost = _float_value(summary.get("cost_usd_total", 0.0), 0.0)
         source_tokens_total = _int_value(summary.get("tokens_total", 0), 0)
+        source_estimated_tokens_total = _int_value(summary.get("estimated_tokens_total", source_tokens_total), source_tokens_total)
         source_tokens_input_total = _int_value(summary.get("tokens_input_total", 0), 0)
         source_tokens_output_total = _int_value(summary.get("tokens_output_total", 0), 0)
         source_token_exact_count = _int_value(
@@ -1509,6 +1513,7 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         exact_cost_count += source_exact_cost
         cost_usd_total += source_cost
         tokens_total += source_tokens_total
+        estimated_tokens_total += source_estimated_tokens_total
         tokens_input_total += source_tokens_input_total
         tokens_output_total += source_tokens_output_total
         token_exact_count += source_token_exact_count
@@ -1589,6 +1594,8 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
                         "routellm_count": 0,
                         "fallback_count": 0,
                         "router_error_count": 0,
+                        "cost_usd_total": 0.0,
+                        "tokens_total": 0,
                     },
                 )
                 aggregate_provider["responses"] = _int_value(aggregate_provider.get("responses", 0), 0) + _int_value(
@@ -1607,6 +1614,14 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
                     aggregate_provider.get("router_error_count", 0),
                     0,
                 ) + _int_value(provider_payload.get("router_error_count", 0), 0)
+                aggregate_provider["cost_usd_total"] = _float_value(
+                    aggregate_provider.get("cost_usd_total", 0.0),
+                    0.0,
+                ) + _float_value(provider_payload.get("cost_usd_total", 0.0), 0.0)
+                aggregate_provider["tokens_total"] = _int_value(
+                    aggregate_provider.get("tokens_total", 0),
+                    0,
+                ) + _int_value(provider_payload.get("tokens_total", 0), 0)
                 routing_by_provider[provider] = aggregate_provider
 
         latest = summary.get("latest_metric", {})
@@ -1650,6 +1665,12 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             _int_value(owner_payload.get("tokens_total", 0), 0) / owner_responses,
             6,
         )
+        owner_tokens_total = _int_value(owner_payload.get("tokens_total", 0), 0)
+        owner_cost_total = _float_value(owner_payload.get("cost_usd_total", 0.0), 0.0)
+        owner_payload["cost_per_million_tokens"] = round(
+            ((owner_cost_total * 1_000_000.0) / owner_tokens_total) if owner_tokens_total > 0 else 0.0,
+            6,
+        )
         owner_payload["routing_routellm_rate"] = round(
             _int_value(owner_payload.get("routing_routellm_count", 0), 0) / owner_responses,
             6,
@@ -1677,9 +1698,20 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
             _int_value(provider_payload.get("router_error_count", 0), 0) / provider_responses,
             6,
         )
+        provider_tokens_total = _int_value(provider_payload.get("tokens_total", 0), 0)
+        provider_cost_total = _float_value(provider_payload.get("cost_usd_total", 0.0), 0.0)
+        provider_payload["cost_per_million_tokens"] = round(
+            ((provider_cost_total * 1_000_000.0) / provider_tokens_total) if provider_tokens_total > 0 else 0.0,
+            6,
+        )
 
     coverage = round(exact_cost_count / max(1, responses_total), 6)
     token_exact_coverage = round(token_exact_count / max(1, responses_total), 6)
+    if estimated_tokens_total <= 0:
+        estimated_tokens_total = tokens_total
+    estimated_cost_per_million_tokens = (
+        (cost_usd_total * 1_000_000.0) / estimated_tokens_total if estimated_tokens_total > 0 else 0.0
+    )
     token_rate_per_minute = 0.0
     if latency_sum > 0.0:
         token_rate_per_minute = (float(tokens_total) / latency_sum) * 60.0
@@ -1703,12 +1735,14 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         "cost_usd_total": round(cost_usd_total, 8),
         "cost_usd_avg": round(cost_usd_total / max(1, responses_total), 8),
         "tokens_total": tokens_total,
+        "estimated_tokens_total": estimated_tokens_total,
         "tokens_input_total": tokens_input_total,
         "tokens_output_total": tokens_output_total,
         "tokens_avg": round(tokens_total / max(1, responses_total), 6),
         "token_exact_count": token_exact_count,
         "token_exact_coverage": token_exact_coverage,
         "token_rate_per_minute": round(token_rate_per_minute, 6),
+        "estimated_cost_per_million_tokens": round(estimated_cost_per_million_tokens, 6),
         "routing_decisions_total": routing_decisions_total,
         "routing_routellm_count": routing_routellm_count,
         "routing_routellm_rate": round(routing_routellm_count / max(1, routing_decisions_total), 6),

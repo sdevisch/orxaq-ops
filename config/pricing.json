@@ -1,18 +1,103 @@
 {
-  "version": 1,
+  "version": 2,
   "currency": "USD",
+  "estimation_note": "Model prices are blended operational estimates as of 2026-02-09 for autonomous routing and budget simulation.",
   "models": {
     "codex": {
-      "input_per_million": 0.0,
-      "output_per_million": 0.0
+      "input_per_million": 0.8,
+      "output_per_million": 3.2
     },
     "gemini": {
-      "input_per_million": 0.0,
-      "output_per_million": 0.0
+      "input_per_million": 0.3,
+      "output_per_million": 1.2
     },
     "claude": {
-      "input_per_million": 0.0,
-      "output_per_million": 0.0
+      "input_per_million": 3.0,
+      "output_per_million": 15.0
+    },
+    "gpt-4.1-mini": {
+      "input_per_million": 0.4,
+      "output_per_million": 1.6
+    },
+    "gpt-4.1": {
+      "input_per_million": 2.0,
+      "output_per_million": 8.0
+    },
+    "gpt-5-mini": {
+      "input_per_million": 0.8,
+      "output_per_million": 3.2
+    },
+    "gpt-5-codex": {
+      "input_per_million": 2.0,
+      "output_per_million": 8.0
+    },
+    "gemini-2.0-flash": {
+      "input_per_million": 0.2,
+      "output_per_million": 0.8
+    },
+    "gemini-2.5-flash": {
+      "input_per_million": 0.3,
+      "output_per_million": 1.2
+    },
+    "gemini-2.5-pro": {
+      "input_per_million": 1.5,
+      "output_per_million": 6.0
+    },
+    "claude-3-5-haiku-latest": {
+      "input_per_million": 0.25,
+      "output_per_million": 1.25
+    },
+    "claude-3-5-sonnet-latest": {
+      "input_per_million": 3.0,
+      "output_per_million": 15.0
+    },
+    "claude-3-7-sonnet-latest": {
+      "input_per_million": 3.0,
+      "output_per_million": 15.0
+    },
+    "qwen2.5-coder-3b-instruct": {
+      "input_per_million": 0.08,
+      "output_per_million": 0.12
+    },
+    "qwen2.5-coder-7b-instruct": {
+      "input_per_million": 0.12,
+      "output_per_million": 0.18
+    },
+    "qwen2.5-coder-14b-instruct": {
+      "input_per_million": 0.18,
+      "output_per_million": 0.27
+    },
+    "qwen2.5-coder-32b-instruct": {
+      "input_per_million": 0.42,
+      "output_per_million": 0.63
+    },
+    "deepseek-coder-v2-lite-instruct": {
+      "input_per_million": 0.16,
+      "output_per_million": 0.24
+    },
+    "deepseek-coder-v2-instruct": {
+      "input_per_million": 0.38,
+      "output_per_million": 0.58
+    },
+    "llama-3.1-8b-instruct": {
+      "input_per_million": 0.1,
+      "output_per_million": 0.16
+    },
+    "llama-3.1-70b-instruct": {
+      "input_per_million": 0.7,
+      "output_per_million": 0.95
+    },
+    "mistral-nemo-instruct-2407": {
+      "input_per_million": 0.14,
+      "output_per_million": 0.22
+    },
+    "mixtral-8x7b-instruct-v0.1": {
+      "input_per_million": 0.32,
+      "output_per_million": 0.48
+    },
+    "codestral-22b": {
+      "input_per_million": 0.28,
+      "output_per_million": 0.42
     }
   }
 }

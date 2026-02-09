@@ -348,6 +348,216 @@
         "src/orxaq_autonomy/manager.py",
         "src/orxaq_autonomy/dashboard.py"
       ]
+    },
+    {
+      "id": "codex-routellm-npv",
+      "enabled": true,
+      "owner": "codex",
+      "description": "RouteLLM routing economics and NPV scaling hardening in orxaq-ops.",
+      "impl_repo": ".",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_routellm_npv_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_routellm_npv.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene",
+        "make hosted-controls-check"
+      ],
+      "exclusive_paths": [
+        "src/orxaq_autonomy/manager.py",
+        "src/orxaq_autonomy/runner.py",
+        "src/orxaq_autonomy/dashboard.py",
+        "tests/test_autonomy_manager.py",
+        "tests/test_autonomy_runner.py",
+        "tests/test_autonomy_dashboard.py",
+        "config/routellm_policy*.json"
+      ]
+    },
+    {
+      "id": "gemini-test-backlog",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Independent high-risk regression backlog expansion in orxaq_gemini.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_test_backlog_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_test_backlog.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make typecheck",
+        "make version-check",
+        "make repo-hygiene",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/",
+        "benchmarks/",
+        "docs/testing/"
+      ]
+    },
+    {
+      "id": "codex-release-quality-orxaq",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Release-quality completion lane for core orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq",
+      "tasks_file": "config/lanes/codex_release_quality_orxaq_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_release_quality_orxaq.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make version-check",
+        "make repo-hygiene",
+        "make test"
+      ],
+      "exclusive_paths": [
+        ".github/",
+        "pyproject.toml",
+        "Makefile",
+        "docs/",
+        "scripts/"
+      ]
+    },
+    {
+      "id": "gemini-release-quality-orxaq-gemini",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Release-quality lane for orxaq_gemini test/type stability.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_release_quality_orxaq_gemini_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_release_quality_orxaq_gemini.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make typecheck",
+        "make version-check",
+        "make repo-hygiene",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/",
+        "benchmarks/",
+        "docs/testing/"
+      ]
+    },
+    {
+      "id": "codex-odyssey-phase32-hardening",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Odyssey Phase32 runtime/cockpit hardening lane.",
+      "impl_repo": "../odyssey",
+      "test_repo": "../odyssey",
+      "tasks_file": "config/lanes/codex_odyssey_phase32_hardening_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_odyssey_phase32_hardening.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "python run_tests.py",
+        "python run_tests_phase32.py",
+        "python run_phase32.py --skin-id tui_command_grid",
+        "python run_phase32.py --skin-id space_command_center"
+      ],
+      "exclusive_paths": [
+        "src/orxaq_credit_forecasting/cockpit/",
+        "run_phase32.py",
+        "docs/PHASE32_*"
+      ]
+    },
+    {
+      "id": "gemini-odyssey-skin-regression",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Odyssey skin regression/parity test expansion lane.",
+      "impl_repo": "../odyssey",
+      "test_repo": "../odyssey",
+      "tasks_file": "config/lanes/gemini_odyssey_skin_regression_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_odyssey_skin_regression.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "python run_tests_phase32.py",
+        "python run_phase32.py --skin-id industrial_analog_retrofit",
+        "python run_phase32.py --skin-id minimalist_flat_ops",
+        "python run_phase32.py --skin-id gamified_strategy_board"
+      ],
+      "exclusive_paths": [
+        "run_tests_phase32.py",
+        "scripts/run_phase32_skin_smoke.sh",
+        "docs/PHASE32_SKIN_*"
+      ]
+    },
+    {
+      "id": "claude-odyssey-release-audit",
+      "enabled": true,
+      "owner": "claude",
+      "description": "Odyssey release/governance audit and evidence lane.",
+      "impl_repo": "../odyssey",
+      "test_repo": "../odyssey",
+      "tasks_file": "config/lanes/claude_odyssey_release_audit_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/claude_odyssey_release_audit.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "python run_tests.py",
+        "python run_tests_phase32.py"
+      ],
+      "exclusive_paths": [
+        "docs/",
+        "README.md",
+        "PROJECT_HISTORY.md"
+      ]
     }
   ]
 }

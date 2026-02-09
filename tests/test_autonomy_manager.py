@@ -596,6 +596,95 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(metrics["exciting_stat"]["label"], "Token Flow")
             self.assertIn("codex", metrics["by_owner"])
 
+    def test_response_metrics_snapshot_aggregates_estimated_tokens_and_provider_costs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.metrics_summary_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.metrics_summary_file.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 1,
+                        "quality_score_sum": 0.9,
+                        "latency_sec_sum": 8.0,
+                        "prompt_difficulty_score_sum": 30.0,
+                        "tokens_total": 90,
+                        "estimated_tokens_total": 100,
+                        "tokens_input_total": 60,
+                        "tokens_output_total": 30,
+                        "token_exact_count": 1,
+                        "first_time_pass_count": 1,
+                        "acceptance_pass_count": 1,
+                        "exact_cost_count": 1,
+                        "cost_usd_total": 1.0,
+                        "routing_decisions_total": 1,
+                        "routing_routellm_count": 1,
+                        "routing_fallback_count": 0,
+                        "routing_router_error_count": 0,
+                        "routing_by_provider": {
+                            "codex": {
+                                "responses": 1,
+                                "routellm_count": 1,
+                                "fallback_count": 0,
+                                "router_error_count": 0,
+                                "cost_usd_total": 1.0,
+                                "tokens_total": 90,
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            lane_metrics = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "response_metrics_summary.json"
+            lane_metrics.parent.mkdir(parents=True, exist_ok=True)
+            lane_metrics.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 1,
+                        "quality_score_sum": 0.7,
+                        "latency_sec_sum": 4.0,
+                        "prompt_difficulty_score_sum": 15.0,
+                        "tokens_total": 60,
+                        "estimated_tokens_total": 70,
+                        "tokens_input_total": 40,
+                        "tokens_output_total": 20,
+                        "token_exact_count": 1,
+                        "first_time_pass_count": 1,
+                        "acceptance_pass_count": 1,
+                        "exact_cost_count": 1,
+                        "cost_usd_total": 0.5,
+                        "routing_decisions_total": 1,
+                        "routing_routellm_count": 1,
+                        "routing_fallback_count": 0,
+                        "routing_router_error_count": 0,
+                        "routing_by_provider": {
+                            "codex": {
+                                "responses": 1,
+                                "routellm_count": 1,
+                                "fallback_count": 0,
+                                "router_error_count": 0,
+                                "cost_usd_total": 0.5,
+                                "tokens_total": 60,
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager._response_metrics_snapshot(
+                cfg,
+                lane_items=[{"metrics_summary_file": str(lane_metrics)}],
+            )
+            self.assertEqual(snapshot["tokens_total"], 150)
+            self.assertEqual(snapshot["estimated_tokens_total"], 170)
+            self.assertAlmostEqual(snapshot["estimated_cost_per_million_tokens"], 8823.529412, places=6)
+            self.assertIn("codex", snapshot["routing_by_provider"])
+            self.assertEqual(snapshot["routing_by_provider"]["codex"]["tokens_total"], 150)
+            self.assertAlmostEqual(snapshot["routing_by_provider"]["codex"]["cost_usd_total"], 1.5, places=6)
+            self.assertAlmostEqual(snapshot["routing_by_provider"]["codex"]["cost_per_million_tokens"], 10000.0, places=6)
+
     def test_response_metrics_snapshot_prefers_latest_metric_by_utc_timestamp(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

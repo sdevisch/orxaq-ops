@@ -463,6 +463,20 @@ def _provider_routellm_policy(routellm_policy: dict[str, Any], provider: str) ->
     }
 
 
+def _canonical_allowed_model(model: str | None, allowed_models: list[str]) -> str | None:
+    candidate = str(model or "").strip()
+    if not candidate:
+        return None
+    if not allowed_models:
+        return candidate
+    lowered = candidate.lower()
+    for item in allowed_models:
+        allowed = str(item).strip()
+        if allowed and allowed.lower() == lowered:
+            return allowed
+    return None
+
+
 def resolve_routed_model(
     *,
     provider: str,
@@ -476,7 +490,13 @@ def resolve_routed_model(
     provider_key = provider.strip().lower() or "unknown"
     requested = (requested_model or "").strip() or None
     provider_policy = _provider_routellm_policy(routellm_policy, provider_key)
-    fallback_model = requested or provider_policy.get("fallback_model")
+    allowed_models = _normalize_model_candidates(provider_policy.get("allowed_models", []))
+    policy_fallback_model = str(provider_policy.get("fallback_model") or "").strip() or None
+    requested_allowed = _canonical_allowed_model(requested, allowed_models)
+    policy_fallback_allowed = _canonical_allowed_model(policy_fallback_model, allowed_models)
+    fallback_model = requested_allowed or policy_fallback_allowed or (allowed_models[0] if allowed_models else None)
+    if fallback_model is None:
+        fallback_model = requested or policy_fallback_model
 
     router_cfg = routellm_policy.get("router", {}) if isinstance(routellm_policy.get("router", {}), dict) else {}
     router_url = router_url_override.strip() or str(router_cfg.get("url", "")).strip()
@@ -494,6 +514,10 @@ def resolve_routed_model(
         "provider": provider_key,
         "requested_model": requested or "",
         "selected_model": (fallback_model or ""),
+        "fallback_model": (fallback_model or ""),
+        "policy_fallback_model": (policy_fallback_model or ""),
+        "allowed_models": allowed_models,
+        "requested_model_allowed": bool(requested and requested_allowed),
         "strategy": "static_fallback",
         "router_enabled": bool(routellm_enabled),
         "router_url": router_url,
@@ -549,9 +573,11 @@ def resolve_routed_model(
                 break
         if not selected:
             raise RuntimeError("router_response_missing_model")
-        allowed_models = _normalize_model_candidates(provider_policy.get("allowed_models", []))
-        if allowed_models and selected.lower() not in {item.lower() for item in allowed_models}:
+        selected_allowed = _canonical_allowed_model(selected, allowed_models)
+        if allowed_models and selected_allowed is None:
             raise RuntimeError(f"router_model_not_allowed:{selected}")
+        if selected_allowed is not None:
+            selected = selected_allowed
         decision["selected_model"] = selected
         decision["strategy"] = "routellm"
         decision["reason"] = "router_selected_model"
@@ -696,6 +722,12 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     if not isinstance(provider_counts, dict):
         provider_counts = {}
     provider_counts["responses"] = int(provider_counts.get("responses", 0) or 0) + 1
+    provider_counts["cost_usd_total"] = float(provider_counts.get("cost_usd_total", 0.0) or 0.0) + float(
+        metric.get("cost_usd", 0.0) or 0.0
+    )
+    provider_counts["tokens_total"] = int(provider_counts.get("tokens_total", 0) or 0) + int(
+        metric.get("total_tokens", 0) or 0
+    )
     provider_counts["routellm_count"] = int(provider_counts.get("routellm_count", 0) or 0) + (
         1 if routing_strategy == "routellm" else 0
     )
@@ -716,6 +748,12 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
     )
     provider_counts["router_error_rate"] = round(
         float(provider_counts.get("router_error_count", 0) or 0) / max(1, provider_responses),
+        6,
+    )
+    provider_tokens = int(provider_counts.get("tokens_total", 0) or 0)
+    provider_cost = float(provider_counts.get("cost_usd_total", 0.0) or 0.0)
+    provider_counts["cost_per_million_tokens"] = round(
+        ((provider_cost * 1_000_000.0) / max(1, provider_tokens)) if provider_tokens > 0 else 0.0,
         6,
     )
     routing_by_provider[routing_provider] = provider_counts
@@ -789,11 +827,22 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
         float(owner_counts.get("routing_router_error_count", 0) or 0) / max(1, owner_responses),
         6,
     )
+    owner_tokens_total = int(owner_counts.get("tokens_total", 0) or 0)
+    owner_cost_total = float(owner_counts.get("cost_usd_total", 0.0) or 0.0)
+    owner_counts["cost_per_million_tokens"] = round(
+        ((owner_cost_total * 1_000_000.0) / max(1, owner_tokens_total)) if owner_tokens_total > 0 else 0.0,
+        6,
+    )
     by_owner[owner] = owner_counts
 
     token_rate_per_minute = 0.0
     if latency_sum > 0.0:
         token_rate_per_minute = (float(tokens_total) / latency_sum) * 60.0
+    estimated_cost_per_million_tokens = (
+        (float(total_cost) * 1_000_000.0) / float(tokens_total)
+        if int(tokens_total) > 0
+        else 0.0
+    )
 
     summary.update(
         {
@@ -816,10 +865,12 @@ def update_response_metrics_summary(path: Path, metric: dict[str, Any]) -> dict[
             "tokens_total": tokens_total,
             "tokens_input_total": tokens_input_total,
             "tokens_output_total": tokens_output_total,
+            "estimated_tokens_total": tokens_total,
             "tokens_avg": round(float(tokens_total) / max(1, total), 6),
             "token_exact_count": token_exact_count,
             "token_exact_coverage": round(float(token_exact_count) / max(1, total), 6),
             "token_rate_per_minute": round(token_rate_per_minute, 6),
+            "estimated_cost_per_million_tokens": round(estimated_cost_per_million_tokens, 6),
             "routing_decisions_total": routing_decisions_total,
             "routing_routellm_count": routing_routellm_count,
             "routing_routellm_rate": round(float(routing_routellm_count) / max(1, routing_decisions_total), 6),

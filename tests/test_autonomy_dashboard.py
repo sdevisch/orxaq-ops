@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import json
+import os
 import tempfile
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -26,14 +27,38 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("/api/conversations", html)
         self.assertIn("/api/lanes/action", html)
         self.assertIn("/api/watchdog", html)
+        self.assertIn("/api/collab-runtime", html)
+        self.assertIn("Routing Monitor", html)
+        self.assertIn('data-tab="routing"', html)
         self.assertIn("Parallel Lanes", html)
         self.assertIn("Conversations", html)
         self.assertIn("Autonomous PID Watchdog", html)
+        self.assertIn("Collaborative Agent Runtime", html)
+        self.assertIn("Routing Overview", html)
+        self.assertIn("Provider Routing Health", html)
+        self.assertIn("Lane Router Configuration", html)
+        self.assertIn("Recent Routing Decisions", html)
+        self.assertIn("routingSummary", html)
+        self.assertIn("routingDecisionFeed", html)
+        self.assertIn("routingProviderBody", html)
+        self.assertIn("routingLaneBody", html)
+        self.assertIn("routingEstimatedTokens", html)
+        self.assertIn("routingBlendedCostPerM", html)
+        self.assertIn("Blended Est. $ / 1M", html)
+        self.assertIn("collabSummary", html)
+        self.assertIn("collabAnomaly", html)
+        self.assertIn("collabTableBody", html)
+        self.assertIn("live-indicator", html)
+        self.assertIn("signalLedMarkup", html)
+        self.assertIn("sparklineMarkup", html)
+        self.assertIn("attentionBadgeMarkup", html)
         self.assertIn("watchdogSummary", html)
         self.assertIn("watchdogEvents", html)
         self.assertIn("Cost &amp; Quality", html)
         self.assertIn("metricsSummary", html)
+        self.assertIn("metricsEconomics", html)
         self.assertIn("excitingStat", html)
+        self.assertIn("Est. $ / 1M", html)
         self.assertIn("Resilience Diagnostics", html)
         self.assertIn("renderDiagnostics", html)
         self.assertIn("lane_agents", html)
@@ -71,8 +96,19 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("lastSuccessfulConversationPayload", html)
         self.assertIn("lastSuccessfulDawPayload", html)
         self.assertIn("lastSuccessfulWatchdogPayload", html)
+        self.assertIn("lastSuccessfulCollabPayload", html)
+        self.assertIn("lastSuccessfulRoutingPayload", html)
+        self.assertIn("ROUTING_DECISION_TAIL", html)
         self.assertIn("renderWatchdog", html)
+        self.assertIn("renderCollaboratorRuntime", html)
+        self.assertIn("renderRouting", html)
+        self.assertIn("routingDecisionPath", html)
+        self.assertIn("routing_decisions_endpoint", html)
+        self.assertIn("setActiveTab", html)
+        self.assertIn("initTabs", html)
         self.assertIn("watchdog endpoint unavailable", html)
+        self.assertIn("collaboration runtime endpoint unavailable", html)
+        self.assertIn("routing decisions endpoint unavailable", html)
         self.assertIn("USER_TIMEZONE", html)
         self.assertIn("formatTimestamp", html)
         self.assertIn("stale cache used", html)
@@ -635,6 +671,219 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(len(payload["recent_events"]), 2)
         self.assertEqual(payload["recent_events"][0]["status"], "restarted")
         self.assertEqual(payload["recent_events"][1]["status"], "restart_failed")
+
+    def test_safe_watchdog_snapshot_prefers_newer_artifacts_state_file(self):
+        cfg = mock.Mock()
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            home_dir = root / "home"
+            artifacts_dir = root / "artifacts"
+            home_watchdog_dir = home_dir / ".codex" / "autonomy"
+            home_watchdog_dir.mkdir(parents=True)
+            artifacts_dir.mkdir(parents=True)
+            cfg.artifacts_dir = artifacts_dir
+
+            home_state = home_watchdog_dir / "process-watchdog-state.json"
+            artifacts_state = artifacts_dir / "process-watchdog-state.json"
+            home_history = home_watchdog_dir / "process-watchdog-history.ndjson"
+            artifacts_history = artifacts_dir / "process-watchdog-history.ndjson"
+
+            home_state.write_text(
+                json.dumps(
+                    {
+                        "runs_total": 1,
+                        "last_run_at": "2026-01-01T00:00:01Z",
+                        "processes": {
+                            "orxaq-dashboard": {"last_pid": 101, "last_status": "healthy"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            artifacts_state.write_text(
+                json.dumps(
+                    {
+                        "runs_total": 2,
+                        "last_run_at": "2026-01-01T00:00:02Z",
+                        "processes": {
+                            "orxaq-dashboard": {"last_pid": 202, "last_status": "restarted"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            home_history.write_text(
+                '{"time":"2026-01-01T00:00:01Z","id":"orxaq-dashboard","status":"healthy","pid":101}\n',
+                encoding="utf-8",
+            )
+            artifacts_history.write_text(
+                '{"time":"2026-01-01T00:00:02Z","id":"orxaq-dashboard","status":"restarted","pid":202}\n',
+                encoding="utf-8",
+            )
+
+            os.utime(home_state, (1_700_000_000, 1_700_000_000))
+            os.utime(home_history, (1_700_000_000, 1_700_000_000))
+            os.utime(artifacts_state, (1_700_000_060, 1_700_000_060))
+            os.utime(artifacts_history, (1_700_000_060, 1_700_000_060))
+
+            with mock.patch("orxaq_autonomy.dashboard.Path.home", return_value=home_dir), mock.patch.dict(
+                "os.environ",
+                {},
+                clear=True,
+            ):
+                payload = dashboard._safe_watchdog_snapshot(cfg, events=5)
+
+        self.assertEqual(payload["state_file"], str(artifacts_state.resolve()))
+        self.assertEqual(payload["history_file"], str(artifacts_history.resolve()))
+        self.assertEqual(payload["runs_total"], 2)
+        self.assertEqual(payload["processes"][0]["pid"], 202)
+        self.assertEqual(payload["recent_events"][0]["pid"], 202)
+
+    def test_watchdog_path_prefers_newer_home_history_file(self):
+        cfg = mock.Mock()
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            home_dir = root / "home"
+            artifacts_dir = root / "artifacts"
+            home_watchdog_dir = home_dir / ".codex" / "autonomy"
+            home_watchdog_dir.mkdir(parents=True)
+            artifacts_dir.mkdir(parents=True)
+            cfg.artifacts_dir = artifacts_dir
+
+            state_path = artifacts_dir / "process-watchdog-state.json"
+            state_path.write_text(json.dumps({"runs_total": 1, "processes": {}}), encoding="utf-8")
+            sibling_history = artifacts_dir / "process-watchdog-history.ndjson"
+            home_history = home_watchdog_dir / "process-watchdog-history.ndjson"
+            sibling_history.write_text("{}", encoding="utf-8")
+            home_history.write_text("{}", encoding="utf-8")
+            os.utime(sibling_history, (1_700_000_000, 1_700_000_000))
+            os.utime(home_history, (1_700_000_120, 1_700_000_120))
+
+            with mock.patch("orxaq_autonomy.dashboard.Path.home", return_value=home_dir), mock.patch.dict(
+                "os.environ",
+                {},
+                clear=True,
+            ):
+                selected = dashboard._watchdog_history_path(cfg, state_path)
+
+        self.assertEqual(selected, home_history.resolve())
+
+    def test_safe_collab_runtime_snapshot_includes_runtime_and_signal_fields(self):
+        cfg = mock.Mock()
+        lane_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "lanes": [
+                {
+                    "id": "codex-governance",
+                    "owner": "codex",
+                    "pid": 4242,
+                    "running": True,
+                    "health": "ok",
+                    "tasks_file": "/tmp/tasks.json",
+                    "events_file": "/tmp/events.ndjson",
+                    "description": "lane description",
+                    "last_event": {"timestamp": "2026-01-01T00:00:00+00:00"},
+                    "meta": {"started_at": "2026-01-01T00:00:00+00:00"},
+                    "impl_repo": "/tmp/repo",
+                    "exclusive_paths": ["src/"],
+                }
+            ],
+        }
+        with mock.patch("orxaq_autonomy.dashboard._safe_lane_status_snapshot", return_value=lane_payload), mock.patch(
+            "orxaq_autonomy.dashboard._resolve_lane_work_title",
+            return_value=("Upgrade governance dashboard for collaboration observability", "governance-task"),
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._lane_running_age_seconds",
+            return_value=540,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._lane_health_confirmation",
+            return_value=("2026-01-01T00:08:55Z", 5),
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._lane_commit_count_last_hour",
+            return_value=4,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._lane_commit_velocity_metrics",
+            return_value={
+                "commits_last_hour_from_bins": 4,
+                "commit_bins_5m": [0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1],
+                "commit_bins_max": 1,
+                "commit_velocity_level": 0.4,
+                "latest_commit_at": "2026-01-01T00:08:57Z",
+                "latest_commit_age_sec": 3,
+            },
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._lane_signal_metrics",
+            return_value={
+                "latest_signal_at": "2026-01-01T00:08:58Z",
+                "latest_signal_age_sec": 2,
+                "latest_task_done_at": "2026-01-01T00:08:54Z",
+                "latest_task_done_age_sec": 6,
+                "latest_push_at": "2026-01-01T00:08:56Z",
+                "latest_push_age_sec": 4,
+                "signal_events_15s": 3,
+                "signal_events_60s": 9,
+                "signal_events_300s": 11,
+                "recent_error_events_10m": 0,
+                "signal_bins_5m": [0, 0, 0, 1, 0, 1, 1, 2, 3, 1, 0, 1],
+                "signal_bins_max": 3,
+                "signal_level": 0.82,
+                "live_state": "thinking",
+                "live_label": "thinking",
+            },
+        ):
+            payload = dashboard._safe_collab_runtime_snapshot(cfg)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["partial"])
+        self.assertEqual(len(payload["rows"]), 1)
+        row = payload["rows"][0]
+        self.assertEqual(row["lane_id"], "codex-governance")
+        self.assertEqual(row["ai"], "codex")
+        self.assertEqual(row["pid"], 4242)
+        self.assertEqual(row["work_title"], "Upgrade governance dashboard for collaboration observability")
+        self.assertEqual(row["task_id"], "governance-task")
+        self.assertEqual(row["running_age_sec"], 540)
+        self.assertEqual(row["commits_last_hour"], 4)
+        self.assertEqual(row["latest_task_done_age_sec"], 6)
+        self.assertEqual(row["latest_push_age_sec"], 4)
+        self.assertEqual(row["latest_commit_age_sec"], 3)
+        self.assertEqual(row["commit_bins_5m"][4], 1)
+        self.assertEqual(row["signal_bins_5m"][8], 3)
+        self.assertEqual(row["live_state"], "thinking")
+        self.assertAlmostEqual(row["signal_level"], 0.82, places=3)
+        self.assertEqual(row["attention_level"], "ok")
+        self.assertEqual(row["attention_score"], 0)
+        self.assertEqual(payload["summary"]["total_rows"], 1)
+        self.assertEqual(payload["summary"]["running_rows"], 1)
+        self.assertEqual(payload["summary"]["thinking_rows"], 1)
+        self.assertEqual(payload["summary"]["commits_last_hour_total"], 4)
+        self.assertEqual(payload["summary"]["attention_rows"], 0)
+        self.assertEqual(payload["summary"]["latest_task_done_at"], "2026-01-01T00:08:54Z")
+        self.assertEqual(payload["summary"]["latest_push_at"], "2026-01-01T00:08:56Z")
+        self.assertEqual(payload["summary"]["latest_commit_at"], "2026-01-01T00:08:57Z")
+        self.assertGreaterEqual(payload["summary"]["latest_task_done_age_sec"], 0)
+        self.assertGreaterEqual(payload["summary"]["latest_push_age_sec"], 0)
+        self.assertGreaterEqual(payload["summary"]["latest_commit_age_sec"], 0)
+
+    def test_lane_attention_metrics_marks_offline_lane_as_critical(self):
+        metrics = dashboard._lane_attention_metrics(
+            {
+                "running": False,
+                "health": "stopped_unexpected",
+                "latest_health_confirmation_age_sec": 620,
+                "latest_signal_age_sec": -1,
+                "latest_task_done_age_sec": -1,
+                "latest_push_age_sec": -1,
+                "commits_last_hour": 2,
+                "signal_events_60s": 0,
+                "recent_error_events_10m": 2,
+                "live_state": "offline",
+            }
+        )
+        self.assertEqual(metrics["attention_level"], "critical")
+        self.assertGreaterEqual(metrics["attention_score"], 70)
+        self.assertIn("process offline", metrics["attention_message"])
 
     def test_filter_conversation_payload_for_lane_suppresses_unrelated_lane_errors(self):
         payload = {

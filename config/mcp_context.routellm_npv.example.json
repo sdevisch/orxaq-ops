@@ -1,0 +1,38 @@
+{
+  "initiative": "routellm-npv-capacity-scaling",
+  "goal": "Improve validated throughput per USD by routing model requests and scaling parallel agent capacity only when marginal NPV is positive.",
+  "constraints": [
+    "non-interactive execution only",
+    "no destructive git history operations",
+    "windows user-space compatibility",
+    "fallback-safe routing behavior",
+    "budget and concurrency guardrails"
+  ],
+  "decision_inputs": {
+    "value_signals": [
+      "task_priority",
+      "dependency_criticality",
+      "defect_risk_reduction"
+    ],
+    "cost_signals": [
+      "expected_tokens",
+      "model_price_per_token",
+      "retry_likelihood"
+    ],
+    "quality_signals": [
+      "first_time_pass_rate",
+      "validation_pass_rate"
+    ],
+    "latency_signals": [
+      "response_latency_sec",
+      "cycle_time_minutes"
+    ]
+  },
+  "outputs": [
+    "route_decision",
+    "expected_marginal_npv_usd",
+    "capacity_decision",
+    "guardrail_state",
+    "rollback_reason_if_any"
+  ]
+}

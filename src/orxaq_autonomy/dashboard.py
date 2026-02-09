@@ -31,7 +31,10 @@ from .manager import (
 )
 
 _COMMIT_COUNT_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, int]] = {}
+_COMMIT_TIMELINE_CACHE: dict[tuple[str, tuple[str, ...], int, int], tuple[float, dict[str, Any]]] = {}
 _COMMIT_CACHE_TTL_SEC = 20.0
+_COLLAB_ACTIVITY_BUCKETS = 12
+_COLLAB_ACTIVITY_BUCKET_SEC = 300
 
 
 def _dashboard_html(refresh_sec: int) -> str:
@@ -116,6 +119,26 @@ def _dashboard_html(refresh_sec: int) -> str:
       gap: 8px;
       align-items: center;
     }}
+    .tab-nav {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-top: 2px;
+    }}
+    .tab-btn {{
+      border-radius: 999px;
+      font-weight: 700;
+      background: #ffffff;
+      color: var(--muted);
+      border-color: rgba(15, 23, 42, 0.16);
+    }}
+    .tab-btn.active {{
+      color: var(--ink);
+      border-color: var(--info);
+      background: linear-gradient(180deg, #f5f9ff, #ecf4ff);
+      box-shadow: 0 0 0 4px var(--ring);
+    }}
     button {{
       appearance: none;
       border: 1px solid var(--border);
@@ -141,6 +164,12 @@ def _dashboard_html(refresh_sec: int) -> str:
       display: grid;
       grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 14px;
+    }}
+    .tab-panel {{
+      display: none;
+    }}
+    .tab-panel.active {{
+      display: grid;
     }}
     .card {{
       grid-column: span 12;
@@ -360,7 +389,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       width: 100%;
       border-collapse: collapse;
       font-size: .82rem;
-      min-width: 860px;
+      min-width: 1180px;
     }}
     .data-table th {{
       text-align: left;
@@ -442,6 +471,77 @@ def _dashboard_html(refresh_sec: int) -> str:
       background: linear-gradient(180deg, #f2b6b6, #cc2f2f);
       opacity: 0.5;
     }}
+    .sparkline-strip {{
+      display: inline-grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 6px;
+      gap: 2px;
+      align-items: end;
+      min-height: 18px;
+      padding: 1px 0;
+    }}
+    .sparkline-bar {{
+      width: 6px;
+      height: var(--h, 15%);
+      min-height: 3px;
+      border-radius: 2px;
+      background: #d7e3ef;
+      opacity: 0.45;
+      transition: height .22s ease;
+    }}
+    .sparkline-bar.active {{
+      opacity: 0.95;
+      background: linear-gradient(180deg, #8fdadf, #2c99a4);
+      animation: sparkShift 1.05s ease-in-out infinite alternate;
+    }}
+    .sparkline-strip.sparkline-commit .sparkline-bar.active {{
+      background: linear-gradient(180deg, #9bd2ff, #1f6feb);
+    }}
+    .sparkline-strip.stale .sparkline-bar.active {{
+      background: linear-gradient(180deg, #ffd08a, #c77d00);
+    }}
+    .sparkline-strip.offline .sparkline-bar.active {{
+      background: linear-gradient(180deg, #f2b6b6, #cc2f2f);
+      opacity: 0.65;
+    }}
+    @keyframes sparkShift {{
+      from {{ filter: brightness(0.94); transform: translateY(0); }}
+      to {{ filter: brightness(1.08); transform: translateY(-1px); }}
+    }}
+    .cell-stack {{
+      display: grid;
+      gap: 3px;
+    }}
+    .attention-badge {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: .72rem;
+      font-weight: 700;
+      border: 1px solid transparent;
+      letter-spacing: 0.01em;
+    }}
+    .attention-critical {{
+      color: #8f1d1d;
+      background: #fde2e2;
+      border-color: #f4b7b7;
+    }}
+    .attention-warn {{
+      color: #7a4a00;
+      background: #fff1d6;
+      border-color: #f2d59b;
+    }}
+    .attention-watch {{
+      color: #355f8a;
+      background: #e5f0ff;
+      border-color: #bfd8ff;
+    }}
+    .attention-ok {{
+      color: #0b6b3d;
+      background: #ddf8e7;
+      border-color: #addfbe;
+    }}
     @keyframes ledWink {{
       from {{ transform: translateY(0); filter: brightness(0.95); }}
       to {{ transform: translateY(-1px); filter: brightness(1.15); }}
@@ -475,9 +575,13 @@ def _dashboard_html(refresh_sec: int) -> str:
         <span id="interval" class="pill">refresh: {refresh_sec}s</span>
         <span id="updated" class="pill">updated: --</span>
       </div>
+      <div class="tab-nav" role="tablist" aria-label="Dashboard sections">
+        <button id="tabOverview" class="tab-btn active" data-tab="overview" type="button">Overview</button>
+        <button id="tabRouting" class="tab-btn" data-tab="routing" type="button">Routing Monitor</button>
+      </div>
     </section>
 
-    <section class="grid">
+    <section class="grid tab-panel active" data-tab-panel="overview">
       <article class="card span-12">
         <h2>DAW Session (Logic Mode)</h2>
         <div class="transport">
@@ -545,6 +649,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         <h2>Collaborative Agent Runtime</h2>
         <div id="collabSummary" class="mono">collaboration runtime: loading...</div>
         <div id="collabActivity" class="mono">live activity: loading...</div>
+        <div id="collabAnomaly" class="mono">attention: loading...</div>
         <div class="table-wrap">
           <table class="data-table">
             <thead>
@@ -555,12 +660,14 @@ def _dashboard_html(refresh_sec: int) -> str:
                 <th>Running</th>
                 <th>Latest Health</th>
                 <th>Commits (1h)</th>
+                <th>Latest Success</th>
                 <th>Live Heartbeat</th>
                 <th>Signal LEDs</th>
+                <th>Attention</th>
               </tr>
             </thead>
             <tbody id="collabTableBody">
-              <tr><td colspan="8" class="mono">Loading collaborative lanes...</td></tr>
+              <tr><td colspan="10" class="mono">Loading collaborative lanes...</td></tr>
             </tbody>
           </table>
         </div>
@@ -570,6 +677,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         <h2>Cost &amp; Quality</h2>
         <div id="excitingStat" class="logline">Most exciting stat: loading...</div>
         <div id="metricsSummary" class="mono">metrics: loading...</div>
+        <div id="metricsEconomics" class="mono">economics: loading...</div>
         <div id="metricsList" class="repo"></div>
       </article>
 
@@ -631,13 +739,83 @@ def _dashboard_html(refresh_sec: int) -> str:
         <div id="resilienceList" class="diag-list"></div>
       </article>
     </section>
+
+    <section class="grid tab-panel" data-tab-panel="routing">
+      <article class="card span-12">
+        <h2>Routing Overview</h2>
+        <div id="routingSummary" class="mono">routing: loading...</div>
+        <div class="stats">
+          <div class="stat"><div class="k">Decisions</div><div id="routingDecisions" class="v">0</div></div>
+          <div class="stat"><div class="k">RouteLLM</div><div id="routingRoutellmRate" class="v">0%</div></div>
+          <div class="stat"><div class="k">Fallbacks</div><div id="routingFallbackRate" class="v">0%</div></div>
+          <div class="stat"><div class="k">Router Errors</div><div id="routingRouterErrorRate" class="v">0%</div></div>
+          <div class="stat"><div class="k">Avg Router Latency</div><div id="routingLatencyAvg" class="v">0ms</div></div>
+          <div class="stat"><div class="k">Enabled Lanes</div><div id="routingEnabledLanes" class="v">0</div></div>
+          <div class="stat"><div class="k">Est. Tokens Used</div><div id="routingEstimatedTokens" class="v">0</div></div>
+          <div class="stat"><div class="k">Blended Est. $ / 1M</div><div id="routingBlendedCostPerM" class="v">$0.000</div></div>
+        </div>
+      </article>
+
+      <article class="card span-6">
+        <h2>Provider Routing Health</h2>
+        <div id="routingProviderSummary" class="mono">providers: loading...</div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Responses</th>
+                <th>RouteLLM</th>
+                <th>Fallback</th>
+                <th>Router Errors</th>
+                <th>Est. $ / 1M</th>
+              </tr>
+            </thead>
+            <tbody id="routingProviderBody">
+              <tr><td colspan="6" class="mono">Loading routing providers...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card span-6">
+        <h2>Lane Router Configuration</h2>
+        <div id="routingLaneSummary" class="mono">lane routing config: loading...</div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>Health</th>
+                <th>RouteLLM</th>
+                <th>Router URL</th>
+                <th>Decisions (tail)</th>
+                <th>Fallbacks</th>
+                <th>Errors</th>
+              </tr>
+            </thead>
+            <tbody id="routingLaneBody">
+              <tr><td colspan="7" class="mono">Loading lane routing...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card span-12">
+        <h2>Recent Routing Decisions</h2>
+        <div id="routingDecisionSummary" class="mono">routing decisions: loading...</div>
+        <div id="routingDecisionFeed" class="feed"></div>
+      </article>
+    </section>
   </main>
 
   <script>
     const REFRESH_MS = {refresh_ms};
     const FETCH_TIMEOUT_MS = Math.max(1800, Math.min(12000, Math.floor(REFRESH_MS * 0.8)));
+    const ROUTING_DECISION_TAIL = 180;
     let paused = false;
     let timer = null;
+    let activeTab = "overview";
     const conversationFilters = {{
       owner: "",
       lane: "",
@@ -651,6 +829,7 @@ def _dashboard_html(refresh_sec: int) -> str:
     let lastSuccessfulDawPayload = null;
     let lastSuccessfulWatchdogPayload = null;
     let lastSuccessfulCollabPayload = null;
+    let lastSuccessfulRoutingPayload = null;
 
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
@@ -692,6 +871,12 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (seconds < 3600) return `${{Math.round(seconds / 60)}}m`;
       return `${{(seconds / 3600).toFixed(1)}}h`;
     }}
+    function formatPercent(numerator, denominator) {{
+      const numer = Number(numerator || 0);
+      const denom = Number(denominator || 0);
+      if (!Number.isFinite(numer) || !Number.isFinite(denom) || denom <= 0) return "0%";
+      return `${{Math.round((numer / denom) * 100)}}%`;
+    }}
     function formatDuration(value) {{
       const seconds = Number(value);
       if (!Number.isFinite(seconds) || seconds < 0) return "-";
@@ -727,6 +912,14 @@ def _dashboard_html(refresh_sec: int) -> str:
       query.set("conversation_lines", "200");
       if (laneTarget) query.set("lane", laneTarget);
       return `/api/lanes?${{query.toString()}}`;
+    }}
+    function routingDecisionPath() {{
+      const query = new URLSearchParams();
+      query.set("lines", "600");
+      query.set("include_lanes", "1");
+      query.set("event_type", "routing_decision");
+      query.set("tail", String(ROUTING_DECISION_TAIL));
+      return `/api/conversations?${{query.toString()}}`;
     }}
     function fallbackLanePayloadFromMonitor(monitorPayload, laneTarget, laneEndpointError) {{
       const monitorLanes = (
@@ -1008,6 +1201,26 @@ def _dashboard_html(refresh_sec: int) -> str:
       el.textContent = `lane action: ${{message}}`;
       el.className = isError ? "mono bad" : "mono";
     }}
+    function setActiveTab(tabName) {{
+      const normalized = String(tabName || "").trim().toLowerCase();
+      activeTab = normalized === "routing" ? "routing" : "overview";
+      document.querySelectorAll("[data-tab]").forEach((button) => {{
+        const target = String(button.getAttribute("data-tab") || "").trim().toLowerCase();
+        button.classList.toggle("active", target === activeTab);
+      }});
+      document.querySelectorAll("[data-tab-panel]").forEach((panel) => {{
+        const panelName = String(panel.getAttribute("data-tab-panel") || "").trim().toLowerCase();
+        panel.classList.toggle("active", panelName === activeTab);
+      }});
+    }}
+    function initTabs() {{
+      document.querySelectorAll("[data-tab]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          setActiveTab(button.getAttribute("data-tab") || "overview");
+        }});
+      }});
+      setActiveTab(activeTab);
+    }}
     window.OrxaqThemeAPI = {{
       applySkin(tokens) {{
         const root = document.documentElement;
@@ -1222,6 +1435,42 @@ def _dashboard_html(refresh_sec: int) -> str:
       return `<span class="led-strip">${{rendered.join('')}}</span>`;
     }}
 
+    function sparklineMarkup(values, tone, liveState) {{
+      const series = Array.isArray(values)
+        ? values.map((value) => {{
+            const numeric = Number(value);
+            return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+          }})
+        : [];
+      const toneClass = String(tone || "signal").trim().toLowerCase() || "signal";
+      if (!series.length) {{
+        return `<span class="sparkline-strip sparkline-${{toneClass}}"></span>`;
+      }}
+      let maxValue = 0;
+      for (const value of series) {{
+        if (value > maxValue) maxValue = value;
+      }}
+      if (maxValue <= 0) maxValue = 1;
+      const state = String(liveState || "active").trim().toLowerCase() || "active";
+      const stateClass = state === "stale" ? "stale" : (state === "offline" ? "offline" : "live");
+      const bars = series.map((value) => {{
+        const active = value > 0;
+        const heightPct = active
+          ? Math.max(16, Math.min(100, Math.round((value / maxValue) * 100)))
+          : 12;
+        return `<span class="sparkline-bar ${{active ? 'active' : ''}}" style="--h:${{heightPct}}%;"></span>`;
+      }});
+      return `<span class="sparkline-strip sparkline-${{toneClass}} ${{stateClass}}">${{bars.join('')}}</span>`;
+    }}
+
+    function attentionBadgeMarkup(level, score) {{
+      const normalized = String(level || "ok").trim().toLowerCase();
+      const resolved = ["critical", "warn", "watch", "ok"].includes(normalized) ? normalized : "ok";
+      const numericScore = Number(score);
+      const scoreLabel = Number.isFinite(numericScore) ? ` ${{Math.max(0, Math.round(numericScore))}}` : "";
+      return `<span class="attention-badge attention-${{resolved}}">${{escapeHtml(resolved + scoreLabel)}}</span>`;
+    }}
+
     function renderCollaboratorRuntime(payload) {{
       const data = (payload && typeof payload === "object") ? payload : {{}};
       const rows = Array.isArray(data.rows) ? data.rows : [];
@@ -1236,16 +1485,31 @@ def _dashboard_html(refresh_sec: int) -> str:
       const staleRows = Number(summary.stale_rows || 0);
       const offlineRows = Number(summary.offline_rows || 0);
       const commits1h = Number(summary.commits_last_hour_total || 0);
+      const attentionRows = Number(summary.attention_rows || 0);
+      const criticalRows = Number(summary.critical_rows || 0);
+      const warnRows = Number(summary.warn_rows || 0);
+      const watchRows = Number(summary.watch_rows || 0);
       const partial = Boolean(data.partial);
       const baseSummary =
-        `agents=${{totalRows}} · running=${{runningRows}} · thinking=${{thinkingRows}} · active=${{activeRows}} · stale=${{staleRows}} · offline=${{offlineRows}} · commits_1h=${{commits1h}}`;
+        `agents=${{totalRows}} · running=${{runningRows}} · thinking=${{thinkingRows}} · active=${{activeRows}} · stale=${{staleRows}} · offline=${{offlineRows}} · commits_1h=${{commits1h}} · attention=${{attentionRows}} (critical=${{criticalRows}} warn=${{warnRows}} watch=${{watchRows}})`;
       const errorSuffix = errors.length ? ` · errors=${{errors.length}}` : "";
       byId("collabSummary").textContent = `${{baseSummary}}${{partial ? " · partial=true" : ""}}${{errorSuffix}}`;
       byId("collabActivity").textContent =
-        `latest_signal: ${{formatTimestamp(summary.latest_signal_at || "") || "-"}} · age=${{formatAgeSeconds(summary.latest_signal_age_sec)}} · latest_health: ${{formatTimestamp(summary.latest_health_at || "") || "-"}}`;
+        `latest_signal: ${{formatTimestamp(summary.latest_signal_at || "") || "-"}} · age=${{formatAgeSeconds(summary.latest_signal_age_sec)}} · latest_health: ${{formatTimestamp(summary.latest_health_at || "") || "-"}} · task_done: ${{formatTimestamp(summary.latest_task_done_at || "") || "-"}} · push: ${{formatTimestamp(summary.latest_push_at || "") || "-"}} · latest_commit: ${{formatTimestamp(summary.latest_commit_at || "") || "-"}}`;
+      const topAttention = Array.isArray(summary.top_attention)
+        ? summary.top_attention.filter((item) => String(item || "").trim())
+        : [];
+      const anomalyText = topAttention.length
+        ? `attention: ${{topAttention.join(" | ")}}`
+        : (attentionRows > 0 ? "attention: check lane-level details" : "attention: stable");
+      const anomalyNode = byId("collabAnomaly");
+      anomalyNode.textContent = anomalyText;
+      anomalyNode.className = attentionRows > 0
+        ? (criticalRows > 0 ? "mono bad" : "mono warn")
+        : "mono ok";
 
       if (!rows.length) {{
-        byId("collabTableBody").innerHTML = `<tr><td colspan="8" class="mono bad">${{escapeHtml(errors[0] || "No collaborative runtime rows available.")}}</td></tr>`;
+        byId("collabTableBody").innerHTML = `<tr><td colspan="10" class="mono bad">${{escapeHtml(errors[0] || "No collaborative runtime rows available.")}}</td></tr>`;
         return;
       }}
 
@@ -1263,14 +1527,26 @@ def _dashboard_html(refresh_sec: int) -> str:
         const healthAge = formatAgeSeconds(item.latest_health_confirmation_age_sec);
         const commits = Number(item.commits_last_hour);
         const commitLabel = Number.isFinite(commits) && commits >= 0 ? String(commits) : "-";
+        const commitBars = sparklineMarkup(item.commit_bins_5m, "commit", item.live_state);
+        const latestCommitAge = formatAgeSeconds(item.latest_commit_age_sec);
+        const taskDoneAt = formatTimestamp(item.latest_task_done_at || "");
+        const taskDoneAge = formatAgeSeconds(item.latest_task_done_age_sec);
+        const pushAt = formatTimestamp(item.latest_push_at || "");
+        const pushAge = formatAgeSeconds(item.latest_push_age_sec);
+        const attentionBadge = attentionBadgeMarkup(item.attention_level, item.attention_score);
+        const attentionMessage = String(item.attention_message || "stable");
         const liveHtml = liveIndicatorMarkup(item.live_state, item.live_label || item.live_state || "offline");
         const signalHtml = signalLedMarkup(item);
+        const signalBars = sparklineMarkup(item.signal_bins_5m, "signal", item.live_state);
         const signalAge = formatAgeSeconds(item.latest_signal_age_sec);
         const aiCell = laneId
           ? `<div class="mono">${{escapeHtml(ai)}}</div><div class="mono">${{escapeHtml(laneId)}}</div>`
           : `<div class="mono">${{escapeHtml(ai)}}</div>`;
-        const healthCell = `<div>${{escapeHtml(healthLabel)}}</div><div class="mono">${{escapeHtml(healthAt || "-")}} · age=${{escapeHtml(healthAge)}}</div>`;
-        const signalCell = `<div>${{signalHtml}}</div><div class="mono">age=${{escapeHtml(signalAge)}}</div>`;
+        const healthCell = `<div class="cell-stack"><div>${{escapeHtml(healthLabel)}}</div><div class="mono">${{escapeHtml(healthAt || "-")}} · age=${{escapeHtml(healthAge)}}</div></div>`;
+        const commitsCell = `<div class="cell-stack"><div class="mono">${{escapeHtml(commitLabel)}}</div><div>${{commitBars}}</div><div class="mono">latest=${{escapeHtml(latestCommitAge)}}</div></div>`;
+        const successCell = `<div class="cell-stack"><div class="mono">task_done=${{escapeHtml(taskDoneAt || "-")}} · age=${{escapeHtml(taskDoneAge)}}</div><div class="mono">push=${{escapeHtml(pushAt || "-")}} · age=${{escapeHtml(pushAge)}}</div></div>`;
+        const signalCell = `<div class="cell-stack"><div>${{signalHtml}}</div><div>${{signalBars}}</div><div class="mono">age=${{escapeHtml(signalAge)}}</div></div>`;
+        const attentionCell = `<div class="cell-stack"><div>${{attentionBadge}}</div><div class="mono">${{escapeHtml(attentionMessage)}}</div></div>`;
         body.push(
           `<tr>
             <td>${{aiCell}}</td>
@@ -1278,14 +1554,16 @@ def _dashboard_html(refresh_sec: int) -> str:
             <td class="mono">${{escapeHtml(String(pid))}}</td>
             <td class="mono">${{running ? escapeHtml(runningFor) : "-"}}</td>
             <td>${{healthCell}}</td>
-            <td class="mono">${{escapeHtml(commitLabel)}}</td>
+            <td>${{commitsCell}}</td>
+            <td>${{successCell}}</td>
             <td>${{liveHtml}}</td>
             <td>${{signalCell}}</td>
+            <td>${{attentionCell}}</td>
           </tr>`
         );
       }}
       if (errors.length) {{
-        body.push(`<tr><td colspan="8" class="mono bad">${{escapeHtml(errors.join(" | "))}}</td></tr>`);
+        body.push(`<tr><td colspan="10" class="mono bad">${{escapeHtml(errors.join(" | "))}}</td></tr>`);
       }}
       byId("collabTableBody").innerHTML = body.join("");
     }}
@@ -1556,19 +1834,32 @@ def _dashboard_html(refresh_sec: int) -> str:
       const difficultyAvg = Number(responseMetrics.prompt_difficulty_score_avg || 0);
       const costTotal = Number(responseMetrics.cost_usd_total || 0);
       const costCoverage = Number(responseMetrics.exact_cost_coverage || 0);
+      const estimatedTokens = Number(responseMetrics.estimated_tokens_total || responseMetrics.tokens_total || 0);
+      let blendedCostPerMillion = Number(responseMetrics.estimated_cost_per_million_tokens || 0);
+      if ((!Number.isFinite(blendedCostPerMillion) || blendedCostPerMillion <= 0) && costTotal > 0 && estimatedTokens > 0) {{
+        blendedCostPerMillion = (costTotal * 1000000) / estimatedTokens;
+      }}
+      if (!Number.isFinite(blendedCostPerMillion) || blendedCostPerMillion < 0) blendedCostPerMillion = 0;
       const excitingStat = responseMetrics.exciting_stat || {{}};
       byId("metricsSummary").textContent =
         `responses: ${{responseCount}} · first-pass: ${{Math.round(firstPassRate * 100)}}% · acceptance: ${{Math.round(acceptanceRate * 100)}}% · avg latency: ${{latencyAvg.toFixed(2)}}s · avg difficulty: ${{difficultyAvg.toFixed(1)}} · total cost: $${{costTotal.toFixed(4)}} · exact cost: ${{Math.round(costCoverage * 100)}}%`;
+      byId("metricsEconomics").textContent =
+        `estimated tokens used: ${{Math.max(0, Math.round(estimatedTokens)).toLocaleString()}} · blended cost / 1M tokens: $${{blendedCostPerMillion.toFixed(3)}}`;
       byId("excitingStat").textContent =
         `Most exciting stat: ${{excitingStat.label || 'Awaiting Data'}} -> ${{excitingStat.value || '0'}}${{excitingStat.detail ? ' · ' + excitingStat.detail : ''}}`;
       const ownerRows = Object.entries(responseMetrics.by_owner || {{}}).map(([owner, payload]) => {{
         const item = payload || {{}};
         const ownerResponses = Number(item.responses || 0);
         const ownerCost = Number(item.cost_usd_total || 0);
+        const ownerTokens = Number(item.tokens_total || 0);
+        let ownerCostPerMillion = Number(item.cost_per_million_tokens || 0);
+        if ((!Number.isFinite(ownerCostPerMillion) || ownerCostPerMillion <= 0) && ownerCost > 0 && ownerTokens > 0) {{
+          ownerCostPerMillion = (ownerCost * 1000000) / ownerTokens;
+        }}
+        if (!Number.isFinite(ownerCostPerMillion) || ownerCostPerMillion < 0) ownerCostPerMillion = 0;
         const ownerFirstPass = Number(item.first_time_pass_rate || 0);
         const ownerValidation = Number(item.validation_pass_rate || 0);
-        const ownerTokens = Number(item.tokens_total || 0);
-        return `<div class="line"><span class="mono">${{escapeHtml(owner)}}</span> responses=${{ownerResponses}} · first-pass=${{Math.round(ownerFirstPass * 100)}}% · validation=${{Math.round(ownerValidation * 100)}}% · tokens=${{ownerTokens}} · cost=$${{ownerCost.toFixed(4)}}</div>`;
+        return `<div class="line"><span class="mono">${{escapeHtml(owner)}}</span> responses=${{ownerResponses}} · first-pass=${{Math.round(ownerFirstPass * 100)}}% · validation=${{Math.round(ownerValidation * 100)}}% · tokens=${{ownerTokens}} · cost=$${{ownerCost.toFixed(4)}} · cost/1M=$${{ownerCostPerMillion.toFixed(3)}}</div>`;
       }});
       const recommendations = Array.isArray(responseMetrics.optimization_recommendations)
         ? responseMetrics.optimization_recommendations
@@ -1687,6 +1978,344 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("conversationFeed").innerHTML = rows.join('');
     }}
 
+    function toBool(value) {{
+      if (typeof value === "boolean") return value;
+      if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+      const normalized = String(value || "").trim().toLowerCase();
+      if (!normalized) return false;
+      return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+    }}
+
+    function parseJsonObject(rawValue) {{
+      const raw = String(rawValue || "").trim();
+      if (!raw || raw[0] !== "{{") return {{}};
+      try {{
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {{
+          return parsed;
+        }}
+      }} catch (_err) {{
+        return {{}};
+      }}
+      return {{}};
+    }}
+
+    function normalizeRoutingDecisionEvent(entry) {{
+      const event = entry && typeof entry === "object" ? entry : {{}};
+      const payload = (event.payload && typeof event.payload === "object")
+        ? event.payload
+        : parseJsonObject(event.content || "");
+      const meta = (event.meta && typeof event.meta === "object") ? event.meta : {{}};
+      const owner = String(event.owner || "unknown").trim() || "unknown";
+      const laneId = String(event.lane_id || "").trim();
+      const provider = String(payload.provider || meta.provider || owner).trim() || owner;
+      const strategy = String(payload.strategy || "static_fallback").trim() || "static_fallback";
+      const requestedModel = String(payload.requested_model || "").trim();
+      const selectedModel = String(payload.selected_model || "").trim();
+      const reason = String(payload.reason || "").trim();
+      const routerError = String(payload.router_error || "").trim();
+      const routerUrl = String(payload.router_url || "").trim();
+      const routerEnabled = toBool(payload.router_enabled);
+      const fallbackUsed = toBool(payload.fallback_used);
+      const latencyRaw = Number(payload.router_latency_sec || 0);
+      const routerLatencySec = (Number.isFinite(latencyRaw) && latencyRaw >= 0) ? latencyRaw : 0;
+      return {{
+        timestamp: String(event.timestamp || "").trim(),
+        lane_id: laneId,
+        owner,
+        provider,
+        strategy,
+        requested_model: requestedModel,
+        selected_model: selectedModel,
+        reason,
+        router_error: routerError,
+        router_url: routerUrl,
+        router_enabled: routerEnabled,
+        fallback_used: fallbackUsed,
+        router_latency_sec: routerLatencySec,
+      }};
+    }}
+
+    function buildRoutingProviderMapFromEvents(decisions) {{
+      const out = {{}};
+      for (const decision of decisions) {{
+        const provider = String((decision && decision.provider) || "unknown").trim() || "unknown";
+        const current = out[provider] || {{
+          responses: 0,
+          routellm_count: 0,
+          fallback_count: 0,
+          router_error_count: 0,
+          routellm_rate: 0,
+          fallback_rate: 0,
+          router_error_rate: 0,
+        }};
+        current.responses += 1;
+        if (String(decision.strategy || "").trim().toLowerCase() === "routellm") current.routellm_count += 1;
+        if (toBool(decision.fallback_used)) current.fallback_count += 1;
+        if (String(decision.router_error || "").trim()) current.router_error_count += 1;
+        out[provider] = current;
+      }}
+      for (const provider of Object.keys(out)) {{
+        const responses = Math.max(1, Number(out[provider].responses || 0));
+        out[provider].routellm_rate = Number(out[provider].routellm_count || 0) / responses;
+        out[provider].fallback_rate = Number(out[provider].fallback_count || 0) / responses;
+        out[provider].router_error_rate = Number(out[provider].router_error_count || 0) / responses;
+      }}
+      return out;
+    }}
+
+    function buildRoutingLaneStats(decisions) {{
+      const out = {{}};
+      for (const decision of decisions) {{
+        const laneId = String((decision && decision.lane_id) || "unscoped").trim() || "unscoped";
+        const current = out[laneId] || {{
+          lane_id: laneId,
+          owner: String((decision && decision.owner) || "unknown").trim() || "unknown",
+          decisions: 0,
+          routellm_count: 0,
+          fallback_count: 0,
+          router_error_count: 0,
+          router_latency_sum: 0,
+          router_latency_avg: 0,
+          latest: null,
+          latest_epoch_ms: Number.NEGATIVE_INFINITY,
+          latest_valid_ts: false,
+        }};
+        current.decisions += 1;
+        if (String(decision.strategy || "").trim().toLowerCase() === "routellm") current.routellm_count += 1;
+        if (toBool(decision.fallback_used)) current.fallback_count += 1;
+        if (String(decision.router_error || "").trim()) current.router_error_count += 1;
+        current.router_latency_sum += Number(decision.router_latency_sec || 0);
+        const tsInfo = eventTimestampInfo(decision.timestamp || "");
+        if (!current.latest) {{
+          current.latest = decision;
+          current.latest_epoch_ms = tsInfo.epochMs;
+          current.latest_valid_ts = tsInfo.valid;
+        }} else if (tsInfo.valid && (!current.latest_valid_ts || tsInfo.epochMs >= current.latest_epoch_ms)) {{
+          current.latest = decision;
+          current.latest_epoch_ms = tsInfo.epochMs;
+          current.latest_valid_ts = true;
+        }} else if (!tsInfo.valid && !current.latest_valid_ts) {{
+          current.latest = decision;
+        }}
+        out[laneId] = current;
+      }}
+      for (const laneId of Object.keys(out)) {{
+        const item = out[laneId];
+        const decisionsTotal = Math.max(1, Number(item.decisions || 0));
+        item.router_latency_avg = Number(item.router_latency_sum || 0) / decisionsTotal;
+      }}
+      return out;
+    }}
+
+    function renderRouting(snapshot, lanePayload, routingPayload) {{
+      const safeSnapshot = (snapshot && typeof snapshot === "object") ? snapshot : {{}};
+      const responseMetrics = (safeSnapshot.response_metrics && typeof safeSnapshot.response_metrics === "object")
+        ? safeSnapshot.response_metrics
+        : {{}};
+      const safeLanePayload = (lanePayload && typeof lanePayload === "object") ? lanePayload : {{}};
+      const laneItemsRaw = Array.isArray(safeLanePayload.lanes) ? safeLanePayload.lanes : [];
+      const laneItems = laneItemsRaw.filter((item) => item && typeof item === "object");
+      const safeRoutingPayload = (routingPayload && typeof routingPayload === "object") ? routingPayload : {{}};
+      const routingEventsRaw = Array.isArray(safeRoutingPayload.events) ? safeRoutingPayload.events : [];
+      const decisions = routingEventsRaw
+        .filter((item) => item && typeof item === "object")
+        .map((item) => normalizeRoutingDecisionEvent(item));
+      const decisionCountDerived = decisions.length;
+      const routedCountDerived = decisions.filter((decision) => String(decision.strategy).toLowerCase() === "routellm").length;
+      const fallbackCountDerived = decisions.filter((decision) => Boolean(decision.fallback_used)).length;
+      const routerErrorCountDerived = decisions.filter((decision) => String(decision.router_error || "").trim()).length;
+      const routerLatencySumDerived = decisions.reduce((sum, decision) => sum + Number(decision.router_latency_sec || 0), 0);
+      const metricsDecisionCount = Number(responseMetrics.routing_decisions_total || 0);
+      const usingMetricCounts = Number.isFinite(metricsDecisionCount) && metricsDecisionCount > 0;
+      const decisionsTotal = usingMetricCounts ? metricsDecisionCount : decisionCountDerived;
+      const routedCount = usingMetricCounts
+        ? Number(responseMetrics.routing_routellm_count || 0)
+        : routedCountDerived;
+      const fallbackCount = usingMetricCounts
+        ? Number(responseMetrics.routing_fallback_count || 0)
+        : fallbackCountDerived;
+      const routerErrorCount = usingMetricCounts
+        ? Number(responseMetrics.routing_router_error_count || 0)
+        : routerErrorCountDerived;
+      let latencyAvgSec = Number(responseMetrics.routing_router_latency_avg || 0);
+      if ((!Number.isFinite(latencyAvgSec) || latencyAvgSec <= 0) && decisionCountDerived > 0) {{
+        latencyAvgSec = routerLatencySumDerived / Math.max(1, decisionCountDerived);
+      }}
+      if (!Number.isFinite(latencyAvgSec) || latencyAvgSec < 0) latencyAvgSec = 0;
+      const enabledLaneItems = laneItems.filter((lane) => Boolean(lane.routellm_enabled));
+      const enabledLaneCount = enabledLaneItems.length;
+      const routerUrlSet = new Set(
+        enabledLaneItems
+          .map((lane) => String(lane.routellm_url || "").trim())
+          .filter((value) => Boolean(value))
+      );
+      const distinctRouterCount = routerUrlSet.size;
+      const estimatedTokens = Number(responseMetrics.estimated_tokens_total || responseMetrics.tokens_total || 0);
+      const totalCost = Number(responseMetrics.cost_usd_total || 0);
+      let blendedCostPerMillion = Number(responseMetrics.estimated_cost_per_million_tokens || 0);
+      if ((!Number.isFinite(blendedCostPerMillion) || blendedCostPerMillion <= 0) && estimatedTokens > 0 && totalCost > 0) {{
+        blendedCostPerMillion = (totalCost * 1000000) / estimatedTokens;
+      }}
+      if (!Number.isFinite(blendedCostPerMillion) || blendedCostPerMillion < 0) blendedCostPerMillion = 0;
+      const estimatedTokensDisplay = Math.max(0, Math.round(estimatedTokens)).toLocaleString();
+      const routellmRate = formatPercent(routedCount, decisionsTotal);
+      const fallbackRate = formatPercent(fallbackCount, decisionsTotal);
+      const routerErrorRate = formatPercent(routerErrorCount, decisionsTotal);
+      const fallbackRatio = Number(decisionsTotal) > 0 ? (Number(fallbackCount) / Number(decisionsTotal)) : 0;
+      const errorRatio = Number(decisionsTotal) > 0 ? (Number(routerErrorCount) / Number(decisionsTotal)) : 0;
+      let routingState = "idle";
+      let routingStateClass = "warn";
+      if (Number(decisionsTotal) <= 0) {{
+        routingState = "idle";
+        routingStateClass = "warn";
+      }} else if (errorRatio >= 0.05) {{
+        routingState = "degraded";
+        routingStateClass = "bad";
+      }} else if (fallbackRatio >= 0.2) {{
+        routingState = "elevated_fallback";
+        routingStateClass = "warn";
+      }} else {{
+        routingState = "healthy";
+        routingStateClass = "ok";
+      }}
+
+      byId("routingSummary").innerHTML =
+        `state=<span class="${{routingStateClass}}">${{escapeHtml(routingState)}}</span> · decisions=${{Number(decisionsTotal)}} · routeLLM=${{routellmRate}} · fallback=${{fallbackRate}} · router_errors=${{routerErrorRate}} · est_tokens=${{estimatedTokensDisplay}} · blended_$1M=$${{blendedCostPerMillion.toFixed(3)}} · enabled_lanes=${{enabledLaneCount}} · routers=${{distinctRouterCount}}`;
+      byId("routingDecisions").textContent = String(Number(decisionsTotal));
+      byId("routingRoutellmRate").textContent = routellmRate;
+      byId("routingFallbackRate").textContent = fallbackRate;
+      byId("routingRouterErrorRate").textContent = routerErrorRate;
+      byId("routingLatencyAvg").textContent = `${{Math.round(latencyAvgSec * 1000)}}ms`;
+      byId("routingEnabledLanes").textContent = `${{enabledLaneCount}}/${{laneItems.length || 0}}`;
+      byId("routingEstimatedTokens").textContent = estimatedTokensDisplay;
+      byId("routingBlendedCostPerM").textContent = `$${{blendedCostPerMillion.toFixed(3)}}`;
+
+      const providerMapCandidate = (responseMetrics.routing_by_provider && typeof responseMetrics.routing_by_provider === "object")
+        ? responseMetrics.routing_by_provider
+        : {{}};
+      const providerMap = Object.keys(providerMapCandidate).length
+        ? providerMapCandidate
+        : buildRoutingProviderMapFromEvents(decisions);
+      const providerEntries = Object.entries(providerMap).sort((a, b) => {{
+        const aResponses = Number((a[1] || {{}}).responses || 0);
+        const bResponses = Number((b[1] || {{}}).responses || 0);
+        if (aResponses === bResponses) return String(a[0]).localeCompare(String(b[0]));
+        return bResponses - aResponses;
+      }});
+      byId("routingProviderSummary").textContent =
+        `providers: ${{providerEntries.length}} · decisions_source=${{usingMetricCounts ? "metrics_summary" : "event_tail"}}`;
+      if (!providerEntries.length) {{
+        byId("routingProviderBody").innerHTML = '<tr><td colspan="6" class="mono">No provider routing metrics yet.</td></tr>';
+      }} else {{
+        byId("routingProviderBody").innerHTML = providerEntries.map(([provider, payload]) => {{
+          const item = payload || {{}};
+          const responses = Number(item.responses || 0);
+          const routellmPct = Number(item.routellm_rate || 0) * 100;
+          const fallbackPct = Number(item.fallback_rate || 0) * 100;
+          const routerErrorPct = Number(item.router_error_rate || 0) * 100;
+          const providerTokens = Number(item.tokens_total || 0);
+          const providerCost = Number(item.cost_usd_total || 0);
+          let providerCostPerMillion = Number(item.cost_per_million_tokens || 0);
+          if ((!Number.isFinite(providerCostPerMillion) || providerCostPerMillion <= 0) && providerTokens > 0 && providerCost > 0) {{
+            providerCostPerMillion = (providerCost * 1000000) / providerTokens;
+          }}
+          if (!Number.isFinite(providerCostPerMillion) || providerCostPerMillion < 0) providerCostPerMillion = 0;
+          return `<tr>
+            <td class="mono">${{escapeHtml(provider)}}</td>
+            <td class="mono">${{responses}}</td>
+            <td class="mono">${{routellmPct.toFixed(1)}}%</td>
+            <td class="mono">${{fallbackPct.toFixed(1)}}%</td>
+            <td class="mono">${{routerErrorPct.toFixed(1)}}%</td>
+            <td class="mono">$${{providerCostPerMillion.toFixed(3)}}</td>
+          </tr>`;
+        }}).join("");
+      }}
+
+      const laneRoutingStats = buildRoutingLaneStats(decisions);
+      const laneById = {{}};
+      for (const lane of laneItems) {{
+        const laneId = String(lane.id || "").trim();
+        if (!laneId) continue;
+        laneById[laneId] = lane;
+      }}
+      const laneIds = new Set([...Object.keys(laneById), ...Object.keys(laneRoutingStats)]);
+      const orderedLaneIds = Array.from(laneIds).sort((a, b) => a.localeCompare(b));
+      byId("routingLaneSummary").textContent =
+        `lanes: ${{orderedLaneIds.length}} · enabled=${{enabledLaneCount}} · with_decisions=${{Object.keys(laneRoutingStats).length}}`;
+      if (!orderedLaneIds.length) {{
+        byId("routingLaneBody").innerHTML = '<tr><td colspan="7" class="mono">No lane routing data available.</td></tr>';
+      }} else {{
+        byId("routingLaneBody").innerHTML = orderedLaneIds.map((laneId) => {{
+          const lane = laneById[laneId] || {{}};
+          const laneStats = laneRoutingStats[laneId] || {{}};
+          const owner = String(lane.owner || laneStats.owner || "unknown").trim() || "unknown";
+          const laneHealth = String(lane.health || "unknown").trim() || "unknown";
+          const healthClass = laneHealth === "ok" ? "ok" : (laneHealth === "error" ? "bad" : "warn");
+          const routeEnabled = Boolean(lane.routellm_enabled);
+          const routeClass = routeEnabled ? "ok" : "warn";
+          const routeLabel = routeEnabled ? "enabled" : "disabled";
+          const routerUrl = String(lane.routellm_url || "").trim();
+          const routerCell = routerUrl ? escapeHtml(routerUrl) : "-";
+          const decisionCount = Number(laneStats.decisions || 0);
+          const fallbackCountTail = Number(laneStats.fallback_count || 0);
+          const errorCountTail = Number(laneStats.router_error_count || 0);
+          return `<tr>
+            <td><div class="mono">${{escapeHtml(laneId)}}</div><div class="mono">${{escapeHtml(owner)}}</div></td>
+            <td><span class="${{healthClass}}">${{escapeHtml(laneHealth)}}</span></td>
+            <td><span class="${{routeClass}}">${{routeLabel}}</span></td>
+            <td class="mono">${{routerCell}}</td>
+            <td class="mono">${{decisionCount}}</td>
+            <td class="mono">${{fallbackCountTail}}</td>
+            <td class="mono">${{errorCountTail}}</td>
+          </tr>`;
+        }}).join("");
+      }}
+
+      const routingSourceReports = Array.isArray(safeRoutingPayload.sources) ? safeRoutingPayload.sources : [];
+      const sourceFailures = routingSourceReports.filter((source) => !source.ok).length;
+      const routingErrors = Array.isArray(safeRoutingPayload.errors)
+        ? safeRoutingPayload.errors.filter((item) => String(item || "").trim())
+        : [];
+      const partialLabel = safeRoutingPayload.partial ? " · partial=true" : "";
+      const errorLabel = routingErrors.length ? ` · errors=${{routingErrors.length}}` : "";
+      byId("routingDecisionSummary").textContent =
+        `events: ${{decisionCountDerived}} · sources: ${{routingSourceReports.length - sourceFailures}}/${{routingSourceReports.length}} healthy${{partialLabel}}${{errorLabel}}`;
+      const recentDecisions = decisions
+        .slice(-90)
+        .sort((a, b) => {{
+          const aInfo = eventTimestampInfo(a.timestamp);
+          const bInfo = eventTimestampInfo(b.timestamp);
+          if (aInfo.valid && bInfo.valid) return bInfo.epochMs - aInfo.epochMs;
+          if (aInfo.valid) return -1;
+          if (bInfo.valid) return 1;
+          return 0;
+        }});
+      if (!recentDecisions.length) {{
+        byId("routingDecisionFeed").innerHTML = '<div class="feed-item">No routing decisions yet.</div>';
+      }} else {{
+        byId("routingDecisionFeed").innerHTML = recentDecisions.map((decision) => {{
+          const ts = formatTimestamp(decision.timestamp || "") || "-";
+          const laneId = decision.lane_id || "-";
+          const provider = decision.provider || decision.owner || "unknown";
+          const strategy = decision.strategy || "static_fallback";
+          const selectedModel = decision.selected_model || "-";
+          const requestedModel = decision.requested_model || "-";
+          const reason = decision.reason || "-";
+          const fallback = decision.fallback_used ? "yes" : "no";
+          const latencyMs = Math.round(Number(decision.router_latency_sec || 0) * 1000);
+          const routerError = String(decision.router_error || "").trim();
+          return [
+            '<div class="feed-item">',
+            `<div class="feed-head"><span>${{escapeHtml(ts)}}</span><span>lane=${{escapeHtml(laneId)}}</span><span>provider=${{escapeHtml(provider)}}</span><span>strategy=${{escapeHtml(strategy)}}</span><span>fallback=${{escapeHtml(fallback)}}</span></div>`,
+            `<div class="mono">selected=${{escapeHtml(selectedModel)}} · requested=${{escapeHtml(requestedModel)}} · reason=${{escapeHtml(reason)}} · latency=${{latencyMs}}ms</div>`,
+            routerError ? `<div class="bad">router_error=${{escapeHtml(routerError)}}</div>` : '<div class="ok">router_error=none</div>',
+            '</div>',
+          ].join("");
+        }}).join("");
+      }}
+    }}
+
     async function fetchJson(path) {{
       let controller = null;
       let timeoutHandle = null;
@@ -1795,13 +2424,14 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
 
     async function refresh() {{
-      const [monitorResult, convResult, laneResult, dawResult, watchdogResult, collabResult] = await Promise.all([
+      const [monitorResult, convResult, laneResult, dawResult, watchdogResult, collabResult, routingResult] = await Promise.all([
         fetchJson('/api/monitor'),
         fetchJson(conversationPath()),
         fetchJson(laneStatusPath()),
         fetchJson('/api/daw?window_sec=120'),
         fetchJson('/api/watchdog?events=40'),
         fetchJson('/api/collab-runtime'),
+        fetchJson(routingDecisionPath()),
       ]);
 
       if (monitorResult.ok && monitorResult.payload) {{
@@ -1841,6 +2471,34 @@ def _dashboard_html(refresh_sec: int) -> str:
         effectiveConversationPayload = fallbackConversationPayloadFromCache(null, convResult.error);
       }}
 
+      let effectiveRoutingPayload = null;
+      if (routingResult.ok && routingResult.payload) {{
+        effectiveRoutingPayload = routingResult.payload;
+        lastSuccessfulRoutingPayload = routingResult.payload;
+      }} else if (lastSuccessfulRoutingPayload) {{
+        effectiveRoutingPayload = {{
+          ...lastSuccessfulRoutingPayload,
+          partial: true,
+          ok: false,
+          errors: [
+            `routing decisions endpoint unavailable: ${{String(routingResult.error || "unknown error")}}`,
+            "routing decisions data from stale cache",
+          ],
+        }};
+      }} else {{
+        effectiveRoutingPayload = {{
+          total_events: 0,
+          owner_counts: {{}},
+          events: [],
+          sources: [],
+          partial: true,
+          ok: false,
+          errors: [String(routingResult.error || "routing decisions endpoint unavailable")],
+          filters: {{}},
+          unfiltered_total_events: 0,
+        }};
+      }}
+
       let snapshotForRender = monitorFallbackPayload;
       if (snapshotForRender && !monitorResult.ok) {{
         const endpointError = String(monitorResult.error || "monitor endpoint unavailable");
@@ -1871,6 +2529,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         errors: [],
         filters: {{}},
       }});
+      renderRouting(snapshotForRender || {{}}, lanePayload || {{}}, effectiveRoutingPayload || {{}});
       if (dawResult.ok && dawResult.payload) {{
         lastSuccessfulDawPayload = dawResult.payload;
         renderDaw(dawResult.payload);
@@ -1950,9 +2609,26 @@ def _dashboard_html(refresh_sec: int) -> str:
             stale_rows: 0,
             offline_rows: 0,
             commits_last_hour_total: 0,
+            attention_rows: 0,
+            critical_rows: 0,
+            warn_rows: 0,
+            watch_rows: 0,
+            max_attention_score: 0,
+            top_attention: [],
             latest_signal_at: "",
             latest_signal_age_sec: -1,
             latest_health_at: "",
+            latest_health_age_sec: -1,
+            latest_task_done_at: "",
+            latest_task_done_age_sec: -1,
+            latest_push_at: "",
+            latest_push_age_sec: -1,
+            latest_commit_at: "",
+            latest_commit_age_sec: -1,
+            signal_bins_5m_total: [],
+            signal_bins_5m_max: 0,
+            commit_bins_5m_total: [],
+            commit_bins_5m_max: 0,
           }},
         }};
       }}
@@ -1965,6 +2641,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         lanes_endpoint: laneResult.ok ? "" : laneResult.error,
         watchdog_endpoint: watchdogResult.ok ? "" : watchdogResult.error,
         collab_runtime_endpoint: collabResult.ok ? "" : collabResult.error,
+        routing_decisions_endpoint: routingResult.ok ? "" : routingResult.error,
       }});
     }}
 
@@ -2004,6 +2681,7 @@ def _dashboard_html(refresh_sec: int) -> str:
     byId("laneStart").addEventListener("click", () => invokeLaneAction("start"));
     byId("laneStop").addEventListener("click", () => invokeLaneAction("stop"));
 
+    initTabs();
     syncConversationInputs();
     refresh();
     schedule();
@@ -3359,7 +4037,9 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "cost_usd_total": 0.0,
                 "exact_cost_coverage": 0.0,
                 "tokens_total": 0,
+                "estimated_tokens_total": 0,
                 "token_rate_per_minute": 0.0,
+                "estimated_cost_per_million_tokens": 0.0,
                 "by_owner": {},
                 "exciting_stat": {
                     "label": "Awaiting Data",
@@ -3471,6 +4151,22 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _watchdog_latest_existing_path(candidates: list[Path]) -> Path | None:
+    selected_path: Path | None = None
+    selected_rank: tuple[int, int] | None = None
+    for index, candidate in enumerate(candidates):
+        try:
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            rank = (int(candidate.stat().st_mtime_ns), -index)
+        except OSError:
+            continue
+        if selected_rank is None or rank > selected_rank:
+            selected_rank = rank
+            selected_path = candidate
+    return selected_path
+
+
 def _watchdog_state_path(config: ManagerConfig) -> Path:
     env_path = os.environ.get("ORXAQ_AUTONOMY_PROCESS_WATCHDOG_STATE_FILE", "").strip()
     if env_path:
@@ -3479,10 +4175,9 @@ def _watchdog_state_path(config: ManagerConfig) -> Path:
     home_default = (Path.home() / ".codex" / "autonomy" / "process-watchdog-state.json").resolve()
     artifacts_dir = Path(getattr(config, "artifacts_dir", Path.cwd())).resolve()
     artifacts_default = (artifacts_dir / "process-watchdog-state.json").resolve()
-    if home_default.exists():
-        return home_default
-    if artifacts_default.exists():
-        return artifacts_default
+    selected = _watchdog_latest_existing_path([home_default, artifacts_default])
+    if selected is not None:
+        return selected
     return home_default
 
 
@@ -3495,9 +4190,9 @@ def _watchdog_history_path(config: ManagerConfig, state_path: Path) -> Path:
     home_default = (Path.home() / ".codex" / "autonomy" / "process-watchdog-history.ndjson").resolve()
     artifacts_dir = Path(getattr(config, "artifacts_dir", Path.cwd())).resolve()
     artifacts_default = (artifacts_dir / "process-watchdog-history.ndjson").resolve()
-    for candidate in [sibling_default, home_default, artifacts_default]:
-        if candidate.exists():
-            return candidate
+    selected = _watchdog_latest_existing_path([sibling_default, home_default, artifacts_default])
+    if selected is not None:
+        return selected
     return sibling_default
 
 
@@ -3824,13 +4519,13 @@ def _git_recent_commit_count(repo: Path, *, since_iso: str, pathspecs: list[str]
     return _coerce_int((proc.stdout or "").strip(), default=-1)
 
 
-def _lane_commit_count_last_hour(lane: dict[str, Any], now: datetime) -> int:
+def _lane_git_scope(lane: dict[str, Any]) -> tuple[Path | None, list[str]]:
     repo_raw = str(lane.get("impl_repo", "")).strip()
     if not repo_raw:
-        return -1
+        return (None, [])
     repo = Path(repo_raw).expanduser().resolve()
-    if not repo.exists():
-        return -1
+    if not repo.exists() or not repo.is_dir():
+        return (None, [])
 
     pathspecs: list[str] = []
     raw_paths = lane.get("exclusive_paths", [])
@@ -3843,6 +4538,13 @@ def _lane_commit_count_last_hour(lane: dict[str, Any], now: datetime) -> int:
                 pathspecs.append(f":(glob){raw}")
             else:
                 pathspecs.append(raw)
+    return (repo, pathspecs)
+
+
+def _lane_commit_count_last_hour(lane: dict[str, Any], now: datetime) -> int:
+    repo, pathspecs = _lane_git_scope(lane)
+    if repo is None:
+        return -1
 
     cache_key = (str(repo), tuple(pathspecs))
     now_epoch = time.time()
@@ -3856,7 +4558,96 @@ def _lane_commit_count_last_hour(lane: dict[str, Any], now: datetime) -> int:
     return count
 
 
+def _git_recent_commit_timestamps(repo: Path, *, since_iso: str, pathspecs: list[str]) -> list[int]:
+    cmd = ["git", "-C", str(repo), "log", f"--since={since_iso}", "--pretty=format:%ct", "HEAD"]
+    if pathspecs:
+        cmd.extend(["--", *pathspecs])
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        if pathspecs:
+            return _git_recent_commit_timestamps(repo, since_iso=since_iso, pathspecs=[])
+        return []
+    out: list[int] = []
+    for line in (proc.stdout or "").splitlines():
+        parsed = _coerce_int(line.strip(), default=-1)
+        if parsed > 0:
+            out.append(parsed)
+    return out
+
+
+def _lane_commit_velocity_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
+    bucket_count = max(1, int(_COLLAB_ACTIVITY_BUCKETS))
+    bucket_sec = max(60, int(_COLLAB_ACTIVITY_BUCKET_SEC))
+    default_payload = {
+        "commits_last_hour_from_bins": 0,
+        "commit_bins_5m": [0 for _ in range(bucket_count)],
+        "commit_bins_max": 0,
+        "commit_velocity_level": 0.0,
+        "latest_commit_at": "",
+        "latest_commit_age_sec": -1,
+    }
+
+    repo, pathspecs = _lane_git_scope(lane)
+    if repo is None:
+        return default_payload
+
+    cache_key = (str(repo), tuple(pathspecs), bucket_count, bucket_sec)
+    now_epoch = time.time()
+    cached = _COMMIT_TIMELINE_CACHE.get(cache_key)
+    if cached and (now_epoch - cached[0]) <= _COMMIT_CACHE_TTL_SEC:
+        return cached[1]
+
+    window_sec = bucket_count * bucket_sec
+    since_iso = (now - timedelta(seconds=window_sec)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    timestamps = _git_recent_commit_timestamps(repo, since_iso=since_iso, pathspecs=pathspecs)
+
+    bins = [0 for _ in range(bucket_count)]
+    latest_commit_at = ""
+    latest_commit_age_sec = -1
+    latest_commit_dt: datetime | None = None
+    if timestamps:
+        latest_epoch = max(timestamps)
+        latest_commit_dt = datetime.fromtimestamp(float(latest_epoch), tz=timezone.utc)
+        latest_commit_at = latest_commit_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        latest_commit_age_sec = max(0, int((now - latest_commit_dt).total_seconds()))
+
+    for stamp in timestamps:
+        commit_dt = datetime.fromtimestamp(float(stamp), tz=timezone.utc)
+        age_sec = (now - commit_dt).total_seconds()
+        if age_sec < 0:
+            age_sec = 0
+        if age_sec > window_sec:
+            continue
+        slot = bucket_count - 1 - int(age_sec // bucket_sec)
+        if 0 <= slot < bucket_count:
+            bins[slot] += 1
+
+    total_commits = int(sum(bins))
+    max_bin = int(max(bins)) if bins else 0
+    velocity_level = min(1.0, max(total_commits / 10.0, max_bin / 4.0))
+    if total_commits > 0:
+        velocity_level = max(0.2, velocity_level)
+
+    payload = {
+        "commits_last_hour_from_bins": total_commits,
+        "commit_bins_5m": bins,
+        "commit_bins_max": max_bin,
+        "commit_velocity_level": round(velocity_level, 3),
+        "latest_commit_at": latest_commit_at,
+        "latest_commit_age_sec": latest_commit_age_sec,
+    }
+    _COMMIT_TIMELINE_CACHE[cache_key] = (now_epoch, payload)
+    return payload
+
+
 def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
+    bucket_count = max(1, int(_COLLAB_ACTIVITY_BUCKETS))
+    bucket_sec = max(60, int(_COLLAB_ACTIVITY_BUCKET_SEC))
+    window_sec = bucket_count * bucket_sec
+
     paths: list[Path] = []
     events_file_raw = str(lane.get("events_file", "")).strip()
     if events_file_raw:
@@ -3868,9 +4659,13 @@ def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
             paths.append(Path(conversation_file_raw))
 
     latest_signal: datetime | None = None
+    latest_task_done: datetime | None = None
+    latest_push: datetime | None = None
     events_15 = 0
     events_60 = 0
     events_300 = 0
+    recent_error_events_10m = 0
+    signal_bins = [0 for _ in range(bucket_count)]
 
     seen: set[Path] = set()
     for path in paths:
@@ -3878,12 +4673,17 @@ def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
         if resolved in seen:
             continue
         seen.add(resolved)
-        for event in _read_tail_json_objects(resolved, max_lines=300):
+        for event in _read_tail_json_objects(resolved, max_lines=900):
             parsed = _parse_event_timestamp(event.get("timestamp") or event.get("time") or "")
             if parsed is None:
                 continue
+            event_type = str(event.get("event_type", "")).strip().lower()
             if latest_signal is None or parsed >= latest_signal:
                 latest_signal = parsed
+            if event_type == "task_done" and (latest_task_done is None or parsed >= latest_task_done):
+                latest_task_done = parsed
+            if event_type == "auto_push" and (latest_push is None or parsed >= latest_push):
+                latest_push = parsed
             age_sec = (now - parsed).total_seconds()
             if age_sec < 0:
                 age_sec = 0
@@ -3893,6 +4693,12 @@ def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
                 events_60 += 1
             if age_sec <= 300:
                 events_300 += 1
+            if age_sec <= 600 and event_type in {"task_blocked", "agent_error", "auto_push_error"}:
+                recent_error_events_10m += 1
+            if age_sec <= window_sec:
+                slot = bucket_count - 1 - int(age_sec // bucket_sec)
+                if 0 <= slot < bucket_count:
+                    signal_bins[slot] += 1
 
     if latest_signal is None:
         latest_signal_at = ""
@@ -3900,6 +4706,20 @@ def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
     else:
         latest_signal_at = latest_signal.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         latest_signal_age_sec = max(0, int((now - latest_signal).total_seconds()))
+
+    if latest_task_done is None:
+        latest_task_done_at = ""
+        latest_task_done_age_sec = -1
+    else:
+        latest_task_done_at = latest_task_done.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        latest_task_done_age_sec = max(0, int((now - latest_task_done).total_seconds()))
+
+    if latest_push is None:
+        latest_push_at = ""
+        latest_push_age_sec = -1
+    else:
+        latest_push_at = latest_push.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        latest_push_age_sec = max(0, int((now - latest_push).total_seconds()))
 
     running = bool(lane.get("running", False))
     health = str(lane.get("health", "unknown")).strip().lower()
@@ -3930,12 +4750,132 @@ def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
     return {
         "latest_signal_at": latest_signal_at,
         "latest_signal_age_sec": latest_signal_age_sec,
+        "latest_task_done_at": latest_task_done_at,
+        "latest_task_done_age_sec": latest_task_done_age_sec,
+        "latest_push_at": latest_push_at,
+        "latest_push_age_sec": latest_push_age_sec,
         "signal_events_15s": events_15,
         "signal_events_60s": events_60,
         "signal_events_300s": events_300,
+        "recent_error_events_10m": recent_error_events_10m,
+        "signal_bins_5m": signal_bins,
+        "signal_bins_max": max(signal_bins) if signal_bins else 0,
         "signal_level": round(signal_level, 3),
         "live_state": live_state,
         "live_label": live_label,
+    }
+
+
+def _lane_attention_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    reasons: list[str] = []
+
+    running = bool(row.get("running", False))
+    health = str(row.get("health", "unknown")).strip().lower()
+    live_state = str(row.get("live_state", "offline")).strip().lower()
+    health_age = _coerce_int(row.get("latest_health_confirmation_age_sec"), default=-1)
+    signal_age = _coerce_int(row.get("latest_signal_age_sec"), default=-1)
+    task_done_age = _coerce_int(row.get("latest_task_done_age_sec"), default=-1)
+    push_age = _coerce_int(row.get("latest_push_age_sec"), default=-1)
+    commits_last_hour = _coerce_int(row.get("commits_last_hour"), default=-1)
+    signal_events_60 = _coerce_int(row.get("signal_events_60s"), default=0)
+    recent_errors_10m = max(0, _coerce_int(row.get("recent_error_events_10m"), default=0))
+
+    if not running:
+        score += 60
+        reasons.append("process offline")
+
+    if health in {"error", "stopped_unexpected"}:
+        score += 40
+        reasons.append(f"health={health}")
+    elif health == "stale":
+        score += 28
+        reasons.append("heartbeat stale")
+    elif health in {"unknown", ""}:
+        score += 12
+        reasons.append("health unknown")
+
+    if health_age > 300:
+        score += 12
+        reasons.append("health confirmation old")
+
+    if live_state == "stale":
+        score += 15
+        reasons.append("live state stale")
+    elif running and live_state == "offline":
+        score += 20
+        reasons.append("live state offline")
+
+    if running:
+        if signal_age == -1:
+            score += 18
+            reasons.append("no signal seen")
+        elif signal_age > 180:
+            score += 16
+            reasons.append("signal lagging")
+        elif signal_age > 90:
+            score += 9
+            reasons.append("signal cooling")
+
+    if running and signal_events_60 == 0:
+        score += 8
+        reasons.append("no events in last 60s")
+
+    if recent_errors_10m > 0:
+        score += min(25, recent_errors_10m * 8)
+        reasons.append(f"errors_10m={recent_errors_10m}")
+
+    if running:
+        if task_done_age == -1:
+            score += 12
+            reasons.append("no task completion signal")
+        elif task_done_age > 3600:
+            score += 14
+            reasons.append("no task completion in 1h")
+        elif task_done_age > 1800:
+            score += 7
+            reasons.append("task completion slowed")
+
+        if commits_last_hour == 0:
+            score += 6
+            reasons.append("no recent commits")
+        elif commits_last_hour < 0:
+            score += 4
+            reasons.append("commit telemetry unavailable")
+
+    if commits_last_hour > 0:
+        if push_age == -1:
+            score += 8
+            reasons.append("commits without auto-push signal")
+        elif push_age > 3600:
+            score += 5
+            reasons.append("auto-push stale")
+
+    score = min(100, max(0, int(score)))
+    if score >= 70:
+        level = "critical"
+    elif score >= 40:
+        level = "warn"
+    elif score >= 20:
+        level = "watch"
+    else:
+        level = "ok"
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        if reason in seen:
+            continue
+        seen.add(reason)
+        deduped.append(reason)
+    message = "; ".join(deduped[:3]) if deduped else "stable"
+    rank = {"critical": 0, "warn": 1, "watch": 2, "ok": 3}.get(level, 3)
+
+    return {
+        "attention_score": score,
+        "attention_level": level,
+        "attention_rank": rank,
+        "attention_message": message,
     }
 
 
@@ -3966,6 +4906,9 @@ def _safe_collab_runtime_snapshot(config: ManagerConfig) -> dict[str, Any]:
         running_age_sec = _lane_running_age_seconds(raw_lane, now) if running else -1
         health_at, health_age_sec = _lane_health_confirmation(raw_lane, now)
         commits_last_hour = _lane_commit_count_last_hour(raw_lane, now)
+        commit_velocity = _lane_commit_velocity_metrics(raw_lane, now)
+        if commits_last_hour < 0:
+            commits_last_hour = _coerce_int(commit_velocity.get("commits_last_hour_from_bins"), default=-1)
         signal = _lane_signal_metrics(raw_lane, now)
         row = {
             "lane_id": lane_id,
@@ -3979,12 +4922,16 @@ def _safe_collab_runtime_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "latest_health_confirmation_at": health_at,
             "latest_health_confirmation_age_sec": health_age_sec,
             "commits_last_hour": commits_last_hour,
+            **commit_velocity,
             **signal,
         }
+        row.update(_lane_attention_metrics(row))
         rows.append(row)
 
     rows.sort(
         key=lambda item: (
+            _coerce_int(item.get("attention_rank"), default=3),
+            -_coerce_int(item.get("attention_score"), default=0),
             0 if bool(item.get("running", False)) else 1,
             str(item.get("ai", "unknown")).strip(),
             str(item.get("lane_id", "")).strip(),
@@ -3997,31 +4944,54 @@ def _safe_collab_runtime_snapshot(config: ManagerConfig) -> dict[str, Any]:
     stale_rows = sum(1 for item in rows if str(item.get("live_state", "")) == "stale")
     offline_rows = sum(1 for item in rows if str(item.get("live_state", "")) == "offline")
     commits_total = sum(max(0, _coerce_int(item.get("commits_last_hour"), default=0)) for item in rows)
+    critical_rows = sum(1 for item in rows if str(item.get("attention_level", "")) == "critical")
+    warn_rows = sum(1 for item in rows if str(item.get("attention_level", "")) == "warn")
+    watch_rows = sum(1 for item in rows if str(item.get("attention_level", "")) == "watch")
+    attention_rows = critical_rows + warn_rows + watch_rows
+    max_attention_score = max((_coerce_int(item.get("attention_score"), default=0) for item in rows), default=0)
 
-    latest_signal_times = [
-        _parse_event_timestamp(item.get("latest_signal_at"))
+    signal_bins_total = [0 for _ in range(max(1, int(_COLLAB_ACTIVITY_BUCKETS)))]
+    commit_bins_total = [0 for _ in range(max(1, int(_COLLAB_ACTIVITY_BUCKETS)))]
+    for item in rows:
+        signal_bins = item.get("signal_bins_5m")
+        if isinstance(signal_bins, list):
+            for idx, value in enumerate(signal_bins_total):
+                if idx >= len(signal_bins):
+                    break
+                signal_bins_total[idx] = value + max(0, _coerce_int(signal_bins[idx], default=0))
+        commit_bins = item.get("commit_bins_5m")
+        if isinstance(commit_bins, list):
+            for idx, value in enumerate(commit_bins_total):
+                if idx >= len(commit_bins):
+                    break
+                commit_bins_total[idx] = value + max(0, _coerce_int(commit_bins[idx], default=0))
+
+    def _latest_timestamp_and_age(field: str) -> tuple[str, int]:
+        parsed_values = [
+            _parse_event_timestamp(item.get(field))
+            for item in rows
+            if str(item.get(field, "")).strip()
+        ]
+        normalized = [item for item in parsed_values if item is not None]
+        if not normalized:
+            return ("", -1)
+        latest = max(normalized)
+        return (
+            latest.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            max(0, int((now - latest).total_seconds())),
+        )
+
+    latest_signal_at, latest_signal_age_sec = _latest_timestamp_and_age("latest_signal_at")
+    latest_health_at, latest_health_age_sec = _latest_timestamp_and_age("latest_health_confirmation_at")
+    latest_task_done_at, latest_task_done_age_sec = _latest_timestamp_and_age("latest_task_done_at")
+    latest_push_at, latest_push_age_sec = _latest_timestamp_and_age("latest_push_at")
+    latest_commit_at, latest_commit_age_sec = _latest_timestamp_and_age("latest_commit_at")
+
+    top_attention = [
+        f"{str(item.get('ai', 'unknown')).strip() or 'unknown'}:{str(item.get('lane_id', 'lane')).strip() or 'lane'} {str(item.get('attention_message', '')).strip()}"
         for item in rows
-        if str(item.get("latest_signal_at", "")).strip()
-    ]
-    latest_signal_times = [item for item in latest_signal_times if item is not None]
-    latest_health_times = [
-        _parse_event_timestamp(item.get("latest_health_confirmation_at"))
-        for item in rows
-        if str(item.get("latest_health_confirmation_at", "")).strip()
-    ]
-    latest_health_times = [item for item in latest_health_times if item is not None]
-
-    latest_signal_at = ""
-    latest_signal_age_sec = -1
-    if latest_signal_times:
-        last_signal = max(latest_signal_times)
-        latest_signal_at = last_signal.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        latest_signal_age_sec = max(0, int((now - last_signal).total_seconds()))
-
-    latest_health_at = ""
-    if latest_health_times:
-        last_health = max(latest_health_times)
-        latest_health_at = last_health.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        if str(item.get("attention_level", "")).strip() in {"critical", "warn", "watch"}
+    ][:3]
 
     return {
         "timestamp": now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -4037,9 +5007,26 @@ def _safe_collab_runtime_snapshot(config: ManagerConfig) -> dict[str, Any]:
             "stale_rows": stale_rows,
             "offline_rows": offline_rows,
             "commits_last_hour_total": commits_total,
+            "attention_rows": attention_rows,
+            "critical_rows": critical_rows,
+            "warn_rows": warn_rows,
+            "watch_rows": watch_rows,
+            "max_attention_score": max_attention_score,
+            "top_attention": top_attention,
             "latest_signal_at": latest_signal_at,
             "latest_signal_age_sec": latest_signal_age_sec,
             "latest_health_at": latest_health_at,
+            "latest_health_age_sec": latest_health_age_sec,
+            "latest_task_done_at": latest_task_done_at,
+            "latest_task_done_age_sec": latest_task_done_age_sec,
+            "latest_push_at": latest_push_at,
+            "latest_push_age_sec": latest_push_age_sec,
+            "latest_commit_at": latest_commit_at,
+            "latest_commit_age_sec": latest_commit_age_sec,
+            "signal_bins_5m_total": signal_bins_total,
+            "signal_bins_5m_max": max(signal_bins_total) if signal_bins_total else 0,
+            "commit_bins_5m_total": commit_bins_total,
+            "commit_bins_5m_max": max(commit_bins_total) if commit_bins_total else 0,
         },
     }
 

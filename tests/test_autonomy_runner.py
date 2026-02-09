@@ -710,6 +710,69 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "router_selected_model")
         self.assertFalse(decision["fallback_used"])
 
+    def test_resolve_routed_model_enforces_allowed_fallback_when_requested_model_disallowed(self):
+        policy = {
+            "enabled": True,
+            "router": {"url": "http://router.invalid", "timeout_sec": 2},
+            "providers": {
+                "codex": {
+                    "enabled": True,
+                    "fallback_model": "gpt-5-mini",
+                    "allowed_models": ["gpt-5-mini", "gpt-4o-mini"],
+                }
+            },
+        }
+        selected, decision = runner.resolve_routed_model(
+            provider="codex",
+            requested_model="not-allowed-model",
+            prompt="Implement helper.",
+            routellm_enabled=False,
+            routellm_policy=policy,
+        )
+        self.assertEqual(selected, "gpt-5-mini")
+        self.assertEqual(decision["selected_model"], "gpt-5-mini")
+        self.assertFalse(decision["requested_model_allowed"])
+        self.assertEqual(decision["allowed_models"], ["gpt-5-mini", "gpt-4o-mini"])
+
+    def test_resolve_routed_model_disallowed_router_selection_uses_deterministic_allowed_fallback(self):
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"selected_model":"rogue-model"}'
+
+            def getcode(self):
+                return 200
+
+        policy = {
+            "enabled": True,
+            "router": {"url": "http://router.invalid", "timeout_sec": 2},
+            "providers": {
+                "codex": {
+                    "enabled": True,
+                    "fallback_model": "outside-policy-model",
+                    "allowed_models": ["gpt-5-mini", "gpt-4o-mini"],
+                }
+            },
+        }
+        with mock.patch.object(runner.urllib.request, "urlopen", return_value=_FakeResponse()):
+            selected, decision = runner.resolve_routed_model(
+                provider="codex",
+                requested_model=None,
+                prompt="Implement helper.",
+                routellm_enabled=True,
+                routellm_policy=policy,
+            )
+        self.assertEqual(selected, "gpt-5-mini")
+        self.assertEqual(decision["strategy"], "static_fallback")
+        self.assertTrue(decision["fallback_used"])
+        self.assertEqual(decision["reason"], "router_unavailable")
+        self.assertIn("router_model_not_allowed:rogue-model", decision["router_error"])
+
     def test_update_response_metrics_summary_tracks_prompt_difficulty_and_recommendations(self):
         with tempfile.TemporaryDirectory() as td:
             summary_path = pathlib.Path(td) / "summary.json"
@@ -733,7 +796,9 @@ class RuntimeSafeguardTests(unittest.TestCase):
             self.assertEqual(first["responses_total"], 1)
             self.assertAlmostEqual(first["prompt_difficulty_score_avg"], 70.0, places=6)
             self.assertEqual(first["tokens_total"], 150)
+            self.assertEqual(first["estimated_tokens_total"], 150)
             self.assertAlmostEqual(first["token_rate_per_minute"], 45.0, places=6)
+            self.assertAlmostEqual(first["estimated_cost_per_million_tokens"], 666.666667, places=6)
             self.assertGreater(len(first["optimization_recommendations"]), 0)
             self.assertIn("gemini", first["by_owner"])
 
@@ -762,6 +827,7 @@ class RuntimeSafeguardTests(unittest.TestCase):
             self.assertIn("latency_sec_avg", second["by_owner"]["gemini"])
             self.assertIn("prompt_difficulty_score_avg", second["by_owner"]["gemini"])
             self.assertIn("tokens_avg", second["by_owner"]["gemini"])
+            self.assertIn("cost_per_million_tokens", second["by_owner"]["gemini"])
 
     def test_update_response_metrics_summary_tracks_routing_metrics(self):
         with tempfile.TemporaryDirectory() as td:
@@ -797,6 +863,8 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(summary["routing_router_error_count"], 0)
         self.assertIn("codex", summary["routing_by_provider"])
         self.assertEqual(summary["routing_by_provider"]["codex"]["routellm_count"], 1)
+        self.assertEqual(summary["routing_by_provider"]["codex"]["tokens_total"], 150)
+        self.assertAlmostEqual(summary["routing_by_provider"]["codex"]["cost_per_million_tokens"], 133.333333, places=6)
 
     def test_load_tasks_supports_claude_owner(self):
         with tempfile.TemporaryDirectory() as td:
