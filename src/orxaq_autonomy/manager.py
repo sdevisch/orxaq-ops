@@ -2819,6 +2819,8 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
     source_reports: list[dict[str, Any]] = []
     for source in source_specs:
         source_path = Path(source["path"])
+        fallback_path_raw = str(source.get("fallback_path", "")).strip()
+        fallback_path = Path(fallback_path_raw) if fallback_path_raw else None
         source_events: list[dict[str, Any]] = []
         source_error = ""
         source_ok = True
@@ -2827,39 +2829,51 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         resolved_path = source_path
         fallback_used = False
         missing = False
-        try:
-            if source_path.exists():
+        if source_path.exists():
+            try:
                 source_events = _tail_ndjson(source_path, line_limit)
-            else:
-                missing = True
-                fallback_path_raw = str(source.get("fallback_path", "")).strip()
-                fallback_path = Path(fallback_path_raw) if fallback_path_raw else None
-                if fallback_path and fallback_path.exists():
+            except Exception as err:
+                source_error = str(err)
+                if source["kind"] == "lane" and fallback_path and fallback_path.exists():
+                    try:
+                        source_events = _tail_ndjson(fallback_path, line_limit)
+                        resolved_path = fallback_path
+                        source_kind = "lane_events"
+                        fallback_used = True
+                        source_error = f"{source_error} (fallback lane events used)"
+                    except Exception as fallback_err:
+                        source_error = f"{source_error}; fallback failed: {fallback_err}"
+                source_ok = False
+                errors.append(f"{source['path']}: {source_error}")
+        else:
+            missing = True
+            if fallback_path and fallback_path.exists():
+                try:
                     source_events = _tail_ndjson(fallback_path, line_limit)
                     resolved_path = fallback_path
                     source_kind = "lane_events"
                     fallback_used = True
-                elif source["kind"] == "lane":
-                    # A lane may not have produced logs yet; missing lane files are recoverable.
-                    recoverable_missing = True
-            source_lane_id = str(source.get("lane_id", "")).strip()
-            source_owner = str(source.get("owner", "")).strip()
-            for item in source_events:
-                if not isinstance(item, dict):
-                    continue
-                events.append(
-                    _normalize_conversation_event(
-                        item,
-                        source_path=resolved_path,
-                        source_kind=source_kind,
-                        lane_id=source_lane_id,
-                        owner=source_owner,
-                    )
+                except Exception as err:
+                    source_ok = False
+                    source_error = str(err)
+                    errors.append(f"{source['path']}: {source_error}")
+            elif source["kind"] == "lane":
+                # A lane may not have produced logs yet; missing lane files are recoverable.
+                recoverable_missing = True
+        source_lane_id = str(source.get("lane_id", "")).strip()
+        source_owner = str(source.get("owner", "")).strip()
+        for item in source_events:
+            if not isinstance(item, dict):
+                continue
+            events.append(
+                _normalize_conversation_event(
+                    item,
+                    source_path=resolved_path,
+                    source_kind=source_kind,
+                    lane_id=source_lane_id,
+                    owner=source_owner,
                 )
-        except Exception as err:
-            source_ok = False
-            source_error = str(err)
-            errors.append(f"{source['path']}: {err}")
+            )
         source_reports.append(
             {
                 "path": source["path"],

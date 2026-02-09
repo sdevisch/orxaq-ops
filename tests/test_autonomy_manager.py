@@ -1093,6 +1093,74 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(len(lane_events_seen), 1)
             self.assertIn("task_done", lane_events_seen[0].get("content", ""))
 
+    def test_conversations_snapshot_falls_back_when_lane_conversation_read_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "content": "main"}) + "\n",
+                encoding="utf-8",
+            )
+            lane_conv = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "conversations.ndjson"
+            lane_conv.parent.mkdir(parents=True, exist_ok=True)
+            lane_conv.write_text(
+                json.dumps({"timestamp": "2026-01-01T00:00:01+00:00", "owner": "gemini", "content": "lane"}) + "\n",
+                encoding="utf-8",
+            )
+            lane_events = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "events.ndjson"
+            lane_events.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:02+00:00",
+                        "lane_id": "lane-a",
+                        "event_type": "task_done",
+                        "payload": {"task_id": "t1", "status": "done"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            original_tail = manager._tail_ndjson
+
+            def flaky_tail(path: pathlib.Path, limit: int) -> list[dict[str, object]]:
+                if pathlib.Path(path).resolve() == lane_conv.resolve():
+                    raise OSError("lane file locked")
+                return original_tail(path, limit)
+
+            with mock.patch("orxaq_autonomy.manager._tail_ndjson", side_effect=flaky_tail):
+                snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=True)
+            self.assertEqual(snapshot["total_events"], 2)
+            self.assertFalse(snapshot["ok"])
+            self.assertTrue(snapshot["partial"])
+            self.assertTrue(any("lane file locked" in item for item in snapshot["errors"]))
+            lane_source = next(item for item in snapshot["sources"] if item.get("lane_id") == "lane-a")
+            self.assertFalse(lane_source["ok"])
+            self.assertTrue(lane_source["fallback_used"])
+            self.assertEqual(lane_source["resolved_kind"], "lane_events")
+            self.assertIn("fallback lane events used", lane_source["error"])
+            lane_events_seen = [item for item in snapshot["events"] if item.get("source_kind") == "lane_events"]
+            self.assertEqual(len(lane_events_seen), 1)
+            self.assertIn("task_done", lane_events_seen[0].get("content", ""))
+
     def test_conversations_snapshot_treats_missing_lane_sources_as_recoverable(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
