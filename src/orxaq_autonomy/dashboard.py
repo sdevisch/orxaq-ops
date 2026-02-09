@@ -980,7 +980,7 @@ def _dashboard_html(refresh_sec: int) -> str:
       }} else if (action === "start") {{
         setLaneActionStatus(`start${{suffix}} started=${{payload.started_count || 0}} failed=${{failed}}`, failed > 0);
       }} else if (action === "stop") {{
-        setLaneActionStatus(`stop${{suffix}} stopped=${{payload.stopped_count || 0}}`);
+        setLaneActionStatus(`stop${{suffix}} stopped=${{payload.stopped_count || 0}} failed=${{failed}}`, failed > 0);
       }} else {{
         setLaneActionStatus(`${{action}}${{suffix}} complete`);
       }}
@@ -1535,7 +1535,8 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
             payload = stop_lanes_background(config, lane_id=normalized_lane)
             payload["action"] = "stop"
             payload["lane"] = normalized_lane or ""
-            payload["ok"] = True
+            if "ok" not in payload:
+                payload["ok"] = int(payload.get("failed_count", 0)) == 0
             payload.setdefault("failed_count", 0)
             return payload
         return {

@@ -38,6 +38,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("laneOwnerSummary", html)
         self.assertIn("source_errors", html)
         self.assertIn("source_error:", html)
+        self.assertIn("stopped=${payload.stopped_count || 0} failed=${failed}", html)
         self.assertIn("convOwner", html)
         self.assertIn("conversationSources", html)
         self.assertIn("conversationPath", html)
@@ -221,6 +222,29 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["lane"], "lane-a")
         self.assertIn("spawn failed", payload["error"])
+
+    def test_safe_lane_action_stop_preserves_failure_status(self):
+        cfg = mock.Mock()
+        with mock.patch(
+            "orxaq_autonomy.dashboard.stop_lanes_background",
+            return_value={"ok": False, "stopped_count": 0, "failed_count": 1},
+        ):
+            payload = dashboard._safe_lane_action(cfg, action="stop", lane_id="lane-a")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failed_count"], 1)
+        self.assertEqual(payload["lane"], "lane-a")
+        self.assertEqual(payload["action"], "stop")
+
+    def test_safe_lane_action_stop_infers_ok_when_not_provided(self):
+        cfg = mock.Mock()
+        with mock.patch(
+            "orxaq_autonomy.dashboard.stop_lanes_background",
+            return_value={"stopped_count": 1, "failed_count": 0},
+        ):
+            payload = dashboard._safe_lane_action(cfg, action="stop", lane_id="")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["failed_count"], 0)
+        self.assertEqual(payload["lane"], "")
 
     def test_safe_daw_snapshot_uses_monitor_fallback_when_monitor_fails(self):
         cfg = mock.Mock()
