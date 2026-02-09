@@ -211,6 +211,42 @@ class CliTests(unittest.TestCase):
             self.assertEqual(kwargs["lines"], 50)
             self.assertTrue(kwargs["include_lanes"])
 
+    def test_conversation_inspect_alias_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value={
+                    "total_events": 1,
+                    "events": [{"timestamp": "2026-01-01T00:00:00+00:00", "owner": "codex", "lane_id": "lane-a"}],
+                    "owner_counts": {"codex": 1},
+                },
+            ) as snap:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(
+                        [
+                            "--root",
+                            str(root),
+                            "conversation-inspect",
+                            "--lines",
+                            "80",
+                            "--lane",
+                            "lane-a",
+                            "--tail",
+                            "1",
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["total_events"], 1)
+            self.assertEqual(payload["filters"]["lane"], "lane-a")
+            self.assertEqual(payload["filters"]["tail"], 1)
+            kwargs = snap.call_args.kwargs
+            self.assertEqual(kwargs["lines"], 80)
+            self.assertTrue(kwargs["include_lanes"])
+
     def test_conversations_command_degrades_when_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -410,6 +446,18 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(start.call_args.kwargs["lane_id"], "codex-governance")
 
+    def test_lane_start_alias_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.start_lanes_background",
+                return_value={"started_count": 1, "started": [{"id": "codex-governance"}], "ok": True},
+            ) as start:
+                rc = cli.main(["--root", str(root), "lane-start", "--lane", "codex-governance"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(start.call_args.kwargs["lane_id"], "codex-governance")
+
     def test_lanes_stop_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -431,6 +479,18 @@ class CliTests(unittest.TestCase):
                 return_value={"stopped_count": 1, "stopped": [{"id": "codex-governance"}]},
             ) as stop:
                 rc = cli.main(["--root", str(root), "lanes-stop", "--lane", "codex-governance"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(stop.call_args.kwargs["lane_id"], "codex-governance")
+
+    def test_lane_stop_alias_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.stop_lanes_background",
+                return_value={"stopped_count": 1, "stopped": [{"id": "codex-governance"}]},
+            ) as stop:
+                rc = cli.main(["--root", str(root), "lane-stop", "--lane", "codex-governance"])
             self.assertEqual(rc, 0)
             self.assertEqual(stop.call_args.kwargs["lane_id"], "codex-governance")
 
@@ -469,6 +529,33 @@ class CliTests(unittest.TestCase):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertEqual(data["requested_lane"], "lane-a")
+            self.assertEqual(data["total_count"], 1)
+            self.assertEqual(data["lanes"][0]["id"], "lane-a")
+            self.assertEqual(data["health_counts"], {"ok": 1})
+            self.assertEqual(data["owner_counts"]["codex"]["running"], 1)
+
+    def test_lane_status_alias_command_with_lane_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "running_count": 1,
+                    "total_count": 2,
+                    "lanes": [
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"},
+                        {"id": "lane-b", "owner": "gemini", "running": False, "pid": None, "health": "stopped"},
+                    ],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-status", "--json", "--lane", "lane-a"])
             self.assertEqual(rc, 0)
             data = json.loads(buffer.getvalue())
             self.assertEqual(data["requested_lane"], "lane-a")
@@ -547,6 +634,25 @@ class CliTests(unittest.TestCase):
                 },
             ) as ensure:
                 rc = cli.main(["--root", str(root), "lanes-ensure", "--lane", "codex-governance"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(ensure.call_args.kwargs["lane_id"], "codex-governance")
+
+    def test_lane_ensure_alias_command_with_lane_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.ensure_lanes_background",
+                return_value={
+                    "requested_lane": "codex-governance",
+                    "ensured_count": 1,
+                    "started_count": 0,
+                    "restarted_count": 0,
+                    "failed_count": 0,
+                    "ok": True,
+                },
+            ) as ensure:
+                rc = cli.main(["--root", str(root), "lane-ensure", "--lane", "codex-governance", "--json"])
             self.assertEqual(rc, 0)
             self.assertEqual(ensure.call_args.kwargs["lane_id"], "codex-governance")
 

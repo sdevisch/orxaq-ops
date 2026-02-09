@@ -164,6 +164,10 @@ make lanes-start
 make lanes-stop
 make lanes-ensure
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-ensure --lane codex-governance
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lane-start --lane codex-governance
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lane-stop --lane codex-governance
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lane-status --lane codex-governance --json
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lane-ensure --lane codex-governance --json
 ```
 
 - Inspect recent collaboration conversations (primary + lane logs):
@@ -171,6 +175,7 @@ python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lanes-ensure 
 ```bash
 make conversations
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --lines 400
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversation-inspect --lines 400 --tail 120
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --owner codex --lane codex-governance --tail 80
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --event-type ensure_failed --contains stale
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lane-inspect --lane codex-governance --tail 60

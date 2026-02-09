@@ -298,6 +298,15 @@ def main(argv: list[str] | None = None) -> int:
     conversations.add_argument("--contains", default="")
     conversations.add_argument("--tail", type=int, default=0)
 
+    conversation_inspect = sub.add_parser("conversation-inspect")
+    conversation_inspect.add_argument("--lines", type=int, default=200)
+    conversation_inspect.add_argument("--no-lanes", action="store_true")
+    conversation_inspect.add_argument("--owner", default="")
+    conversation_inspect.add_argument("--lane", default="")
+    conversation_inspect.add_argument("--event-type", default="")
+    conversation_inspect.add_argument("--contains", default="")
+    conversation_inspect.add_argument("--tail", type=int, default=0)
+
     lane_inspect = sub.add_parser("lane-inspect")
     lane_inspect.add_argument("--lane", required=True)
     lane_inspect.add_argument("--lines", type=int, default=200)
@@ -314,15 +323,29 @@ def main(argv: list[str] | None = None) -> int:
     lanes_status.add_argument("--json", action="store_true")
     lanes_status.add_argument("--lane", default="")
 
+    lane_status = sub.add_parser("lane-status")
+    lane_status.add_argument("--json", action="store_true")
+    lane_status.add_argument("--lane", required=True)
+
     lanes_start = sub.add_parser("lanes-start")
     lanes_start.add_argument("--lane", default="")
+
+    lane_start = sub.add_parser("lane-start")
+    lane_start.add_argument("--lane", required=True)
 
     lanes_ensure = sub.add_parser("lanes-ensure")
     lanes_ensure.add_argument("--json", action="store_true")
     lanes_ensure.add_argument("--lane", default="")
 
+    lane_ensure = sub.add_parser("lane-ensure")
+    lane_ensure.add_argument("--json", action="store_true")
+    lane_ensure.add_argument("--lane", required=True)
+
     lanes_stop = sub.add_parser("lanes-stop")
     lanes_stop.add_argument("--lane", default="")
+
+    lane_stop = sub.add_parser("lane-stop")
+    lane_stop.add_argument("--lane", required=True)
 
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
@@ -479,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "dashboard-logs":
             print(tail_dashboard_logs(cfg, lines=args.lines))
             return 0
-        if args.command == "conversations":
+        if args.command in {"conversations", "conversation-inspect"}:
             payload = _safe_conversations_snapshot(
                 cfg,
                 lines=args.lines,
@@ -568,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  objective_file: {lane['objective_file']}")
                 print(f"  exclusive_paths: {', '.join(lane['exclusive_paths']) if lane['exclusive_paths'] else '(none)'}")
             return 0
-        if args.command == "lanes-status":
+        if args.command in {"lanes-status", "lane-status"}:
             snapshot = _safe_lane_status_snapshot(cfg)
             requested_lane = args.lane.strip()
             lane_items = snapshot.get("lanes", [])
@@ -655,12 +678,12 @@ def main(argv: list[str] | None = None) -> int:
                 if lane.get("error"):
                     print(f"  error: {lane['error']}")
             return 0
-        if args.command == "lanes-start":
+        if args.command in {"lanes-start", "lane-start"}:
             lane_id = args.lane.strip() or None
             payload = start_lanes_background(cfg, lane_id=lane_id)
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if payload.get("ok", False) else 1
-        if args.command == "lanes-ensure":
+        if args.command in {"lanes-ensure", "lane-ensure"}:
             lane_id = args.lane.strip() or None
             payload = ensure_lanes_background(cfg, lane_id=lane_id)
             if args.json:
@@ -680,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
             return 0 if payload.get("ok", False) else 1
-        if args.command == "lanes-stop":
+        if args.command in {"lanes-stop", "lane-stop"}:
             lane_id = args.lane.strip() or None
             payload = stop_lanes_background(cfg, lane_id=lane_id)
             print(json.dumps(payload, indent=2, sort_keys=True))
