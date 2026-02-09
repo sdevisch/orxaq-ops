@@ -191,6 +191,15 @@ def main(argv: list[str] | None = None) -> int:
     conversations.add_argument("--contains", default="")
     conversations.add_argument("--tail", type=int, default=0)
 
+    lane_inspect = sub.add_parser("lane-inspect")
+    lane_inspect.add_argument("--lane", required=True)
+    lane_inspect.add_argument("--lines", type=int, default=200)
+    lane_inspect.add_argument("--no-lanes", action="store_true")
+    lane_inspect.add_argument("--owner", default="")
+    lane_inspect.add_argument("--event-type", default="")
+    lane_inspect.add_argument("--contains", default="")
+    lane_inspect.add_argument("--tail", type=int, default=0)
+
     lanes_plan = sub.add_parser("lanes-plan")
     lanes_plan.add_argument("--json", action="store_true")
 
@@ -377,6 +386,41 @@ def main(argv: list[str] | None = None) -> int:
                 contains=args.contains,
                 tail=args.tail,
             )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.command == "lane-inspect":
+            requested_lane = args.lane.strip()
+            if not requested_lane:
+                raise RuntimeError("lane id is required")
+            lane_payload = lane_status_snapshot(cfg)
+            lane_items = lane_payload.get("lanes", [])
+            if not isinstance(lane_items, list):
+                lane_items = []
+            selected = [item for item in lane_items if str(item.get("id", "")).strip() == requested_lane]
+            if not selected:
+                raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {cfg.lanes_file}.")
+            conv_payload = conversations_snapshot(
+                cfg,
+                lines=args.lines,
+                include_lanes=not args.no_lanes,
+            )
+            conv_payload = _apply_conversation_filters(
+                conv_payload,
+                owner=args.owner,
+                lane_id=requested_lane,
+                event_type=args.event_type,
+                contains=args.contains,
+                tail=args.tail,
+            )
+            payload = {
+                "requested_lane": requested_lane,
+                "lane": selected[0],
+                "lane_errors": lane_payload.get("errors", []),
+                "lane_health_counts": lane_payload.get("health_counts", {}),
+                "lane_owner_counts": lane_payload.get("owner_counts", {}),
+                "conversations": conv_payload,
+                "ok": bool(conv_payload.get("ok", False)) and str(selected[0].get("health", "")).strip().lower() != "error",
+            }
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.command == "lanes-plan":

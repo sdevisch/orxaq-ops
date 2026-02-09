@@ -2343,6 +2343,53 @@ def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                     "meta": {},
                 }
             )
+    for entry in _lane_load_error_entries(load_errors):
+        lane_id = str(entry.get("id", "lane_config")).strip() or "lane_config"
+        message = str(entry.get("error", "lane configuration error")).strip() or "lane configuration error"
+        runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
+        snapshots.append(
+            {
+                "id": lane_id,
+                "enabled": False,
+                "owner": "unknown",
+                "description": "lane configuration load error",
+                "running": False,
+                "pid": None,
+                "tasks_file": "",
+                "dependency_state_file": "",
+                "handoff_dir": "",
+                "objective_file": "",
+                "impl_repo": "",
+                "test_repo": "",
+                "metrics_file": "",
+                "metrics_summary_file": "",
+                "pricing_file": "",
+                "exclusive_paths": [],
+                "latest_log_line": "",
+                "log_file": str(runtime_dir / "runner.log"),
+                "pid_file": str(runtime_dir / "lane.pid"),
+                "meta_file": str(runtime_dir / "lane.json"),
+                "events_file": str(runtime_dir / "events.ndjson"),
+                "pause_file": str(runtime_dir / "paused.flag"),
+                "heartbeat_file": str(runtime_dir / "heartbeat.json"),
+                "heartbeat_age_sec": -1,
+                "heartbeat_stale": False,
+                "paused": False,
+                "build_id": "",
+                "expected_build_id": "",
+                "build_current": False,
+                "state_counts": {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 1},
+                "task_total": 0,
+                "state_entries": 0,
+                "missing_state_entries": 0,
+                "extra_state_entries": 0,
+                "last_event": {},
+                "health": "error",
+                "error": message,
+                "source": "lane_config",
+                "meta": {},
+            }
+        )
     health_counts: dict[str, int] = {}
     owner_counts: dict[str, dict[str, int]] = {}
     healthy_states = {"ok", "paused", "idle"}
@@ -2796,9 +2843,27 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
         }
     ]
     errors: list[str] = []
+    lane_error_sources: list[dict[str, Any]] = []
     if include_lanes:
         lanes, lane_errors = _load_lane_specs_resilient(config)
         errors.extend(f"lane_specs: {err}" for err in lane_errors)
+        for lane_error in _lane_load_error_entries(lane_errors):
+            lane_error_sources.append(
+                {
+                    "path": str(config.lanes_file),
+                    "resolved_path": str(config.lanes_file),
+                    "kind": "lane_config",
+                    "resolved_kind": "lane_config",
+                    "lane_id": str(lane_error.get("id", "")).strip(),
+                    "owner": "unknown",
+                    "ok": False,
+                    "missing": False,
+                    "recoverable_missing": False,
+                    "fallback_used": False,
+                    "error": str(lane_error.get("error", "")).strip(),
+                    "event_count": 0,
+                }
+            )
         for lane in lanes:
             lane_file = Path(lane["conversation_log_file"])
             lane_path = str(lane_file)
@@ -2890,6 +2955,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                 "event_count": len(source_events),
             }
         )
+    source_reports.extend(lane_error_sources)
     events = sorted(events, key=lambda item: str(item.get("timestamp", "")))[-line_limit:]
 
     owners: dict[str, int] = {}

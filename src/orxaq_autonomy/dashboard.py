@@ -631,6 +631,9 @@ def _dashboard_html(refresh_sec: int) -> str:
     function renderLanes(lanes, runtime) {{
       const lanePayload = lanes || {{}};
       const laneItems = lanePayload.lanes || [];
+      const laneErrors = Array.isArray(lanePayload.errors)
+        ? lanePayload.errors.filter((item) => String(item || "").trim())
+        : [];
       const runningLanes = Number(lanePayload.running_count || 0);
       const totalLanes = Number(lanePayload.total_count || 0);
       const laneHealthCounts = lanePayload.health_counts || {{}};
@@ -668,9 +671,12 @@ def _dashboard_html(refresh_sec: int) -> str:
         }})
         .join(" · ");
       byId("laneSummary").textContent =
-        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}}`;
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}} · source_errors: ${{laneErrors.length}}`;
       byId("laneOwnerSummary").textContent = `owners: ${{ownerSummary || "none"}}`;
-      byId("laneList").innerHTML = laneItems.length
+      const laneErrorMarkup = laneErrors.length
+        ? laneErrors.map((item) => `<div class="line bad">source_error: ${{escapeHtml(String(item || ""))}}</div>`).join("")
+        : "";
+      byId("laneList").innerHTML = `${{laneErrorMarkup}}${{laneItems.length
         ? laneItems.map((lane) => {{
             const state = lane.running ? "running" : "stopped";
             const health = lane.health || "unknown";
@@ -689,7 +695,7 @@ def _dashboard_html(refresh_sec: int) -> str:
               error,
             ].join("");
           }}).join("")
-        : '<div class="line">No lanes configured.</div>';
+        : '<div class="line">No lanes configured.</div>'}}`;
       return {{ runningLanes, totalLanes }};
     }}
 

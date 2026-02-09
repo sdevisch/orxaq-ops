@@ -117,6 +117,7 @@ make dashboard-stop
 Dashboard operator controls:
 - Lane controls in the UI can `ensure`, `start`, or `stop` all enabled lanes, or a specific lane id.
 - Lane runtime panel reports owner-attributed health breakdown (`total/running/healthy/degraded`) and lane health-state totals.
+- Lane runtime panel surfaces lane source error counts/messages when lane metadata is partially unavailable.
 - Conversation feed supports owner/lane/type/text filters and tail-limited inspection without leaving the UI.
 - API equivalents:
   - `GET /api/lanes/action?action=ensure|start|stop&lane=<optional-lane-id>`
@@ -172,6 +173,7 @@ make conversations
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --lines 400
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --owner codex --lane codex-governance --tail 80
 python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops conversations --event-type ensure_failed --contains stale
+python3 -m orxaq_autonomy.cli --root /Users/sdevisch/dev/orxaq-ops lane-inspect --lane codex-governance --tail 60
 ```
 
 ## Collaboration Contract

@@ -998,6 +998,9 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["ok"])
             self.assertTrue(snapshot["partial"])
             self.assertIn("lane_specs: bad lanes config", snapshot["errors"][0])
+            lane_config_source = next(item for item in snapshot["sources"] if item.get("kind") == "lane_config")
+            self.assertFalse(lane_config_source["ok"])
+            self.assertEqual(lane_config_source["lane_id"], "lane_config")
 
     def test_conversations_snapshot_keeps_valid_sources_with_invalid_lane_config(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1045,6 +1048,7 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["ok"])
             self.assertTrue(snapshot["partial"])
             self.assertIn("lane_specs: lane-b", snapshot["errors"][0])
+            self.assertTrue(any(item.get("kind") == "lane_config" and item.get("lane_id") == "lane-b" for item in snapshot["sources"]))
 
     def test_conversations_snapshot_falls_back_to_lane_events_when_conversation_missing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1938,8 +1942,14 @@ class ManagerTests(unittest.TestCase):
             )
             cfg = manager.ManagerConfig.from_root(root)
             snapshot = manager.lane_status_snapshot(cfg)
-            self.assertEqual(snapshot["total_count"], 1)
-            self.assertEqual(snapshot["lanes"][0]["id"], "lane-a")
+            self.assertEqual(snapshot["total_count"], 2)
+            lane_ids = {item["id"] for item in snapshot["lanes"]}
+            self.assertIn("lane-a", lane_ids)
+            self.assertIn("lane-b", lane_ids)
+            invalid_lane = next(item for item in snapshot["lanes"] if item["id"] == "lane-b")
+            self.assertEqual(invalid_lane["source"], "lane_config")
+            self.assertEqual(invalid_lane["owner"], "unknown")
+            self.assertEqual(invalid_lane["health"], "error")
             self.assertFalse(snapshot["ok"])
             self.assertIn("lane-b", snapshot["errors"][0])
 

@@ -36,6 +36,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("optimization_recommendations", html)
         self.assertIn("laneActionStatus", html)
         self.assertIn("laneOwnerSummary", html)
+        self.assertIn("source_errors", html)
+        self.assertIn("source_error:", html)
         self.assertIn("convOwner", html)
         self.assertIn("conversationSources", html)
         self.assertIn("conversationPath", html)

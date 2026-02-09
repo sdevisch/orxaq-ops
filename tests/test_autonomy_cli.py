@@ -266,6 +266,68 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["events"][0]["owner"], "codex")
             self.assertEqual(data["filters"]["lane"], "lane-a")
 
+    def test_lane_inspect_command_returns_lane_and_filtered_conversations(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 2,
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "alpha",
+                    },
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "gemini",
+                        "lane_id": "lane-b",
+                        "event_type": "message",
+                        "content": "beta",
+                    },
+                ],
+                "owner_counts": {"codex": 1, "gemini": 1},
+                "sources": [],
+                "partial": False,
+                "ok": True,
+                "errors": [],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ) as conversations:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a", "--contains", "alp"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["requested_lane"], "lane-a")
+            self.assertEqual(payload["lane"]["owner"], "codex")
+            self.assertEqual(payload["conversations"]["total_events"], 1)
+            self.assertEqual(payload["conversations"]["events"][0]["lane_id"], "lane-a")
+            self.assertEqual(payload["conversations"]["filters"]["lane"], "lane-a")
+            self.assertTrue(payload["ok"])
+            self.assertTrue(conversations.call_args.kwargs["include_lanes"])
+
+    def test_lane_inspect_command_returns_error_for_unknown_lane(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={"lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}]},
+            ):
+                rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "missing"])
+            self.assertEqual(rc, 1)
+
     def test_lanes_start_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
