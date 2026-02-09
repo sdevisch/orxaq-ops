@@ -675,12 +675,43 @@ def _dashboard_html(refresh_sec: int) -> str:
         : '<div class="feed-item">No recent activity.</div>';
     }}
 
-    function renderLanes(lanes, runtime) {{
+    function buildConversationSourceMap(payload) {{
+      const sourceReports = payload && Array.isArray(payload.sources) ? payload.sources : [];
+      const byLane = {{}};
+      for (const source of sourceReports) {{
+        const item = source || {{}};
+        const laneId = String(item.lane_id || "").trim();
+        if (!laneId) continue;
+        if (!byLane[laneId]) {{
+          byLane[laneId] = {{
+            ok: true,
+            event_count: 0,
+            fallback_used: false,
+            missing: false,
+            recoverable_missing: false,
+            errors: [],
+          }};
+        }}
+        const current = byLane[laneId];
+        current.ok = current.ok && Boolean(item.ok);
+        current.event_count += Number(item.event_count || 0);
+        current.fallback_used = current.fallback_used || Boolean(item.fallback_used);
+        current.missing = current.missing || Boolean(item.missing);
+        current.recoverable_missing = current.recoverable_missing || Boolean(item.recoverable_missing);
+        const message = String(item.error || "").trim();
+        if (message) current.errors.push(message);
+      }}
+      return byLane;
+    }}
+
+    function renderLanes(lanes, runtime, conversations) {{
       const lanePayload = lanes || {{}};
       const laneItems = lanePayload.lanes || [];
       const laneErrors = Array.isArray(lanePayload.errors)
         ? lanePayload.errors.filter((item) => String(item || "").trim())
         : [];
+      const laneSourceMap = buildConversationSourceMap(conversations || {{}});
+      const laneSourceErrorCount = Object.values(laneSourceMap).filter((item) => !item.ok).length;
       const runningLanes = Number(lanePayload.running_count || 0);
       const totalLanes = Number(lanePayload.total_count || 0);
       const laneHealthCounts = lanePayload.health_counts || {{}};
@@ -718,7 +749,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         }})
         .join(" · ");
       byId("laneSummary").textContent =
-        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}} · source_errors: ${{laneErrors.length}}`;
+        `running lanes: ${{runningLanes}}/${{totalLanes}} · operational: ${{operationalLanes}} · degraded: ${{degradedLanes}} · health: ${{healthSummary || "none"}} · source_errors: ${{laneErrors.length}} · conversation_source_errors: ${{laneSourceErrorCount}}`;
       byId("laneOwnerSummary").textContent = `owners: ${{ownerSummary || "none"}}`;
       const laneErrorMarkup = laneErrors.length
         ? laneErrors.map((item) => `<div class="line bad">source_error: ${{escapeHtml(String(item || ""))}}</div>`).join("")
@@ -736,9 +767,28 @@ def _dashboard_html(refresh_sec: int) -> str:
             const buildCurrent = lane.build_current ? "current" : "stale";
             const lastEvent = (lane.last_event && lane.last_event.event_type) ? ` · event=${{lane.last_event.event_type}}` : "";
             const error = lane.error ? `<div class="line bad">error: ${{escapeHtml(lane.error)}}</div>` : "";
+            const source = laneSourceMap[String(lane.id || "").trim()] || null;
+            const sourceFlags = [];
+            let sourceState = "unreported";
+            let sourceEvents = 0;
+            if (source) {{
+              sourceState = source.ok ? "ok" : "error";
+              sourceEvents = Number(source.event_count || 0);
+              if (source.fallback_used) sourceFlags.push("fallback");
+              if (source.missing && source.recoverable_missing) {{
+                sourceFlags.push("recoverable_missing");
+              }} else if (source.missing) {{
+                sourceFlags.push("missing");
+              }}
+              if ((source.errors || []).length) sourceFlags.push(`errors=${{(source.errors || []).length}}`);
+            }}
+            const sourceExtras = sourceFlags.length ? ` (${{sourceFlags.join(",")}})` : "";
+            const conversationSourceLine =
+              `<div class="line mono">conversation_source=${{sourceState}} events=${{sourceEvents}}${{sourceExtras}}</div>`;
             return [
               `<div class="line"><span class="mono">${{escapeHtml(lane.id)}}</span> [${{escapeHtml(lane.owner)}}] ${{state}} · health=${{health}} · hb=${{age}}s · build=${{buildCurrent}}</div>`,
               `<div class="line mono">tasks d=${{done}} p=${{pending}} w=${{inProgress}} b=${{blocked}}${{lastEvent}}</div>`,
+              conversationSourceLine,
               error,
             ].join("");
           }}).join("")
@@ -746,11 +796,12 @@ def _dashboard_html(refresh_sec: int) -> str:
       return {{ runningLanes, totalLanes }};
     }}
 
-    function render(snapshot, laneOverride) {{
+    function render(snapshot, laneOverride, conversationOverride) {{
       const status = snapshot.status || {{}};
       const runtime = snapshot.runtime || {{}};
       const lanes = laneOverride || snapshot.lanes || {{}};
-      const laneStats = renderLanes(lanes, runtime);
+      const conversations = conversationOverride || snapshot.conversations || {{}};
+      const laneStats = renderLanes(lanes, runtime, conversations);
       const runningLanes = laneStats.runningLanes;
       const totalLanes = laneStats.totalLanes;
       const progress = snapshot.progress || {{}};
@@ -1014,22 +1065,11 @@ def _dashboard_html(refresh_sec: int) -> str:
       ]);
 
       let monitorPayload = monitorResult.payload;
+      let effectiveConversationPayload = null;
       const lanePayload = laneResult.ok ? laneResult.payload : null;
-      if (monitorResult.ok && monitorPayload) {{
-        render(monitorPayload, lanePayload);
-      }} else {{
-        byId("latestLog").textContent = `monitor fetch failed: ${{monitorResult.error}}`;
-        byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
-        if (lanePayload) {{
-          renderLanes(lanePayload, {{}});
-        }} else {{
-          byId("laneSummary").textContent = "lanes: unavailable";
-          byId("laneList").innerHTML = '<div class="line bad">lane endpoint unavailable</div>';
-        }}
-      }}
 
       if (convResult.ok && convResult.payload) {{
-        renderConversations(convResult.payload);
+        effectiveConversationPayload = convResult.payload;
       }} else {{
         const monitorRecentEvents = (
           monitorPayload &&
@@ -1073,8 +1113,30 @@ def _dashboard_html(refresh_sec: int) -> str:
               filters: fallbackFilters,
               unfiltered_total_events: 0,
             }};
-        renderConversations(fallbackConv);
+        effectiveConversationPayload = fallbackConv;
       }}
+
+      if (monitorResult.ok && monitorPayload) {{
+        render(monitorPayload, lanePayload, effectiveConversationPayload);
+      }} else {{
+        byId("latestLog").textContent = `monitor fetch failed: ${{monitorResult.error}}`;
+        byId("updated").textContent = `updated: ${{new Date().toLocaleTimeString()}}`;
+        if (lanePayload) {{
+          renderLanes(lanePayload, {{}}, effectiveConversationPayload);
+        }} else {{
+          byId("laneSummary").textContent = "lanes: unavailable";
+          byId("laneList").innerHTML = '<div class="line bad">lane endpoint unavailable</div>';
+        }}
+      }}
+      renderConversations(effectiveConversationPayload || {{
+        total_events: 0,
+        owner_counts: {{}},
+        events: [],
+        sources: [],
+        partial: true,
+        errors: [],
+        filters: {{}},
+      }});
       if (dawResult.ok && dawResult.payload) {{
         renderDaw(dawResult.payload);
       }} else {{

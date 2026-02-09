@@ -352,7 +352,17 @@ class CliTests(unittest.TestCase):
                     },
                 ],
                 "owner_counts": {"codex": 1, "gemini": 1},
-                "sources": [],
+                "sources": [
+                    {
+                        "lane_id": "lane-a",
+                        "ok": True,
+                        "missing": False,
+                        "recoverable_missing": False,
+                        "fallback_used": False,
+                        "error": "",
+                        "event_count": 1,
+                    }
+                ],
                 "partial": False,
                 "ok": True,
                 "errors": [],
@@ -371,6 +381,9 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["conversations"]["total_events"], 1)
             self.assertEqual(payload["conversations"]["events"][0]["lane_id"], "lane-a")
             self.assertEqual(payload["conversations"]["filters"]["lane"], "lane-a")
+            self.assertEqual(payload["conversation_source_health"]["lane"], "lane-a")
+            self.assertEqual(payload["conversation_source_health"]["state"], "ok")
+            self.assertEqual(payload["conversation_source_health"]["reported_sources"], 1)
             self.assertTrue(payload["ok"])
             self.assertTrue(conversations.call_args.kwargs["include_lanes"])
 
@@ -416,6 +429,54 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["suppressed_lane_errors"], ["lane-b: heartbeat stale"])
             self.assertEqual(payload["lane"]["id"], "lane-a")
 
+    def test_lane_inspect_reports_degraded_conversation_source_health(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 0,
+                "events": [],
+                "owner_counts": {},
+                "ok": False,
+                "partial": True,
+                "errors": ["lane file locked"],
+                "sources": [
+                    {
+                        "lane_id": "lane-a",
+                        "ok": False,
+                        "missing": True,
+                        "recoverable_missing": False,
+                        "fallback_used": True,
+                        "error": "lane file locked (fallback lane events used)",
+                        "event_count": 0,
+                    }
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            health = payload["conversation_source_health"]
+            self.assertEqual(health["lane"], "lane-a")
+            self.assertEqual(health["state"], "degraded")
+            self.assertEqual(health["reported_sources"], 1)
+            self.assertEqual(health["fallback_count"], 1)
+            self.assertEqual(health["missing_count"], 1)
+            self.assertEqual(health["error_count"], 1)
+            self.assertFalse(payload["ok"])
+            self.assertTrue(payload["partial"])
+
     def test_lane_inspect_command_degrades_when_conversation_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -440,6 +501,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["conversations"]["total_events"], 0)
             self.assertEqual(payload["lane"]["owner"], "codex")
             self.assertIn("lane stream unavailable", payload["conversations"]["errors"][0])
+            self.assertEqual(payload["conversation_source_health"]["state"], "unreported")
+            self.assertTrue(payload["conversation_source_health"]["global_partial"])
 
     def test_lane_inspect_command_returns_error_for_unknown_lane(self):
         with tempfile.TemporaryDirectory() as td:

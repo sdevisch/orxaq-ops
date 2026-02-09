@@ -296,6 +296,64 @@ def _filter_lane_status_payload(
     return filtered
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _lane_conversation_source_health(payload: dict[str, Any], *, lane_id: str) -> dict[str, Any]:
+    requested_lane = lane_id.strip()
+    reports = payload.get("sources", [])
+    if not isinstance(reports, list):
+        reports = []
+    lane_reports = [
+        item
+        for item in reports
+        if isinstance(item, dict) and str(item.get("lane_id", "")).strip() == requested_lane
+    ]
+    errors: list[str] = []
+    event_count = 0
+    missing_count = 0
+    recoverable_missing_count = 0
+    fallback_count = 0
+    ok = True
+    for report in lane_reports:
+        source_ok = bool(report.get("ok", False))
+        ok = ok and source_ok
+        event_count += max(0, _safe_int(report.get("event_count", 0), 0))
+        if bool(report.get("missing", False)):
+            missing_count += 1
+        if bool(report.get("recoverable_missing", False)):
+            recoverable_missing_count += 1
+        if bool(report.get("fallback_used", False)):
+            fallback_count += 1
+        message = str(report.get("error", "")).strip()
+        if message:
+            errors.append(message)
+
+    state = "unreported"
+    ok_value: bool | None = None
+    if lane_reports:
+        state = "ok" if ok else "degraded"
+        ok_value = ok
+    return {
+        "lane": requested_lane,
+        "state": state,
+        "ok": ok_value,
+        "reported_sources": len(lane_reports),
+        "event_count": event_count,
+        "missing_count": missing_count,
+        "recoverable_missing_count": recoverable_missing_count,
+        "fallback_count": fallback_count,
+        "error_count": len(errors),
+        "errors": errors,
+        "global_partial": bool(payload.get("partial", False)),
+        "global_error_count": len(payload.get("errors", [])) if isinstance(payload.get("errors", []), list) else 0,
+    }
+
+
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
     root = Path(args.root).resolve()
     env_file = Path(args.env_file).resolve() if args.env_file else None
@@ -643,6 +701,10 @@ def main(argv: list[str] | None = None) -> int:
                 "lane_health_counts": lane_payload.get("health_counts", {}),
                 "lane_owner_counts": lane_payload.get("owner_counts", {}),
                 "conversations": conv_payload,
+                "conversation_source_health": _lane_conversation_source_health(
+                    conv_payload,
+                    lane_id=requested_lane,
+                ),
                 "partial": (not lane_payload_ok) or bool(conv_payload.get("partial", False)) or bool(lane_errors),
                 "ok": (
                     lane_payload_ok
