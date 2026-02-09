@@ -2390,15 +2390,36 @@ def _lane_error_matches_requested_lane(
     return True
 
 
+def _normalize_lane_entry(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    lane = dict(raw)
+    lane["id"] = str(lane.get("id", "")).strip() or "unknown"
+    lane["owner"] = str(lane.get("owner", "")).strip() or "unknown"
+    lane["running"] = bool(lane.get("running", False))
+    lane["pid"] = lane.get("pid")
+    lane["health"] = str(lane.get("health", "")).strip().lower() or "unknown"
+    lane["error"] = str(lane.get("error", "")).strip()
+    state_counts = lane.get("state_counts", {})
+    lane["state_counts"] = state_counts if isinstance(state_counts, dict) else {}
+    try:
+        lane["heartbeat_age_sec"] = int(lane.get("heartbeat_age_sec", -1))
+    except (TypeError, ValueError):
+        lane["heartbeat_age_sec"] = -1
+    lane["build_current"] = bool(lane.get("build_current", False))
+    return lane
+
+
 def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -> dict[str, Any]:
     requested_lane = lane_id.strip()
-    lane_items = payload.get("lanes", [])
-    if not isinstance(lane_items, list):
-        lane_items = []
+    raw_lane_items = payload.get("lanes", [])
+    if not isinstance(raw_lane_items, list):
+        raw_lane_items = []
+    lane_items = [item for item in (_normalize_lane_entry(raw) for raw in raw_lane_items) if item is not None]
     known_lane_ids = {
         str(item.get("id", "")).strip().lower()
         for item in lane_items
-        if isinstance(item, dict) and str(item.get("id", "")).strip()
+        if str(item.get("id", "")).strip()
     }
     normalized_errors = _normalize_error_messages(payload.get("errors", []))
     suppressed_errors: list[str] = []

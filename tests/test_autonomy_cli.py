@@ -1072,6 +1072,52 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "lanes-status"])
             self.assertEqual(rc, 0)
 
+    def test_filter_lane_status_payload_normalizes_missing_lane_fields(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "lanes": [
+                {"id": "lane-a"},
+                "bad-entry",
+                {"owner": "gemini", "running": 1},
+            ],
+        }
+        filtered = cli._filter_lane_status_payload(
+            payload,
+            requested_lane="",
+            lanes_file=pathlib.Path("/tmp/lanes.json"),
+        )
+        self.assertEqual(filtered["total_count"], 2)
+        self.assertEqual(filtered["lanes"][0]["id"], "lane-a")
+        self.assertEqual(filtered["lanes"][0]["owner"], "unknown")
+        self.assertEqual(filtered["lanes"][0]["health"], "unknown")
+        self.assertEqual(filtered["lanes"][0]["heartbeat_age_sec"], -1)
+        self.assertEqual(filtered["lanes"][1]["id"], "unknown")
+        self.assertEqual(filtered["lanes"][1]["owner"], "gemini")
+
+    def test_lanes_status_command_handles_missing_lane_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "running_count": 0,
+                    "total_count": 3,
+                    "lanes": [{"id": "lane-a"}, {"owner": "gemini"}, "bad-entry"],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status"])
+            self.assertEqual(rc, 0)
+            output = buffer.getvalue()
+            self.assertIn("- lane-a [unknown] stopped pid=None health=unknown heartbeat_age=-1s", output)
+            self.assertIn("- unknown [gemini] stopped pid=None health=unknown heartbeat_age=-1s", output)
+
     def test_lanes_status_command_with_conversations_embeds_rollup(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
