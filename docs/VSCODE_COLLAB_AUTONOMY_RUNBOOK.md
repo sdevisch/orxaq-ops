@@ -118,6 +118,7 @@ Dashboard operator controls:
 - Lane controls in the UI can `ensure`, `start`, or `stop` all enabled lanes, or a specific lane id.
 - Lane runtime panel reports owner-attributed health breakdown (`total/running/healthy/degraded`) and lane health-state totals.
 - Lane runtime panel surfaces lane source error counts/messages when lane metadata is partially unavailable.
+- Lane status views recover missing lanes from conversation streams during partial lane-source failures, marking `conversation_lane_fallback=true`.
 - Conversation feed supports owner/lane/type/text filters and tail-limited inspection without leaving the UI.
 - API equivalents:
   - `GET /api/lanes/action?action=ensure|start|stop&lane=<optional-lane-id>`

@@ -592,6 +592,92 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(enriched["partial"])
         self.assertFalse(enriched["ok"])
 
+    def test_augment_lane_payload_with_conversation_rollup_recovers_partial_missing_lanes(self):
+        lane_payload = {
+            "requested_lane": "all",
+            "errors": ["lane status source unavailable"],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+            ],
+            "health_counts": {"ok": 1},
+            "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+            "ok": False,
+            "partial": True,
+        }
+        conversation_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:01+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "lane-a healthy",
+                },
+                {
+                    "timestamp": "2026-01-01T00:00:02+00:00",
+                    "owner": "gemini",
+                    "lane_id": "lane-b",
+                    "event_type": "status",
+                    "content": "lane-b recovered",
+                },
+            ],
+            "sources": [
+                {"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1},
+                {"lane_id": "lane-b", "ok": True, "error": "", "event_count": 1},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        self.assertEqual(enriched["recovered_lane_count"], 1)
+        self.assertEqual(enriched["recovered_lanes"], ["lane-b"])
+        self.assertEqual(enriched["total_count"], 2)
+        lane_b = next(item for item in enriched["lanes"] if item["id"] == "lane-b")
+        self.assertEqual(lane_b["owner"], "gemini")
+        self.assertTrue(lane_b["conversation_lane_fallback"])
+        self.assertIn(
+            "Lane status missing for 'lane-b'; using conversation-derived fallback.",
+            enriched["errors"],
+        )
+        self.assertTrue(enriched["partial"])
+        self.assertFalse(enriched["ok"])
+
+    def test_augment_lane_payload_with_conversation_rollup_does_not_recover_when_status_is_healthy(self):
+        lane_payload = {
+            "requested_lane": "all",
+            "errors": [],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+            ],
+            "health_counts": {"ok": 1},
+            "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+            "ok": True,
+            "partial": False,
+        }
+        conversation_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:02+00:00",
+                    "owner": "gemini",
+                    "lane_id": "lane-b",
+                    "event_type": "status",
+                    "content": "historical event",
+                }
+            ],
+            "sources": [
+                {"lane_id": "lane-b", "ok": True, "error": "", "event_count": 1},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        self.assertEqual(enriched["recovered_lane_count"], 0)
+        self.assertEqual(enriched["recovered_lanes"], [])
+        self.assertEqual(enriched["total_count"], 1)
+        self.assertEqual([item["id"] for item in enriched["lanes"]], ["lane-a"])
+
     def test_safe_lane_action_returns_structured_error(self):
         cfg = mock.Mock()
         payload = dashboard._safe_lane_action(cfg, action="unknown", lane_id="lane-a")

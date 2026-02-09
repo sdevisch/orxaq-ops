@@ -665,8 +665,14 @@ def _augment_lane_status_with_conversations(
     if requested_lane != "all":
         if requested_lane in rollup and requested_lane not in seen_lanes:
             synthesize_lane_ids.append(requested_lane)
-    elif not enriched_lanes:
-        synthesize_lane_ids.extend(sorted(lane_id for lane_id in rollup if lane_id not in seen_lanes))
+    else:
+        lane_source_degraded = (
+            not bool(lane_payload.get("ok", True))
+            or bool(lane_payload.get("partial", False))
+            or bool(lane_payload.get("errors", []))
+        )
+        if lane_source_degraded:
+            synthesize_lane_ids.extend(sorted(lane_id for lane_id in rollup if lane_id not in seen_lanes))
 
     for lane_id in synthesize_lane_ids:
         lane_rollup = rollup.get(lane_id, {})
