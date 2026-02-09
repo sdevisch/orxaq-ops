@@ -23,13 +23,20 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `skills/orxaq-autonomy-agent/SKILL.md` - reusable skill definition for autonomy workflows.
 - `config/skill_protocol.json` - reusable autonomy protocol contract.
 - `config/mcp_context.example.json` - sample MCP-style context payload.
+- `config/mcp_context.routellm_npv.example.json` - RouteLLM + NPV context template.
+- `config/routellm_policy.local-fast.json` - local fast-routing policy template (RouteLLM).
+- `config/routellm_policy.local-strong.json` - local strong-routing policy template (RouteLLM).
 - `config/prompts/codex_impl_prompt.md` - baseline implementation prompt for Codex.
+- `config/prompts/codex_routellm_npv_prompt.md` - RouteLLM + NPV autonomy prompt.
 - `config/prompts/gemini_test_prompt.md` - baseline independent-test prompt for Gemini.
 - `config/prompts/claude_review_prompt.md` - baseline governance/review prompt for Claude.
 - `config/lanes.json` - parallel lane plan for Codex/Gemini/Claude with non-overlapping scopes.
+- `config/lanes/codex_routellm_npv_tasks.json` - RouteLLM + NPV multi-agent task queue.
+- `config/objectives/codex_routellm_npv.md` - RouteLLM + NPV objective.
 - `AGENTS.md` - canonical collaboration standard for hybrid human + IDE + API agent workflows.
 - `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
 - `docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md` - end-to-end VS Code + multi-agent operating guide.
+- `docs/ROUTELLM_NPV_AUTONOMY_PLAN.md` - rollout plan for routing economics and capacity scaling.
 - `docs/release-pypi.md` - trusted-publishing release runbook.
 
 Legacy shell scripts remain for compatibility, but `make` now uses the package CLI.
@@ -62,6 +69,8 @@ Optional reusable context controls:
 - `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
 - `ORXAQ_AUTONOMY_CODEX_PROMPT_FILE` (default `config/prompts/codex_impl_prompt.md`)
 - `ORXAQ_AUTONOMY_GEMINI_PROMPT_FILE` (default `config/prompts/gemini_test_prompt.md`)
+- `ORXAQ_AUTONOMY_TASKS_FILE` (default `config/tasks.json`)
+- `ORXAQ_AUTONOMY_OBJECTIVE_FILE` (default `config/objective.md`)
 - `ORXAQ_AUTONOMY_CODEX_CMD` (default `codex`; can be absolute path)
 - `ORXAQ_AUTONOMY_GEMINI_CMD` (default `gemini`; can be absolute path)
 - `ORXAQ_AUTONOMY_CLAUDE_CMD` (default `claude`; can be absolute path)
@@ -70,6 +79,11 @@ Optional reusable context controls:
 - `ORXAQ_AUTONOMY_METRICS_SUMMARY_FILE` (default `artifacts/autonomy/response_metrics_summary.json`)
 - `ORXAQ_AUTONOMY_PRICING_FILE` (default `config/pricing.json`)
 - `ORXAQ_AUTONOMY_LANES_FILE` (default `config/lanes.json`)
+
+Lane specs in `config/lanes.json` can override command/model selection per lane:
+- `codex_cmd`, `gemini_cmd`, `claude_cmd`
+- `codex_model`, `gemini_model`, `claude_model`
+- `gemini_fallback_models`
 
 Configure per-model rates in `/Users/sdevisch/dev/orxaq-ops/config/pricing.json` to enable exact response cost tracking.
 
@@ -95,6 +109,12 @@ make lanes-status
 make lanes-start
 make lanes-ensure
 make lanes-stop
+make routellm-preflight
+make routellm-bootstrap
+make routellm-start
+make routellm-status
+make routellm-full-auto-dry-run
+make routellm-full-auto-run
 make stop
 make install-keepalive
 make keepalive-status
@@ -149,6 +169,27 @@ make bootstrap
 - install keepalive,
 - open VS Code,
 - write an AI startup packet to `artifacts/autonomy/startup_packet.md`.
+
+## RouteLLM + NPV Profile Quick Start
+
+Use this profile when cost-aware routing and NPV-based capacity allocation should be the active objective.
+
+```bash
+make routellm-preflight
+make routellm-bootstrap
+make routellm-start
+make routellm-status
+```
+
+For isolated Codex full-autonomy execution:
+
+```bash
+make routellm-full-auto-discover
+make routellm-full-auto-prepare
+make routellm-full-auto-dry-run
+# then:
+make routellm-full-auto-run
+```
 
 ## Monitoring
 

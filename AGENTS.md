@@ -10,7 +10,7 @@ This repository follows the Orxaq Agent Standard v1.
 - Prefer deterministic, composable implementations; avoid ad-hoc process coupling.
 - Never use destructive git commands (`git reset --hard`, `git checkout --`, `git clean -fd`) unless explicitly requested by the user.
 - Never revert, discard, or overwrite unrelated user changes.
-- Use a dedicated `codex/*` branch with a unique suffix for new scoped work, or continue the active `codex/*` branch when iterating.
+- Always start each new scoped prompt/session on a new dedicated `codex/*` branch with a unique suffix.
 - Make small atomic commits with verb-first messages under 72 characters.
 - Push after each validated logical unit when remote access is available.
 - If push/auth/network is blocked, continue locally and report the exact blocker.
@@ -18,7 +18,7 @@ This repository follows the Orxaq Agent Standard v1.
 ## Git Workflow Standard
 
 1. Check baseline state: `git status -sb`.
-2. Create or switch to the correct `codex/*` branch.
+2. Create a new `codex/*` branch with a unique suffix for the scoped task.
 3. Implement scoped changes with tests/docs as needed.
 4. Run required validation gates.
 5. Commit atomic changes and push.

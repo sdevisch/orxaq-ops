@@ -1093,24 +1093,119 @@ def find_git_lock_files(repo: Path) -> list[Path]:
     return lock_files
 
 
-def heal_stale_git_locks(repo: Path, stale_after_sec: int) -> list[Path]:
-    removed: list[Path] = []
-    lock_files = find_git_lock_files(repo)
-    if not lock_files:
-        return removed
-    if has_running_git_processes():
-        return removed
-    now = time.time()
-    for lock_path in lock_files:
+def _is_git_process_running(path: Path) -> bool:
+    """Safely check if git processes exist related to the lock file."""
+    try:
+        result = subprocess.run(
+            ["ps", "-ax", "-o", "pid,command"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        return any(
+            "git" in line and str(path.parent.parent) in line
+            for line in result.stdout.splitlines()
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # If checking processes fails, assume a process might be running
+        return True
+
+def heal_stale_git_locks(repo: Path, stale_after_sec: int = 300, max_attempts: int = 3) -> list[Path]:
+    """
+    Robust git lock recovery mechanism with enhanced diagnostic capabilities.
+
+    Args:
+        repo (Path): Repository root path
+        stale_after_sec (int): Time threshold for considering locks stale
+        max_attempts (int): Maximum recovery attempts
+
+    Returns:
+        list[Path]: Successfully removed lock files
+    """
+    if not repo or not repo.exists():
+        _print(f"⚠️ Repository path does not exist: {repo}")
+        return []
+
+    removed_locks: list[Path] = []
+    current_attempts = 0
+    stale_lock_diagnostic_log: list[str] = []
+
+    def _diagnose_stale_lock(lock: Path, age_sec: float) -> None:
+        """
+        Enhanced diagnostics for stale git locks.
+        Provides context about processes and potential causes.
+        """
         try:
-            age = now - lock_path.stat().st_mtime
-        except FileNotFoundError:
-            continue
-        if age < stale_after_sec:
-            continue
-        lock_path.unlink(missing_ok=True)
-        removed.append(lock_path)
-    return removed
+            # Capture system context for the lock
+            ps_result = subprocess.run(
+                ["ps", "-ax", "-o", "pid,command"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            related_processes = [
+                line for line in ps_result.stdout.splitlines()
+                if "git" in line and str(lock.parent.parent) in line
+            ]
+
+            diagnostic_message = (
+                f"Stale git lock diagnostic:\n"
+                f"- Lock Path: {lock}\n"
+                f"- Age: {age_sec:.2f} seconds\n"
+                f"- Related Git Processes: {len(related_processes)}\n"
+                f"Process Details:\n" +
+                "\n".join(related_processes[:5])  # Limit to 5 processes
+            )
+            stale_lock_diagnostic_log.append(diagnostic_message)
+            _print(diagnostic_message)
+        except Exception as e:
+            _print(f"❌ Error during lock diagnosis: {e}")
+
+    while current_attempts < max_attempts:
+        locks = find_git_lock_files(repo)
+
+        if not locks:
+            break
+
+        for lock in locks:
+            try:
+                # Check file age and process running status
+                age_sec = time.time() - lock.stat().st_mtime
+                is_process_running = _is_git_process_running(lock)
+
+                if age_sec > stale_after_sec:
+                    if is_process_running:
+                        # Log diagnostic information for running processes
+                        _diagnose_stale_lock(lock, age_sec)
+
+                    try:
+                        # Safe removal with pre-check and exception handling
+                        lock.unlink(missing_ok=True)
+                        removed_locks.append(lock)
+                        _print(f"🔒 Removed stale git lock: {lock}")
+                    except PermissionError:
+                        _print(f"⚠️ Could not remove lock {lock}. Permission denied.")
+            except FileNotFoundError:
+                # Lock might have been removed concurrently
+                continue
+            except Exception as e:
+                _print(f"❌ Unexpected error during lock processing: {e}")
+
+        if removed_locks:
+            # Wait briefly to allow system to stabilize
+            time.sleep(min(5, current_attempts * 2))
+
+        current_attempts += 1
+
+    if current_attempts == max_attempts and locks:
+        _print(f"⚠️ Maximum lock healing attempts reached. Unresolved locks: {locks}")
+        # Augment print with diagnostic log if available
+        if stale_lock_diagnostic_log:
+            _print("🔍 Additional Diagnostic Information:")
+            for diag_entry in stale_lock_diagnostic_log:
+                _print(diag_entry)
+
+    return removed_locks
 
 
 def get_repo_filetype_context(repo: Path, limit: int = 8) -> str:
@@ -2824,13 +2919,64 @@ def summarize_run(
     _write_text_atomic(report_path, "\n".join(lines).strip() + "\n")
 
 
-def is_retryable_error(text: str) -> bool:
-    lowered = text.lower()
-    if not lowered.strip():
+def is_retryable_error(text: str, max_retry_attempts: int = 3) -> bool:
+    """
+    Enhanced error detection with multi-category error classification.
+
+    Args:
+        text (str): Error text to analyze
+        max_retry_attempts (int): Maximum number of retry attempts before considering an error non-retryable
+
+    Returns:
+        bool: Whether the error is considered retryable
+    """
+    if not text:
         return False
-    if re.search(r"\b(5\d\d|429)\b", lowered):
+
+    # Convert to lowercase for consistent matching
+    lowered = text.lower().strip()
+
+    # Network and transient errors
+    network_errors = [
+        "timeout", "timed out", "connection reset", "connection aborted",
+        "network error", "dns resolution failed", "ssl/tls handshake failed"
+    ]
+
+    # Rate limiting and service capacity errors
+    rate_limit_errors = [
+        "rate limit", "429", "too many requests",
+        "request quota exceeded", "service unavailable"
+    ]
+
+    # Infrastructure and system errors
+    infrastructure_errors = [
+        "temporary backend failure", "internal server error",
+        "load balancer error", "provider capacity limit"
+    ]
+
+    # Git-related lock errors
+    git_lock_errors = [
+        "unable to create .git/index.lock",
+        "another git process seems to be running",
+        "git lock already in use",
+        "cannot run git command while another git command is in progress"
+    ]
+
+    # Regex patterns for numeric status codes
+    http_error_pattern = re.compile(r"\b(5\d\d|429)\b")
+
+    # Perform checks
+    if http_error_pattern.search(lowered):
         return True
-    return any(pattern in lowered for pattern in RETRYABLE_ERROR_PATTERNS)
+
+    if any(pattern in lowered for pattern in
+           network_errors +
+           rate_limit_errors +
+           infrastructure_errors +
+           git_lock_errors):
+        return True
+
+    return False
 
 
 def schedule_retry(
