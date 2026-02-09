@@ -1657,6 +1657,28 @@ def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str,
     return rollup
 
 
+def _lane_error_mentions_unknown_lane(error: str, lane_id: str) -> bool:
+    message = str(error).strip().lower()
+    lane = lane_id.strip().lower()
+    if not message or not lane:
+        return False
+    if not message.startswith("unknown lane id "):
+        return False
+    return lane in message
+
+
+def _lane_error_mentions_unavailable_lane(error: str, lane_id: str) -> bool:
+    message = str(error).strip().lower()
+    lane = lane_id.strip().lower()
+    if not message or not lane:
+        return False
+    if not message.startswith("requested lane "):
+        return False
+    if "is unavailable because lane status sources failed." not in message:
+        return False
+    return lane in message
+
+
 def _augment_lane_payload_with_conversation_rollup(
     lane_payload: dict[str, Any],
     conversation_payload: dict[str, Any],
@@ -1748,10 +1770,20 @@ def _augment_lane_payload_with_conversation_rollup(
 
     conversation_errors = _normalize_error_messages(conversation_payload.get("errors", []))
     combined_lane_errors = _normalize_error_messages(lane_payload.get("errors", []))
-    for lane_id in recovered_lanes:
-        warning = f"Lane status missing for {lane_id!r}; using conversation-derived fallback."
-        if warning not in combined_lane_errors:
-            combined_lane_errors.append(warning)
+    if recovered_lanes:
+        combined_lane_errors = [
+            message
+            for message in combined_lane_errors
+            if not any(
+                _lane_error_mentions_unknown_lane(message, lane_id)
+                or _lane_error_mentions_unavailable_lane(message, lane_id)
+                for lane_id in recovered_lanes
+            )
+        ]
+        for lane_id in recovered_lanes:
+            warning = f"Lane status missing for {lane_id!r}; using conversation-derived fallback."
+            if warning not in combined_lane_errors:
+                combined_lane_errors.append(warning)
 
     health_counts, owner_counts = _lane_health_owner_counts(enriched_lanes)
     running_count = sum(1 for lane in enriched_lanes if bool(lane.get("running", False)))

@@ -663,6 +663,88 @@ class ManagerTests(unittest.TestCase):
                 snapshot["lanes"]["errors"],
             )
 
+    def test_monitor_snapshot_recovery_suppresses_requested_lane_errors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": False,
+                    "errors": [
+                        "lane status source unavailable",
+                        "Unknown lane id 'lane-b'. Update config/lanes.json.",
+                        "Requested lane 'lane-b' is unavailable because lane status sources failed.",
+                    ],
+                    "running_count": 0,
+                    "total_count": 0,
+                    "lanes": [],
+                    "health_counts": {},
+                    "owner_counts": {},
+                    "partial": True,
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 1,
+                    "events": [
+                        {
+                            "timestamp": "2026-01-01T00:45:00+00:00",
+                            "owner": "gemini",
+                            "lane_id": "lane-b",
+                            "event_type": "status",
+                            "content": "lane recovered from conversation stream",
+                        }
+                    ],
+                    "owner_counts": {"gemini": 1},
+                    "partial": True,
+                    "ok": False,
+                    "errors": ["primary conversation stream degraded"],
+                    "sources": [
+                        {
+                            "kind": "lane",
+                            "resolved_kind": "lane_events",
+                            "lane_id": "lane-b",
+                            "owner": "",
+                            "ok": True,
+                            "missing": True,
+                            "recoverable_missing": True,
+                            "fallback_used": True,
+                            "error": "",
+                            "event_count": 1,
+                        }
+                    ],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            lane_errors = snapshot["lanes"]["errors"]
+            self.assertEqual(snapshot["lanes"]["recovered_lane_count"], 1)
+            self.assertIn("lane status source unavailable", lane_errors)
+            self.assertIn(
+                "Lane status missing for 'lane-b'; using conversation-derived fallback.",
+                lane_errors,
+            )
+            self.assertNotIn("Unknown lane id 'lane-b'. Update config/lanes.json.", lane_errors)
+            self.assertNotIn(
+                "Requested lane 'lane-b' is unavailable because lane status sources failed.",
+                lane_errors,
+            )
+
     def test_monitor_snapshot_does_not_recover_lanes_when_lane_source_healthy(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
