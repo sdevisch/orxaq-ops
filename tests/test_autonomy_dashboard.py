@@ -303,6 +303,45 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(filtered["suppressed_source_count"], 1)
         self.assertEqual(filtered["suppressed_source_error_count"], 1)
 
+    def test_filter_conversation_payload_for_lane_suppresses_path_prefixed_lane_errors(self):
+        payload = {
+            "ok": False,
+            "partial": True,
+            "errors": ["/tmp/lanes/lane-b/conversations.ndjson: lane-b stream unavailable"],
+            "sources": [
+                {"lane_id": "", "kind": "primary", "ok": True, "error": "", "event_count": 2},
+                {
+                    "lane_id": "lane-a",
+                    "kind": "lane",
+                    "path": "/tmp/lanes/lane-a/conversations.ndjson",
+                    "resolved_path": "/tmp/lanes/lane-a/conversations.ndjson",
+                    "ok": True,
+                    "error": "",
+                    "event_count": 1,
+                },
+                {
+                    "lane_id": "lane-b",
+                    "kind": "lane",
+                    "path": "/tmp/lanes/lane-b/conversations.ndjson",
+                    "resolved_path": "/tmp/lanes/lane-b/conversations.ndjson",
+                    "ok": False,
+                    "error": "lane-b stream unavailable",
+                    "event_count": 0,
+                },
+            ],
+        }
+        filtered = dashboard._filter_conversation_payload_for_lane(payload, lane_id="lane-a")
+        self.assertTrue(filtered["ok"])
+        self.assertFalse(filtered["partial"])
+        self.assertEqual(filtered["errors"], [])
+        self.assertEqual(len(filtered["sources"]), 2)
+        self.assertEqual(filtered["suppressed_source_count"], 1)
+        self.assertIn(
+            "/tmp/lanes/lane-b/conversations.ndjson: lane-b stream unavailable",
+            filtered["suppressed_source_errors"],
+        )
+        self.assertEqual(filtered["suppressed_source_error_count"], 2)
+
     def test_apply_conversation_filters_matches_owner_and_lane(self):
         payload = {
             "events": [

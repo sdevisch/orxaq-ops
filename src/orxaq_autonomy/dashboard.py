@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
@@ -1704,18 +1705,38 @@ def _filter_conversation_payload_for_lane(
         for source in retained_sources
         if str(source.get("error", "")).strip()
     ]
-    suppressed_errors = [
+    suppressed_source_errors = [
         str(source.get("error", "")).strip()
         for source in suppressed_sources
         if str(source.get("error", "")).strip()
     ]
 
+    def _lane_error_matches_source(message: str, source: dict[str, Any]) -> bool:
+        normalized = message.strip().lower()
+        if not normalized:
+            return False
+        lane = str(source.get("lane_id", "")).strip().lower()
+        if lane and re.search(rf"(^|[^a-z0-9_-]){re.escape(lane)}([^a-z0-9_-]|$)", normalized):
+            return True
+        source_error = str(source.get("error", "")).strip().lower()
+        if source_error and source_error in normalized:
+            return True
+        for key in ("path", "resolved_path"):
+            source_path = str(source.get(key, "")).strip().lower()
+            if source_path and source_path in normalized:
+                return True
+        return False
+
+    suppressed_payload_errors: list[str] = []
     payload_errors = payload.get("errors", [])
     if not isinstance(payload_errors, list):
         payload_errors = []
     for entry in payload_errors:
         message = str(entry).strip()
-        if not message or message in suppressed_errors:
+        if not message:
+            continue
+        if any(_lane_error_matches_source(message, source) for source in suppressed_sources):
+            suppressed_payload_errors.append(message)
             continue
         if message not in retained_errors:
             retained_errors.append(message)
@@ -1729,8 +1750,12 @@ def _filter_conversation_payload_for_lane(
     filtered["partial"] = partial
     filtered["suppressed_sources"] = suppressed_sources
     filtered["suppressed_source_count"] = len(suppressed_sources)
-    filtered["suppressed_source_errors"] = suppressed_errors
-    filtered["suppressed_source_error_count"] = len(suppressed_errors)
+    merged_suppressed_errors: list[str] = []
+    for message in [*suppressed_source_errors, *suppressed_payload_errors]:
+        if message and message not in merged_suppressed_errors:
+            merged_suppressed_errors.append(message)
+    filtered["suppressed_source_errors"] = merged_suppressed_errors
+    filtered["suppressed_source_error_count"] = len(merged_suppressed_errors)
     return filtered
 
 

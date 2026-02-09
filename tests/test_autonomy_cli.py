@@ -362,6 +362,67 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["suppressed_source_error_count"], 1)
             self.assertEqual(len(data["sources"]), 2)
 
+    def test_conversations_command_suppresses_path_prefixed_lane_source_failures(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            payload = {
+                "total_events": 2,
+                "events": [
+                    {"owner": "codex", "lane_id": "lane-a", "event_type": "status", "content": "alpha"},
+                    {"owner": "gemini", "lane_id": "lane-b", "event_type": "status", "content": "beta"},
+                ],
+                "owner_counts": {"codex": 1, "gemini": 1},
+                "sources": [
+                    {
+                        "lane_id": "",
+                        "kind": "primary",
+                        "path": "/tmp/main/conversations.ndjson",
+                        "resolved_path": "/tmp/main/conversations.ndjson",
+                        "ok": True,
+                        "error": "",
+                        "event_count": 2,
+                    },
+                    {
+                        "lane_id": "lane-a",
+                        "kind": "lane",
+                        "path": "/tmp/lanes/lane-a/conversations.ndjson",
+                        "resolved_path": "/tmp/lanes/lane-a/conversations.ndjson",
+                        "ok": True,
+                        "error": "",
+                        "event_count": 1,
+                    },
+                    {
+                        "lane_id": "lane-b",
+                        "kind": "lane",
+                        "path": "/tmp/lanes/lane-b/conversations.ndjson",
+                        "resolved_path": "/tmp/lanes/lane-b/conversations.ndjson",
+                        "ok": False,
+                        "error": "lane-b stream unavailable",
+                        "event_count": 0,
+                    },
+                ],
+                "partial": True,
+                "ok": False,
+                "errors": ["/tmp/lanes/lane-b/conversations.ndjson: lane-b stream unavailable"],
+            }
+            with mock.patch("orxaq_autonomy.cli.conversations_snapshot", return_value=payload):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "conversations", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertTrue(data["ok"])
+            self.assertFalse(data["partial"])
+            self.assertEqual(data["total_events"], 1)
+            self.assertEqual(data["errors"], [])
+            self.assertIn(
+                "/tmp/lanes/lane-b/conversations.ndjson: lane-b stream unavailable",
+                data["suppressed_source_errors"],
+            )
+            self.assertEqual(data["suppressed_source_error_count"], 2)
+            self.assertEqual(len(data["sources"]), 2)
+
     def test_lane_inspect_command_returns_lane_and_filtered_conversations(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
