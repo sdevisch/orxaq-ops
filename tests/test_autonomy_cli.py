@@ -539,6 +539,49 @@ class CliTests(unittest.TestCase):
             self.assertTrue(payload["lane_errors"])
             self.assertIn("lane source unavailable", payload["lane_errors"][0])
 
+    def test_lane_inspect_uses_lane_plan_fallback_owner_when_lane_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root),
+                                "test_repo": str(root),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                side_effect=RuntimeError("lane source unavailable"),
+            ), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value={"total_events": 0, "events": [], "owner_counts": {}, "ok": True, "partial": False},
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertTrue(payload["partial"])
+            self.assertEqual(payload["lane"]["id"], "lane-a")
+            self.assertEqual(payload["lane"]["owner"], "codex")
+            self.assertEqual(payload["lane"]["health"], "unknown")
+            self.assertTrue(payload["lane_errors"])
+            self.assertIn("lane source unavailable", payload["lane_errors"][0])
+
     def test_lanes_start_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -691,6 +734,32 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["errors"], [])
             self.assertEqual(data["suppressed_errors"], ["lane-b: heartbeat stale"])
             self.assertEqual(data["lanes"][0]["id"], "lane-a")
+
+    def test_lanes_status_with_lane_filter_keeps_global_errors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "ok": False,
+                    "partial": True,
+                    "errors": ["lane status source unavailable"],
+                    "lanes": [
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"},
+                    ],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertFalse(data["ok"])
+            self.assertTrue(data["partial"])
+            self.assertEqual(data["suppressed_errors"], [])
+            self.assertIn("lane status source unavailable", data["errors"][0])
 
     def test_lane_status_alias_command_with_lane_filter(self):
         with tempfile.TemporaryDirectory() as td:

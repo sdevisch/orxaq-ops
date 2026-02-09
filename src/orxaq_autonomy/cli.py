@@ -22,6 +22,7 @@ from .manager import (
     install_keepalive,
     lane_status_snapshot,
     keepalive_status,
+    lane_status_fallback_snapshot,
     load_lane_specs,
     preflight,
     reset_state,
@@ -215,13 +216,19 @@ def _safe_lane_status_snapshot(cfg: ManagerConfig) -> dict[str, Any]:
     try:
         return lane_status_snapshot(cfg)
     except Exception as err:
-        return _lane_status_error_payload(cfg, error=str(err))
+        message = str(err)
+        try:
+            return lane_status_fallback_snapshot(cfg, error=message)
+        except Exception:
+            return _lane_status_error_payload(cfg, error=message)
 
 
 def _lane_error_matches_requested_lane(error: str, requested_lane: str) -> bool:
     message = str(error).strip()
     lane = requested_lane.strip().lower()
     if not message or not lane:
+        return True
+    if ":" not in message:
         return True
     prefix = message.split(":", 1)[0].strip().lower()
     return prefix == lane

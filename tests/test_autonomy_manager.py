@@ -401,6 +401,68 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(snapshot["lanes"]["partial"])
             self.assertIn("lane source unavailable", snapshot["lanes"]["errors"][0])
 
+    def test_monitor_snapshot_uses_lane_plan_fallback_when_lane_status_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                side_effect=RuntimeError("lane source unavailable"),
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 0,
+                    "events": [],
+                    "owner_counts": {},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(snapshot["lanes"]["total_count"], 1)
+            self.assertEqual(snapshot["lanes"]["lanes"][0]["id"], "lane-a")
+            self.assertEqual(snapshot["lanes"]["lanes"][0]["owner"], "codex")
+            self.assertEqual(snapshot["lanes"]["lanes"][0]["health"], "unknown")
+            self.assertEqual(snapshot["lanes"]["owner_counts"]["codex"]["total"], 1)
+            self.assertFalse(snapshot["lanes"]["ok"])
+            self.assertTrue(snapshot["lanes"]["partial"])
+
     def test_monitor_snapshot_retains_output_when_conversation_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -2074,6 +2136,54 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["health_counts"]["stale"], 1)
             self.assertEqual(snapshot["owner_counts"]["codex"]["total"], 1)
             self.assertEqual(snapshot["owner_counts"]["codex"]["degraded"], 1)
+
+    def test_lane_status_fallback_snapshot_preserves_lane_owner_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                            {
+                                "id": "lane-b",
+                                "enabled": True,
+                                "owner": "gemini",
+                                "impl_repo": str(root / "test_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            snapshot = manager.lane_status_fallback_snapshot(cfg, error="lane source unavailable")
+            self.assertFalse(snapshot["ok"])
+            self.assertTrue(snapshot["partial"])
+            self.assertEqual(snapshot["total_count"], 2)
+            lane_ids = {lane["id"] for lane in snapshot["lanes"]}
+            self.assertEqual(lane_ids, {"lane-a", "lane-b"})
+            lane_a = next(lane for lane in snapshot["lanes"] if lane["id"] == "lane-a")
+            lane_b = next(lane for lane in snapshot["lanes"] if lane["id"] == "lane-b")
+            self.assertEqual(lane_a["owner"], "codex")
+            self.assertEqual(lane_b["owner"], "gemini")
+            self.assertEqual(lane_a["health"], "unknown")
+            self.assertEqual(lane_b["health"], "unknown")
+            self.assertEqual(snapshot["owner_counts"]["codex"]["total"], 1)
+            self.assertEqual(snapshot["owner_counts"]["gemini"]["total"], 1)
+            self.assertIn("lane source unavailable", snapshot["errors"][0])
 
     def test_lane_status_snapshot_keeps_valid_lane_when_another_lane_is_invalid(self):
         with tempfile.TemporaryDirectory() as td:

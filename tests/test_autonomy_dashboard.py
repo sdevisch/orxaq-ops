@@ -1,5 +1,7 @@
 import pathlib
 import sys
+import json
+import tempfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 import unittest
@@ -77,6 +79,51 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(payload["owner_counts"], {})
         self.assertIn("lane parse failed", payload["errors"][0])
 
+    def test_safe_lane_status_snapshot_uses_lane_plan_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "config").mkdir(parents=True, exist_ok=True)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "artifacts" / "autonomy").mkdir(parents=True, exist_ok=True)
+            (root / "impl_repo").mkdir(parents=True, exist_ok=True)
+            (root / "test_repo").mkdir(parents=True, exist_ok=True)
+            (root / "config" / "tasks.json").write_text("[]\n", encoding="utf-8")
+            (root / "config" / "objective.md").write_text("objective\n", encoding="utf-8")
+            (root / "config" / "codex_result.schema.json").write_text("{}\n", encoding="utf-8")
+            (root / "config" / "skill_protocol.json").write_text("{}\n", encoding="utf-8")
+            (root / ".env.autonomy").write_text("OPENAI_API_KEY=test\nGEMINI_API_KEY=test\n", encoding="utf-8")
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = dashboard.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.dashboard.lane_status_snapshot",
+                side_effect=RuntimeError("lane parse failed"),
+            ):
+                payload = dashboard._safe_lane_status_snapshot(cfg)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["partial"])
+        self.assertEqual(payload["total_count"], 1)
+        self.assertEqual(payload["lanes"][0]["id"], "lane-a")
+        self.assertEqual(payload["lanes"][0]["owner"], "codex")
+        self.assertEqual(payload["lanes"][0]["health"], "unknown")
+
     def test_filter_lane_status_payload_filters_selected_lane(self):
         payload = {
             "lanes_file": "/tmp/lanes.json",
@@ -132,6 +179,22 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(filtered["partial"])
         self.assertTrue(filtered["errors"])
         self.assertIn("Unknown lane id", filtered["errors"][0])
+
+    def test_filter_lane_status_payload_keeps_global_errors_for_requested_lane(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": False,
+            "partial": True,
+            "errors": ["lane status source unavailable"],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="lane-a")
+        self.assertFalse(filtered["ok"])
+        self.assertTrue(filtered["partial"])
+        self.assertEqual(filtered["suppressed_errors"], [])
+        self.assertIn("lane status source unavailable", filtered["errors"][0])
 
     def test_safe_conversations_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()

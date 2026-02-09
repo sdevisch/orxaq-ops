@@ -18,6 +18,7 @@ from .manager import (
     ensure_lanes_background,
     health_snapshot,
     lane_status_snapshot,
+    lane_status_fallback_snapshot,
     monitor_snapshot,
     start_lanes_background,
     status_snapshot,
@@ -1651,6 +1652,8 @@ def _lane_error_matches_requested_lane(error: str, requested_lane: str) -> bool:
     lane = requested_lane.strip().lower()
     if not message or not lane:
         return True
+    if ":" not in message:
+        return True
     prefix = message.split(":", 1)[0].strip().lower()
     return prefix == lane
 
@@ -1803,18 +1806,21 @@ def _safe_lane_status_snapshot(config: ManagerConfig) -> dict:
         return lane_status_snapshot(config)
     except Exception as err:
         message = str(err)
-        return {
-            "timestamp": "",
-            "lanes_file": str(config.lanes_file),
-            "running_count": 0,
-            "total_count": 0,
-            "lanes": [],
-            "health_counts": {},
-            "owner_counts": {},
-            "partial": True,
-            "ok": False,
-            "errors": [message],
-        }
+        try:
+            return lane_status_fallback_snapshot(config, error=message)
+        except Exception:
+            return {
+                "timestamp": "",
+                "lanes_file": str(config.lanes_file),
+                "running_count": 0,
+                "total_count": 0,
+                "lanes": [],
+                "health_counts": {},
+                "owner_counts": {},
+                "partial": True,
+                "ok": False,
+                "errors": [message],
+            }
 
 
 def _safe_conversations_snapshot(

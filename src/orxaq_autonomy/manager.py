@@ -1494,9 +1494,12 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     try:
         lanes = lane_status_snapshot(config)
     except Exception as err:
-        lanes["errors"] = [str(err)]
-        lanes["error"] = str(err)
-        lanes["partial"] = True
+        try:
+            lanes = lane_status_fallback_snapshot(config, error=str(err))
+        except Exception as fallback_err:
+            lanes["errors"] = [str(err), f"lane_status_fallback: {fallback_err}"]
+            lanes["error"] = str(err)
+            lanes["partial"] = True
     _mark_source("lanes", bool(lanes.get("ok", False)), "; ".join(lanes.get("errors", [])))
     progress = _combined_progress_snapshot(config, lanes)
 
@@ -2235,6 +2238,163 @@ def _lane_health_state(
     if heartbeat_age_sec == -1:
         return "unknown"
     return "ok"
+
+
+def _lane_health_owner_counts(snapshots: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    health_counts: dict[str, int] = {}
+    owner_counts: dict[str, dict[str, int]] = {}
+    healthy_states = {"ok", "paused", "idle"}
+    for lane in snapshots:
+        health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
+        health_counts[health] = health_counts.get(health, 0) + 1
+        owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+        owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
+        owner_entry["total"] += 1
+        if bool(lane.get("running", False)):
+            owner_entry["running"] += 1
+        if health in healthy_states:
+            owner_entry["healthy"] += 1
+        else:
+            owner_entry["degraded"] += 1
+    return health_counts, owner_counts
+
+
+def _lane_unavailable_snapshot(
+    config: ManagerConfig,
+    lane: dict[str, Any],
+    *,
+    error: str,
+    health: str = "error",
+    source: str = "lane_runtime",
+) -> dict[str, Any]:
+    lane_id = str(lane.get("id", "lane")).strip() or "lane"
+    runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
+    log_path = _lane_log_file(config, lane_id)
+    pid_path = _lane_pid_file(config, lane_id)
+    meta_path = _lane_meta_file(config, lane_id)
+    events_path = _lane_events_file(config, lane_id)
+    pause_path = _lane_pause_file(config, lane_id)
+    heartbeat_file = Path(lane.get("heartbeat_file", runtime_dir / "heartbeat.json"))
+    return {
+        "id": lane_id,
+        "enabled": bool(lane.get("enabled", False)),
+        "owner": str(lane.get("owner", "unknown")).strip() or "unknown",
+        "description": str(lane.get("description", "")).strip(),
+        "running": False,
+        "pid": None,
+        "tasks_file": str(lane.get("tasks_file", "")),
+        "dependency_state_file": str(lane.get("dependency_state_file", "")),
+        "handoff_dir": str(lane.get("handoff_dir", "")),
+        "objective_file": str(lane.get("objective_file", "")),
+        "impl_repo": str(lane.get("impl_repo", "")),
+        "test_repo": str(lane.get("test_repo", "")),
+        "metrics_file": str(lane.get("metrics_file", "")),
+        "metrics_summary_file": str(lane.get("metrics_summary_file", "")),
+        "pricing_file": str(lane.get("pricing_file", "")),
+        "exclusive_paths": [str(path) for path in lane.get("exclusive_paths", []) if str(path)],
+        "latest_log_line": "",
+        "log_file": str(log_path),
+        "pid_file": str(pid_path),
+        "meta_file": str(meta_path),
+        "events_file": str(events_path),
+        "pause_file": str(pause_path),
+        "heartbeat_file": str(heartbeat_file),
+        "heartbeat_age_sec": -1,
+        "heartbeat_stale": False,
+        "paused": pause_path.exists(),
+        "build_id": "",
+        "expected_build_id": _lane_build_id(config, lane),
+        "build_current": False,
+        "state_counts": {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 1},
+        "task_total": 0,
+        "state_entries": 0,
+        "missing_state_entries": 0,
+        "extra_state_entries": 0,
+        "last_event": {},
+        "health": str(health).strip() or "error",
+        "error": str(error).strip() or "lane status unavailable",
+        "source": source,
+        "meta": {},
+    }
+
+
+def lane_status_fallback_snapshot(config: ManagerConfig, *, error: str) -> dict[str, Any]:
+    lanes, load_errors = _load_lane_specs_resilient(config)
+    message = str(error).strip() or "lane status unavailable"
+    snapshots = [
+        _lane_unavailable_snapshot(
+            config,
+            lane,
+            error=message,
+            health="unknown",
+            source="lane_status_fallback",
+        )
+        for lane in lanes
+    ]
+    errors: list[str] = [message]
+
+    for entry in _lane_load_error_entries(load_errors):
+        lane_id = str(entry.get("id", "lane_config")).strip() or "lane_config"
+        runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
+        lane_error = str(entry.get("error", "lane configuration error")).strip() or "lane configuration error"
+        snapshots.append(
+            {
+                "id": lane_id,
+                "enabled": False,
+                "owner": "unknown",
+                "description": "lane configuration load error",
+                "running": False,
+                "pid": None,
+                "tasks_file": "",
+                "dependency_state_file": "",
+                "handoff_dir": "",
+                "objective_file": "",
+                "impl_repo": "",
+                "test_repo": "",
+                "metrics_file": "",
+                "metrics_summary_file": "",
+                "pricing_file": "",
+                "exclusive_paths": [],
+                "latest_log_line": "",
+                "log_file": str(runtime_dir / "runner.log"),
+                "pid_file": str(runtime_dir / "lane.pid"),
+                "meta_file": str(runtime_dir / "lane.json"),
+                "events_file": str(runtime_dir / "events.ndjson"),
+                "pause_file": str(runtime_dir / "paused.flag"),
+                "heartbeat_file": str(runtime_dir / "heartbeat.json"),
+                "heartbeat_age_sec": -1,
+                "heartbeat_stale": False,
+                "paused": False,
+                "build_id": "",
+                "expected_build_id": "",
+                "build_current": False,
+                "state_counts": {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 1},
+                "task_total": 0,
+                "state_entries": 0,
+                "missing_state_entries": 0,
+                "extra_state_entries": 0,
+                "last_event": {},
+                "health": "error",
+                "error": lane_error,
+                "source": "lane_config",
+                "meta": {},
+            }
+        )
+        errors.append(lane_error)
+
+    health_counts, owner_counts = _lane_health_owner_counts(snapshots)
+    return {
+        "timestamp": _now_iso(),
+        "lanes_file": str(config.lanes_file),
+        "running_count": 0,
+        "total_count": len(snapshots),
+        "lanes": snapshots,
+        "health_counts": health_counts,
+        "owner_counts": owner_counts,
+        "partial": True,
+        "ok": False,
+        "errors": errors,
+    }
 
 
 def lane_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
