@@ -1,1 +1,13 @@
+# Default owner
 * @sdevisch
+
+# Path lanes to reduce review overlap between parallel agents.
+/src/ @sdevisch
+/tests/ @sdevisch
+/scripts/ @sdevisch
+/config/ @sdevisch
+/docs/ @sdevisch
+
+# Lock down collaboration and CI policy files.
+/.github/CODEOWNERS @sdevisch
+/.github/workflows/ @sdevisch
