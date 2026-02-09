@@ -74,6 +74,43 @@ This performs workspace generation, preflight, supervisor start, keepalive insta
 If `orxaq-dual-agent.code-workspace` already exists, bootstrap reuses it.
 If Codex/Gemini CLI or auth is missing, bootstrap returns structured JSON with remediation steps (no Python traceback).
 
+## RouteLLM + NPV Full-Autonomy Profile
+
+Use this profile when routing-economics work should run instead of the default backlog.
+
+Primary files:
+- `docs/ROUTELLM_NPV_AUTONOMY_PLAN.md`
+- `config/lanes/codex_routellm_npv_tasks.json`
+- `config/objectives/codex_routellm_npv.md`
+- `config/prompts/codex_routellm_npv_prompt.md`
+- `config/mcp_context.routellm_npv.example.json`
+
+Supervisor launch:
+
+```bash
+make routellm-preflight
+make routellm-bootstrap
+make routellm-start
+make routellm-status
+make routellm-ensure
+```
+
+Isolated Codex worktree launch:
+
+```bash
+make routellm-full-auto-discover
+make routellm-full-auto-prepare
+make routellm-full-auto-dry-run
+# then:
+make routellm-full-auto-run
+```
+
+Stop the profile:
+
+```bash
+make routellm-stop
+```
+
 1. Preflight (auth, binaries, repo checks).
 
 ```bash

@@ -65,6 +65,289 @@
         "SECURITY.md",
         "GOVERNANCE.md"
       ]
+    },
+    {
+      "id": "codex-rpa-security-fixes",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Fix RPA adversarial security failures in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_rpa_security_fixes_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_rpa_security_fixes.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_rpa",
+        "tests/unit/test_rpa*",
+        "docs/RPA*"
+      ]
+    },
+    {
+      "id": "codex-rln-merge-fixes",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Fix RLN merge and semantic compaction failures in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_rln_merge_fixes_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_rln_merge_fixes.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_rlm",
+        "tests/unit/test_rln*",
+        "benchmarks/"
+      ]
+    },
+    {
+      "id": "codex-orchestrator-guard-fixes",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Fix orchestrator adversarial guard mismatches in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_orchestrator_guard_fixes_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_orchestrator_guard_fixes.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_mesh/src/orchestrator.py",
+        "tests/unit/test_orchestrator*"
+      ]
+    },
+    {
+      "id": "codex-scm-intervention-fixes",
+      "enabled": true,
+      "owner": "codex",
+      "description": "Fix SCM constructor/intervention robustness in orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/codex_scm_intervention_fixes_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/codex_scm_intervention_fixes.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "packages/orxaq_causal",
+        "tests/unit/test_scm*",
+        "tests/unit/test_causal*"
+      ]
+    },
+    {
+      "id": "gemini-rpa-adversarial-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Independent RPA adversarial test expansion lane.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rpa_adversarial_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rpa_adversarial_tests.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_rpa*",
+        "tests/unit/test_mesh_cli_rpa*"
+      ]
+    },
+    {
+      "id": "gemini-rln-semantic-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Independent RLN semantic compaction test expansion lane.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_rln_semantic_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_rln_semantic_tests.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_rln_adversarial_semantic_compaction*",
+        "tests/unit/test_rln_extract_validation.py",
+        "tests/unit/test_rln_algorithm.py"
+      ]
+    },
+    {
+      "id": "gemini-orchestrator-guard-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Independent orchestrator guard test expansion lane.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_orchestrator_guard_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_orchestrator_guard_tests.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_orchestrator_adversarial_guards.py",
+        "tests/unit/test_orchestrator_unit.py",
+        "tests/unit/test_mesh_orchestrator_regression.py"
+      ]
+    },
+    {
+      "id": "gemini-scm-constructor-tests",
+      "enabled": true,
+      "owner": "gemini",
+      "description": "Independent SCM constructor/intervention test expansion lane.",
+      "impl_repo": "../orxaq_gemini",
+      "test_repo": "../orxaq_gemini",
+      "tasks_file": "config/lanes/gemini_scm_constructor_tests_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/gemini_scm_constructor_tests.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "exclusive_paths": [
+        "tests/unit/test_scm*",
+        "tests/unit/test_causal*",
+        "tests/unit/test_causal_adversarial.py"
+      ]
+    },
+    {
+      "id": "claude-release-governance-audit",
+      "enabled": true,
+      "owner": "claude",
+      "description": "Release governance/control audit lane for orxaq.",
+      "impl_repo": "../orxaq",
+      "test_repo": "../orxaq",
+      "tasks_file": "config/lanes/claude_release_governance_audit_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/claude_release_governance_audit.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene"
+      ],
+      "exclusive_paths": [
+        "docs/",
+        ".github/",
+        "SECURITY.md",
+        "GOVERNANCE.md"
+      ]
+    },
+    {
+      "id": "claude-autonomy-stability-audit",
+      "enabled": true,
+      "owner": "claude",
+      "description": "Autonomy stability and runbook audit lane for orxaq-ops.",
+      "impl_repo": ".",
+      "test_repo": ".",
+      "tasks_file": "config/lanes/claude_autonomy_stability_audit_tasks.json",
+      "dependency_state_file": "state/state.json",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "objective_file": "config/objectives/claude_autonomy_stability_audit.md",
+      "codex_cmd": "codex",
+      "gemini_cmd": "gemini",
+      "claude_cmd": "/Users/sdevisch/.local/bin/claude",
+      "routellm_policy_file": "config/routellm_policy.launch10.json",
+      "routellm_enabled": true,
+      "routellm_timeout_sec": 2,
+      "validate_commands": [
+        "make lint",
+        "make test",
+        "make version-check",
+        "make repo-hygiene",
+        "make hosted-controls-check"
+      ],
+      "exclusive_paths": [
+        "docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md",
+        "docs/STATE_OF_THE_ART_ROUTING_AUTONOMY_PLAN.md",
+        "src/orxaq_autonomy/manager.py",
+        "src/orxaq_autonomy/dashboard.py"
+      ]
     }
   ]
 }
