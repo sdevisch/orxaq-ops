@@ -413,8 +413,10 @@ def _dashboard_html(refresh_sec: int) -> str:
           <div class="stat"><div class="k">Pending</div><div id="pending" class="v">0</div></div>
           <div class="stat"><div class="k">Blocked</div><div id="blocked" class="v">0</div></div>
           <div class="stat"><div class="k">Unknown</div><div id="unknown" class="v">0</div></div>
+          <div class="stat"><div class="k">Completed (24h)</div><div id="completed_24h" class="v">0</div></div>
         </div>
         <div id="activeTasks" class="mono">active_tasks: none</div>
+        <div id="completed24hSummary" class="mono">completed_last_24h: 0</div>
       </article>
 
       <article class="card span-4">
@@ -1136,6 +1138,14 @@ def _dashboard_html(refresh_sec: int) -> str:
       const pending = counts.pending || 0;
       const blocked = counts.blocked || 0;
       const unknown = counts.unknown || 0;
+      const completed24h = Number(progress.completed_last_24h || 0);
+      const completed24hUnique = Number(progress.completed_last_24h_unique_tasks || 0);
+      const completed24hByOwner = (progress.completed_last_24h_by_owner && typeof progress.completed_last_24h_by_owner === "object")
+        ? progress.completed_last_24h_by_owner
+        : {{}};
+      const completed24hOwnerSummary = Object.entries(completed24hByOwner)
+        .map(([owner, value]) => `${{owner}}=${{Number(value || 0)}}`)
+        .join(", ");
       const total = done + inProgress + pending + blocked + unknown;
 
       byId("done").textContent = done;
@@ -1143,9 +1153,12 @@ def _dashboard_html(refresh_sec: int) -> str:
       byId("pending").textContent = pending;
       byId("blocked").textContent = blocked;
       byId("unknown").textContent = unknown;
+      byId("completed_24h").textContent = completed24h;
       const progressSource = String(progress.source || "primary_state");
       byId("activeTasks").textContent =
         `active_tasks: ${{(progress.active_tasks || []).join(", ") || "none"}} · blocked: ${{(progress.blocked_tasks || []).join(", ") || "none"}} · source=${{progressSource}}`;
+      byId("completed24hSummary").textContent =
+        `completed_last_24h: ${{completed24h}} · unique_tasks: ${{completed24hUnique}}${{completed24hOwnerSummary ? ` · by_owner: ${{completed24hOwnerSummary}}` : ""}}`;
 
       byId("taskBar").style.setProperty("--done", pct(done, total) + "%");
       byId("taskBar").style.setProperty("--in_progress", pct(inProgress, total) + "%");
@@ -2846,6 +2859,13 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
                 "counts": progress_counts,
                 "active_tasks": sorted(set(active_tasks)),
                 "blocked_tasks": sorted(set(blocked_tasks)),
+                "completed_last_24h": 0,
+                "completed_last_24h_unique_tasks": 0,
+                "completed_last_24h_by_owner": {},
+                "completed_last_24h_window_start": "",
+                "completed_last_24h_window_end": "",
+                "completed_last_24h_sources_scanned": 0,
+                "completed_last_24h_errors": [],
                 "source": "fallback_partial",
             },
             "lanes": lanes_snapshot_payload,

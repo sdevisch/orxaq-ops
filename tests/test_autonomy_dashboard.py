@@ -80,6 +80,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("const rawBody = await response.text();", html)
         self.assertIn("HTTP ${response.status}: ${detail}", html)
         self.assertIn("result.payload && result.payload.error", html)
+        self.assertIn("Completed (24h)", html)
+        self.assertIn("completed_24h", html)
+        self.assertIn("completed24hSummary", html)
 
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):
@@ -91,6 +94,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("lane_owner_health", payload["runtime"])
         self.assertIn("response_metrics", payload)
         self.assertFalse(payload["response_metrics"]["ok"])
+        self.assertEqual(payload["progress"]["completed_last_24h"], 0)
+        self.assertEqual(payload["progress"]["completed_last_24h_unique_tasks"], 0)
+        self.assertEqual(payload["progress"]["completed_last_24h_by_owner"], {})
 
     def test_safe_monitor_snapshot_reuses_lane_and_conversation_fallbacks(self):
         lane_payload = {
