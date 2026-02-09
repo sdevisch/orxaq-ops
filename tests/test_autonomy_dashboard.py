@@ -94,6 +94,24 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(filtered["health_counts"], {"ok": 1})
         self.assertEqual(filtered["owner_counts"]["codex"]["total"], 1)
 
+    def test_filter_lane_status_payload_suppresses_unrelated_lane_errors(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": False,
+            "partial": True,
+            "errors": ["lane-b: heartbeat stale"],
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+                {"id": "lane-b", "owner": "gemini", "running": True, "health": "stale"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="lane-a")
+        self.assertTrue(filtered["ok"])
+        self.assertFalse(filtered["partial"])
+        self.assertEqual(filtered["errors"], [])
+        self.assertEqual(filtered["suppressed_errors"], ["lane-b: heartbeat stale"])
+        self.assertEqual(filtered["total_count"], 1)
+
     def test_filter_lane_status_payload_reports_unknown_lane(self):
         payload = {
             "lanes_file": "/tmp/lanes.json",

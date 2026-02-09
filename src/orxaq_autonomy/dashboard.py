@@ -1584,6 +1584,15 @@ def _lane_action_http_status(payload: dict[str, Any]) -> HTTPStatus:
     return HTTPStatus.SERVICE_UNAVAILABLE
 
 
+def _lane_error_matches_requested_lane(error: str, requested_lane: str) -> bool:
+    message = str(error).strip()
+    lane = requested_lane.strip().lower()
+    if not message or not lane:
+        return True
+    prefix = message.split(":", 1)[0].strip().lower()
+    return prefix == lane
+
+
 def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -> dict[str, Any]:
     requested_lane = lane_id.strip()
     lane_items = payload.get("lanes", [])
@@ -1593,10 +1602,18 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
     if not isinstance(lane_errors, list):
         lane_errors = []
     normalized_errors = [str(item).strip() for item in lane_errors if str(item).strip()]
+    suppressed_errors: list[str] = []
 
     if requested_lane:
         lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == requested_lane]
-        if not lane_items:
+        lane_specific_errors = [
+            item for item in normalized_errors if _lane_error_matches_requested_lane(item, requested_lane)
+        ]
+        suppressed_errors = [item for item in normalized_errors if item not in lane_specific_errors]
+        if lane_items:
+            normalized_errors = lane_specific_errors
+        else:
+            normalized_errors = lane_specific_errors or normalized_errors
             if normalized_errors:
                 normalized_errors.append(
                     f"Requested lane {requested_lane!r} is unavailable because lane status sources failed."
@@ -1631,8 +1648,13 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
     filtered["health_counts"] = health_counts
     filtered["owner_counts"] = owner_counts
     filtered["errors"] = normalized_errors
-    filtered["partial"] = bool(payload.get("partial", False)) or bool(normalized_errors)
-    filtered["ok"] = bool(payload.get("ok", not normalized_errors)) and not bool(normalized_errors)
+    filtered["suppressed_errors"] = suppressed_errors
+    if requested_lane and lane_items and not normalized_errors:
+        filtered["partial"] = False
+        filtered["ok"] = True
+    else:
+        filtered["partial"] = bool(payload.get("partial", False)) or bool(normalized_errors)
+        filtered["ok"] = bool(payload.get("ok", not normalized_errors)) and not bool(normalized_errors)
     return filtered
 
 

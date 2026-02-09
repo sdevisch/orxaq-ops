@@ -218,6 +218,84 @@ def _safe_lane_status_snapshot(cfg: ManagerConfig) -> dict[str, Any]:
         return _lane_status_error_payload(cfg, error=str(err))
 
 
+def _lane_error_matches_requested_lane(error: str, requested_lane: str) -> bool:
+    message = str(error).strip()
+    lane = requested_lane.strip().lower()
+    if not message or not lane:
+        return True
+    prefix = message.split(":", 1)[0].strip().lower()
+    return prefix == lane
+
+
+def _filter_lane_status_payload(
+    payload: dict[str, Any],
+    *,
+    requested_lane: str = "",
+    lanes_file: Path,
+) -> dict[str, Any]:
+    lane_filter = requested_lane.strip()
+    lane_items = payload.get("lanes", [])
+    if not isinstance(lane_items, list):
+        lane_items = []
+    lane_errors = payload.get("errors", [])
+    if not isinstance(lane_errors, list):
+        lane_errors = []
+    normalized_errors = [str(item).strip() for item in lane_errors if str(item).strip()]
+    suppressed_errors: list[str] = []
+
+    if lane_filter:
+        lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == lane_filter]
+        lane_specific_errors = [
+            item for item in normalized_errors if _lane_error_matches_requested_lane(item, lane_filter)
+        ]
+        suppressed_errors = [item for item in normalized_errors if item not in lane_specific_errors]
+        if lane_items:
+            normalized_errors = lane_specific_errors
+        else:
+            normalized_errors = lane_specific_errors or normalized_errors
+            if normalized_errors:
+                normalized_errors.append(
+                    f"Requested lane {lane_filter!r} is unavailable because lane status sources failed."
+                )
+            else:
+                normalized_errors.append(f"Unknown lane id {lane_filter!r}. Update {lanes_file}.")
+
+    health_counts: dict[str, int] = {}
+    owner_counts: dict[str, dict[str, int]] = {}
+    healthy_states = {"ok", "paused", "idle"}
+    for lane in lane_items:
+        if not isinstance(lane, dict):
+            continue
+        health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
+        health_counts[health] = health_counts.get(health, 0) + 1
+        owner = str(lane.get("owner", "unknown")).strip() or "unknown"
+        owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
+        owner_entry["total"] += 1
+        if bool(lane.get("running", False)):
+            owner_entry["running"] += 1
+        if health in healthy_states:
+            owner_entry["healthy"] += 1
+        else:
+            owner_entry["degraded"] += 1
+
+    filtered = dict(payload)
+    filtered["requested_lane"] = lane_filter or "all"
+    filtered["lanes"] = lane_items
+    filtered["running_count"] = sum(1 for lane in lane_items if bool(lane.get("running", False)))
+    filtered["total_count"] = len(lane_items)
+    filtered["health_counts"] = health_counts
+    filtered["owner_counts"] = owner_counts
+    filtered["errors"] = normalized_errors
+    filtered["suppressed_errors"] = suppressed_errors
+    if lane_filter and lane_items and not normalized_errors:
+        filtered["ok"] = True
+        filtered["partial"] = False
+    else:
+        filtered["ok"] = bool(payload.get("ok", not normalized_errors)) and not bool(normalized_errors)
+        filtered["partial"] = bool(payload.get("partial", False)) or bool(normalized_errors)
+    return filtered
+
+
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
     root = Path(args.root).resolve()
     env_file = Path(args.env_file).resolve() if args.env_file else None
@@ -519,15 +597,19 @@ def main(argv: list[str] | None = None) -> int:
             requested_lane = args.lane.strip()
             if not requested_lane:
                 raise RuntimeError("lane id is required")
-            lane_payload = _safe_lane_status_snapshot(cfg)
+            lane_payload = _filter_lane_status_payload(
+                _safe_lane_status_snapshot(cfg),
+                requested_lane=requested_lane,
+                lanes_file=cfg.lanes_file,
+            )
             lane_items = lane_payload.get("lanes", [])
             if not isinstance(lane_items, list):
                 lane_items = []
+            selected = lane_items[:1]
             lane_errors = lane_payload.get("errors", [])
             if not isinstance(lane_errors, list):
                 lane_errors = []
-            selected = [item for item in lane_items if str(item.get("id", "")).strip() == requested_lane]
-            if not selected and not lane_errors:
+            if not selected and any(str(item).strip().startswith("Unknown lane id ") for item in lane_errors):
                 raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {cfg.lanes_file}.")
             conv_payload = _safe_conversations_snapshot(
                 cfg,
@@ -543,9 +625,6 @@ def main(argv: list[str] | None = None) -> int:
             if selected:
                 lane_entry = selected[0]
             else:
-                lane_errors.append(
-                    f"Requested lane {requested_lane!r} is unavailable because lane status sources failed."
-                )
                 lane_entry = {
                     "id": requested_lane,
                     "owner": "unknown",
@@ -560,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                 "requested_lane": requested_lane,
                 "lane": lane_entry,
                 "lane_errors": lane_errors,
+                "suppressed_lane_errors": lane_payload.get("suppressed_errors", []),
                 "lane_health_counts": lane_payload.get("health_counts", {}),
                 "lane_owner_counts": lane_payload.get("owner_counts", {}),
                 "conversations": conv_payload,
@@ -592,51 +672,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  exclusive_paths: {', '.join(lane['exclusive_paths']) if lane['exclusive_paths'] else '(none)'}")
             return 0
         if args.command in {"lanes-status", "lane-status"}:
-            snapshot = _safe_lane_status_snapshot(cfg)
-            requested_lane = args.lane.strip()
-            lane_items = snapshot.get("lanes", [])
-            if not isinstance(lane_items, list):
-                lane_items = []
-            lane_errors = snapshot.get("errors", [])
-            if not isinstance(lane_errors, list):
-                lane_errors = []
-            if requested_lane:
-                lane_items = [lane for lane in lane_items if str(lane.get("id", "")).strip() == requested_lane]
-                if not lane_items and not lane_errors:
+            filtered = _filter_lane_status_payload(
+                _safe_lane_status_snapshot(cfg),
+                requested_lane=args.lane,
+                lanes_file=cfg.lanes_file,
+            )
+            requested_lane = str(filtered.get("requested_lane", "")).strip()
+            if requested_lane and requested_lane != "all":
+                if not filtered.get("lanes") and any(
+                    str(item).strip().startswith("Unknown lane id ")
+                    for item in filtered.get("errors", [])
+                ):
                     raise RuntimeError(f"Unknown lane id {requested_lane!r}. Update {cfg.lanes_file}.")
-            filtered = dict(snapshot)
-            filtered["requested_lane"] = requested_lane or "all"
-            filtered["lanes"] = lane_items
-            filtered["running_count"] = sum(1 for lane in lane_items if bool(lane.get("running", False)))
-            filtered["total_count"] = len(lane_items)
-            filtered["errors"] = lane_errors
-            filtered["ok"] = bool(snapshot.get("ok", not lane_errors))
-            filtered["partial"] = bool(snapshot.get("partial", False)) or bool(lane_errors)
-            health_counts: dict[str, int] = {}
-            owner_counts: dict[str, dict[str, int]] = {}
-            healthy_states = {"ok", "paused", "idle"}
-            for lane in lane_items:
-                if not isinstance(lane, dict):
-                    continue
-                health = str(lane.get("health", "unknown")).strip().lower() or "unknown"
-                health_counts[health] = health_counts.get(health, 0) + 1
-                owner = str(lane.get("owner", "unknown")).strip() or "unknown"
-                owner_entry = owner_counts.setdefault(owner, {"total": 0, "running": 0, "healthy": 0, "degraded": 0})
-                owner_entry["total"] += 1
-                if bool(lane.get("running", False)):
-                    owner_entry["running"] += 1
-                if health in healthy_states:
-                    owner_entry["healthy"] += 1
-                else:
-                    owner_entry["degraded"] += 1
-            filtered["health_counts"] = health_counts
-            filtered["owner_counts"] = owner_counts
-            if requested_lane and not lane_items and lane_errors:
-                filtered["ok"] = False
-                filtered["partial"] = True
-                filtered["errors"] = lane_errors + [
-                    f"Requested lane {requested_lane!r} is unavailable because lane status sources failed."
-                ]
             if args.json:
                 print(json.dumps(filtered, indent=2, sort_keys=True))
                 return 0
