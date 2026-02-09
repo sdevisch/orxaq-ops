@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timezone
+import subprocess
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
 import webbrowser
@@ -27,6 +29,9 @@ from .manager import (
     stop_lanes_background,
     tail_logs,
 )
+
+_COMMIT_COUNT_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, int]] = {}
+_COMMIT_CACHE_TTL_SEC = 20.0
 
 
 def _dashboard_html(refresh_sec: int) -> str:
@@ -345,6 +350,102 @@ def _dashboard_html(refresh_sec: int) -> str:
       gap: 8px;
       align-items: center;
     }}
+    .table-wrap {{
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+      overflow: auto;
+    }}
+    .data-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .82rem;
+      min-width: 860px;
+    }}
+    .data-table th {{
+      text-align: left;
+      font-weight: 700;
+      padding: 9px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      background: #f8fbff;
+      white-space: nowrap;
+    }}
+    .data-table td {{
+      padding: 8px 9px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      white-space: nowrap;
+    }}
+    .data-table tr:last-child td {{
+      border-bottom: none;
+    }}
+    .live-indicator {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 650;
+    }}
+    .live-dot {{
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #94a3b8;
+      box-shadow: 0 0 0 0 rgba(148, 163, 184, 0.35);
+    }}
+    .live-thinking .live-dot {{
+      background: var(--ok);
+      box-shadow: 0 0 0 0 rgba(15, 159, 95, 0.4);
+      animation: livePulse 1.2s ease-out infinite;
+    }}
+    .live-active .live-dot {{
+      background: var(--info);
+      box-shadow: 0 0 0 0 rgba(31, 111, 235, 0.36);
+      animation: livePulse 1.4s ease-out infinite;
+    }}
+    .live-stale .live-dot {{
+      background: var(--warn);
+    }}
+    .live-offline .live-dot {{
+      background: var(--bad);
+    }}
+    @keyframes livePulse {{
+      0% {{ box-shadow: 0 0 0 0 rgba(15, 159, 95, 0.42); }}
+      100% {{ box-shadow: 0 0 0 9px rgba(15, 159, 95, 0); }}
+    }}
+    .led-strip {{
+      display: inline-grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 8px;
+      gap: 3px;
+      align-items: center;
+    }}
+    .led {{
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      background: #cbd5e1;
+      opacity: 0.25;
+    }}
+    .led.on {{
+      opacity: 0.95;
+      background: linear-gradient(180deg, #95f39f, #17a34a);
+      animation: ledWink .9s ease-in-out infinite alternate;
+    }}
+    .led.live.on {{
+      background: linear-gradient(180deg, #9be7ff, #1f6feb);
+    }}
+    .led.stale.on {{
+      background: linear-gradient(180deg, #ffd08a, #c77d00);
+    }}
+    .led.offline.on {{
+      background: linear-gradient(180deg, #f2b6b6, #cc2f2f);
+      opacity: 0.5;
+    }}
+    @keyframes ledWink {{
+      from {{ transform: translateY(0); filter: brightness(0.95); }}
+      to {{ transform: translateY(-1px); filter: brightness(1.15); }}
+    }}
     .meter {{
       height: 11px;
       border-radius: 999px;
@@ -440,6 +541,31 @@ def _dashboard_html(refresh_sec: int) -> str:
         <div id="watchdogEvents" class="feed"></div>
       </article>
 
+      <article class="card span-12">
+        <h2>Collaborative Agent Runtime</h2>
+        <div id="collabSummary" class="mono">collaboration runtime: loading...</div>
+        <div id="collabActivity" class="mono">live activity: loading...</div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>AI</th>
+                <th>Work Title</th>
+                <th>PID</th>
+                <th>Running</th>
+                <th>Latest Health</th>
+                <th>Commits (1h)</th>
+                <th>Live Heartbeat</th>
+                <th>Signal LEDs</th>
+              </tr>
+            </thead>
+            <tbody id="collabTableBody">
+              <tr><td colspan="8" class="mono">Loading collaborative lanes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
       <article class="card span-4">
         <h2>Cost &amp; Quality</h2>
         <div id="excitingStat" class="logline">Most exciting stat: loading...</div>
@@ -524,6 +650,7 @@ def _dashboard_html(refresh_sec: int) -> str:
     let lastSuccessfulConversationPayload = null;
     let lastSuccessfulDawPayload = null;
     let lastSuccessfulWatchdogPayload = null;
+    let lastSuccessfulCollabPayload = null;
 
     function byId(id) {{ return document.getElementById(id); }}
     function pct(part, total) {{ return total > 0 ? Math.round((part / total) * 100) : 0; }}
@@ -564,6 +691,18 @@ def _dashboard_html(refresh_sec: int) -> str:
       if (seconds < 60) return `${{Math.round(seconds)}}s`;
       if (seconds < 3600) return `${{Math.round(seconds / 60)}}m`;
       return `${{(seconds / 3600).toFixed(1)}}h`;
+    }}
+    function formatDuration(value) {{
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return "-";
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      if (d > 0) return `${{d}}d ${{h}}h`;
+      if (h > 0) return `${{h}}h ${{m}}m`;
+      if (m > 0) return `${{m}}m ${{s}}s`;
+      return `${{s}}s`;
     }}
     function stateBadge(ok) {{ return ok ? '<span class="ok">ok</span>' : '<span class="bad">error</span>'; }}
     function parseTail(value) {{
@@ -1056,6 +1195,99 @@ def _dashboard_html(refresh_sec: int) -> str:
             ].join("");
           }}).join("")
         : '<div class="feed-item">No watchdog history events yet.</div>';
+    }}
+
+    function liveIndicatorMarkup(state, label) {{
+      const normalized = String(state || "offline").trim().toLowerCase() || "offline";
+      const className = normalized.startsWith("think")
+        ? "live-thinking"
+        : (normalized === "active" ? "live-active" : (normalized === "stale" ? "live-stale" : "live-offline"));
+      const text = String(label || normalized || "offline");
+      return `<span class="live-indicator ${{className}}"><span class="live-dot"></span><span>${{escapeHtml(text)}}</span></span>`;
+    }}
+
+    function signalLedMarkup(row) {{
+      const level = Number(row && row.signal_level || 0);
+      const liveState = String((row && row.live_state) || "offline").trim().toLowerCase() || "offline";
+      const totalLeds = 12;
+      const activeLeds = Math.max(0, Math.min(totalLeds, Math.round(level * totalLeds)));
+      const liveClass = liveState.startsWith("think")
+        ? "live"
+        : (liveState === "active" ? "live" : (liveState === "stale" ? "stale" : "offline"));
+      const rendered = [];
+      for (let idx = 0; idx < totalLeds; idx += 1) {{
+        const on = idx < activeLeds;
+        rendered.push(`<span class="led ${{on ? `on ${{liveClass}}` : ''}}"></span>`);
+      }}
+      return `<span class="led-strip">${{rendered.join('')}}</span>`;
+    }}
+
+    function renderCollaboratorRuntime(payload) {{
+      const data = (payload && typeof payload === "object") ? payload : {{}};
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      const errors = Array.isArray(data.errors)
+        ? data.errors.filter((item) => String(item || "").trim())
+        : [];
+      const summary = (data.summary && typeof data.summary === "object") ? data.summary : {{}};
+      const totalRows = Number(summary.total_rows || rows.length || 0);
+      const runningRows = Number(summary.running_rows || 0);
+      const thinkingRows = Number(summary.thinking_rows || 0);
+      const activeRows = Number(summary.active_rows || 0);
+      const staleRows = Number(summary.stale_rows || 0);
+      const offlineRows = Number(summary.offline_rows || 0);
+      const commits1h = Number(summary.commits_last_hour_total || 0);
+      const partial = Boolean(data.partial);
+      const baseSummary =
+        `agents=${{totalRows}} · running=${{runningRows}} · thinking=${{thinkingRows}} · active=${{activeRows}} · stale=${{staleRows}} · offline=${{offlineRows}} · commits_1h=${{commits1h}}`;
+      const errorSuffix = errors.length ? ` · errors=${{errors.length}}` : "";
+      byId("collabSummary").textContent = `${{baseSummary}}${{partial ? " · partial=true" : ""}}${{errorSuffix}}`;
+      byId("collabActivity").textContent =
+        `latest_signal: ${{formatTimestamp(summary.latest_signal_at || "") || "-"}} · age=${{formatAgeSeconds(summary.latest_signal_age_sec)}} · latest_health: ${{formatTimestamp(summary.latest_health_at || "") || "-"}}`;
+
+      if (!rows.length) {{
+        byId("collabTableBody").innerHTML = `<tr><td colspan="8" class="mono bad">${{escapeHtml(errors[0] || "No collaborative runtime rows available.")}}</td></tr>`;
+        return;
+      }}
+
+      const body = [];
+      for (const row of rows) {{
+        const item = row || {{}};
+        const ai = String(item.ai || item.owner || "unknown");
+        const laneId = String(item.lane_id || "").trim();
+        const workTitle = String(item.work_title || "unknown");
+        const pid = item.pid ?? "-";
+        const running = Boolean(item.running);
+        const runningFor = formatDuration(item.running_age_sec);
+        const healthLabel = String(item.health || "unknown");
+        const healthAt = formatTimestamp(item.latest_health_confirmation_at || "");
+        const healthAge = formatAgeSeconds(item.latest_health_confirmation_age_sec);
+        const commits = Number(item.commits_last_hour);
+        const commitLabel = Number.isFinite(commits) && commits >= 0 ? String(commits) : "-";
+        const liveHtml = liveIndicatorMarkup(item.live_state, item.live_label || item.live_state || "offline");
+        const signalHtml = signalLedMarkup(item);
+        const signalAge = formatAgeSeconds(item.latest_signal_age_sec);
+        const aiCell = laneId
+          ? `<div class="mono">${{escapeHtml(ai)}}</div><div class="mono">${{escapeHtml(laneId)}}</div>`
+          : `<div class="mono">${{escapeHtml(ai)}}</div>`;
+        const healthCell = `<div>${{escapeHtml(healthLabel)}}</div><div class="mono">${{escapeHtml(healthAt || "-")}} · age=${{escapeHtml(healthAge)}}</div>`;
+        const signalCell = `<div>${{signalHtml}}</div><div class="mono">age=${{escapeHtml(signalAge)}}</div>`;
+        body.push(
+          `<tr>
+            <td>${{aiCell}}</td>
+            <td>${{escapeHtml(workTitle)}}</td>
+            <td class="mono">${{escapeHtml(String(pid))}}</td>
+            <td class="mono">${{running ? escapeHtml(runningFor) : "-"}}</td>
+            <td>${{healthCell}}</td>
+            <td class="mono">${{escapeHtml(commitLabel)}}</td>
+            <td>${{liveHtml}}</td>
+            <td>${{signalCell}}</td>
+          </tr>`
+        );
+      }}
+      if (errors.length) {{
+        body.push(`<tr><td colspan="8" class="mono bad">${{escapeHtml(errors.join(" | "))}}</td></tr>`);
+      }}
+      byId("collabTableBody").innerHTML = body.join("");
     }}
 
     function buildConversationSourceMap(payload) {{
@@ -1563,12 +1795,13 @@ def _dashboard_html(refresh_sec: int) -> str:
     }}
 
     async function refresh() {{
-      const [monitorResult, convResult, laneResult, dawResult, watchdogResult] = await Promise.all([
+      const [monitorResult, convResult, laneResult, dawResult, watchdogResult, collabResult] = await Promise.all([
         fetchJson('/api/monitor'),
         fetchJson(conversationPath()),
         fetchJson(laneStatusPath()),
         fetchJson('/api/daw?window_sec=120'),
         fetchJson('/api/watchdog?events=40'),
+        fetchJson('/api/collab-runtime'),
       ]);
 
       if (monitorResult.ok && monitorResult.payload) {{
@@ -1689,6 +1922,41 @@ def _dashboard_html(refresh_sec: int) -> str:
         }};
       }}
       renderWatchdog(effectiveWatchdogPayload);
+      let effectiveCollabPayload = null;
+      if (collabResult.ok && collabResult.payload) {{
+        effectiveCollabPayload = collabResult.payload;
+        lastSuccessfulCollabPayload = collabResult.payload;
+      }} else if (lastSuccessfulCollabPayload) {{
+        effectiveCollabPayload = {{
+          ...lastSuccessfulCollabPayload,
+          ok: false,
+          partial: true,
+          errors: [
+            `collaboration runtime endpoint unavailable: ${{String(collabResult.error || "unknown error")}}`,
+            "collaboration runtime data from stale cache",
+          ],
+        }};
+      }} else {{
+        effectiveCollabPayload = {{
+          ok: false,
+          partial: true,
+          errors: [String(collabResult.error || "collaboration runtime endpoint unavailable")],
+          rows: [],
+          summary: {{
+            total_rows: 0,
+            running_rows: 0,
+            thinking_rows: 0,
+            active_rows: 0,
+            stale_rows: 0,
+            offline_rows: 0,
+            commits_last_hour_total: 0,
+            latest_signal_at: "",
+            latest_signal_age_sec: -1,
+            latest_health_at: "",
+          }},
+        }};
+      }}
+      renderCollaboratorRuntime(effectiveCollabPayload);
 
       const diagnosticsPayload = (snapshotForRender && snapshotForRender.diagnostics) || {{}};
       renderDiagnostics(diagnosticsPayload, {{
@@ -1696,6 +1964,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         conversations_endpoint: convResult.ok ? "" : convResult.error,
         lanes_endpoint: laneResult.ok ? "" : laneResult.error,
         watchdog_endpoint: watchdogResult.ok ? "" : watchdogResult.error,
+        collab_runtime_endpoint: collabResult.ok ? "" : collabResult.error,
       }});
     }}
 
@@ -1855,6 +2124,9 @@ def start_dashboard(
                     query = parse_qs(parsed.query)
                     events = _parse_bounded_int(query, "events", default=40, minimum=1, maximum=500)
                     self._send_json(_safe_watchdog_snapshot(config, events=events))
+                    return
+                if parsed.path == "/api/collab-runtime":
+                    self._send_json(_safe_collab_runtime_snapshot(config))
                     return
                 if parsed.path == "/api/status":
                     self._send_json(status_snapshot(config))
@@ -3363,6 +3635,412 @@ def _safe_watchdog_snapshot(config: ManagerConfig, *, events: int = 40) -> dict[
         "restart_failures_total": restart_failures_total,
         "processes": process_items,
         "recent_events": recent_events,
+    }
+
+
+def _read_tail_json_objects(path: Path, *, max_lines: int = 240) -> list[dict[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in lines[-max(1, max_lines) :]:
+        text = raw.strip()
+        if not text:
+            continue
+        try:
+            item = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def _lane_last_event_task_id(last_event: dict[str, Any]) -> str:
+    task_id = str(last_event.get("task_id", "")).strip()
+    if task_id:
+        return task_id
+    payload = last_event.get("payload")
+    if isinstance(payload, dict):
+        task_id = str(payload.get("task_id", "")).strip()
+        if task_id:
+            return task_id
+    meta = last_event.get("meta")
+    if isinstance(meta, dict):
+        task_id = str(meta.get("task_id", "")).strip()
+        if task_id:
+            return task_id
+    return ""
+
+
+def _load_task_catalog(tasks_file: Path) -> list[dict[str, str]]:
+    if not tasks_file.exists() or not tasks_file.is_file():
+        return []
+    try:
+        raw = json.loads(tasks_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        task_id = str(item.get("id", "")).strip()
+        if not task_id:
+            continue
+        title = str(item.get("title", "")).strip()
+        out.append({"id": task_id, "title": title})
+    return out
+
+
+def _load_lane_state_status(state_file: Path) -> dict[str, str]:
+    if not state_file.exists() or not state_file.is_file():
+        return {}
+    try:
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for task_id, payload in raw.items():
+        task_key = str(task_id).strip()
+        if not task_key:
+            continue
+        status = ""
+        if isinstance(payload, dict):
+            status = str(payload.get("status", "")).strip().lower()
+        out[task_key] = status
+    return out
+
+
+def _resolve_lane_work_title(lane: dict[str, Any]) -> tuple[str, str]:
+    tasks_path_raw = str(lane.get("tasks_file", "")).strip()
+    lane_description = str(lane.get("description", "")).strip()
+    lane_label = str(lane.get("id", "")).strip() or "lane"
+    if not tasks_path_raw:
+        return (lane_description or lane_label, "")
+
+    task_catalog = _load_task_catalog(Path(tasks_path_raw))
+    if not task_catalog:
+        return (lane_description or lane_label, "")
+    title_by_id = {item["id"]: item["title"] for item in task_catalog}
+    task_order = [item["id"] for item in task_catalog]
+
+    last_event = lane.get("last_event")
+    if isinstance(last_event, dict):
+        task_id = _lane_last_event_task_id(last_event)
+        if task_id and task_id in title_by_id:
+            title = title_by_id.get(task_id, "").strip() or task_id
+            return (title, task_id)
+
+    events_path_raw = str(lane.get("events_file", "")).strip()
+    state_candidates: list[Path] = []
+    if events_path_raw:
+        events_path = Path(events_path_raw)
+        state_candidates.append(events_path.with_name("state.json"))
+        state_candidates.append(events_path.parent / "state.json")
+    state_map: dict[str, str] = {}
+    for candidate in state_candidates:
+        state_map = _load_lane_state_status(candidate)
+        if state_map:
+            break
+
+    if state_map:
+        for preferred in ["in_progress", "blocked", "pending", "done"]:
+            for task_id in task_order:
+                if state_map.get(task_id, "") == preferred:
+                    title = title_by_id.get(task_id, "").strip() or task_id
+                    return (title, task_id)
+
+    first_task = task_order[0]
+    title = title_by_id.get(first_task, "").strip() or first_task
+    return (title, first_task)
+
+
+def _pid_elapsed_seconds(pid: int | None) -> int:
+    if pid is None or pid <= 0:
+        return -1
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "etimes="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return -1
+    if proc.returncode != 0:
+        return -1
+    return _coerce_int((proc.stdout or "").strip(), default=-1)
+
+
+def _lane_running_age_seconds(lane: dict[str, Any], now: datetime) -> int:
+    pid = _watchdog_normalize_pid(lane.get("pid"))
+    elapsed = _pid_elapsed_seconds(pid)
+    if elapsed >= 0:
+        return elapsed
+    meta = lane.get("meta")
+    started_at = ""
+    if isinstance(meta, dict):
+        started_at = str(meta.get("started_at", "")).strip()
+    parsed = _parse_event_timestamp(started_at)
+    if parsed is None:
+        return -1
+    return max(0, int((now - parsed).total_seconds()))
+
+
+def _lane_health_confirmation(lane: dict[str, Any], now: datetime) -> tuple[str, int]:
+    heartbeat_age = _coerce_int(lane.get("heartbeat_age_sec"), default=-1)
+    if heartbeat_age >= 0:
+        confirmed_at = (now - timedelta(seconds=heartbeat_age)).replace(microsecond=0)
+        return (confirmed_at.isoformat().replace("+00:00", "Z"), heartbeat_age)
+    last_event = lane.get("last_event")
+    if isinstance(last_event, dict):
+        parsed = _parse_event_timestamp(last_event.get("timestamp"))
+        if parsed is not None:
+            age = max(0, int((now - parsed).total_seconds()))
+            return (parsed.replace(microsecond=0).isoformat().replace("+00:00", "Z"), age)
+    return ("", -1)
+
+
+def _git_recent_commit_count(repo: Path, *, since_iso: str, pathspecs: list[str]) -> int:
+    cmd = ["git", "-C", str(repo), "rev-list", "--count", f"--since={since_iso}", "HEAD"]
+    if pathspecs:
+        cmd.extend(["--", *pathspecs])
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return -1
+    if proc.returncode != 0:
+        if pathspecs:
+            return _git_recent_commit_count(repo, since_iso=since_iso, pathspecs=[])
+        return -1
+    return _coerce_int((proc.stdout or "").strip(), default=-1)
+
+
+def _lane_commit_count_last_hour(lane: dict[str, Any], now: datetime) -> int:
+    repo_raw = str(lane.get("impl_repo", "")).strip()
+    if not repo_raw:
+        return -1
+    repo = Path(repo_raw).expanduser().resolve()
+    if not repo.exists():
+        return -1
+
+    pathspecs: list[str] = []
+    raw_paths = lane.get("exclusive_paths", [])
+    if isinstance(raw_paths, list):
+        for entry in raw_paths:
+            raw = str(entry).strip()
+            if not raw:
+                continue
+            if any(token in raw for token in ["*", "?", "["]):
+                pathspecs.append(f":(glob){raw}")
+            else:
+                pathspecs.append(raw)
+
+    cache_key = (str(repo), tuple(pathspecs))
+    now_epoch = time.time()
+    cached = _COMMIT_COUNT_CACHE.get(cache_key)
+    if cached and (now_epoch - cached[0]) <= _COMMIT_CACHE_TTL_SEC:
+        return cached[1]
+
+    since_iso = (now - timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    count = _git_recent_commit_count(repo, since_iso=since_iso, pathspecs=pathspecs)
+    _COMMIT_COUNT_CACHE[cache_key] = (now_epoch, count)
+    return count
+
+
+def _lane_signal_metrics(lane: dict[str, Any], now: datetime) -> dict[str, Any]:
+    paths: list[Path] = []
+    events_file_raw = str(lane.get("events_file", "")).strip()
+    if events_file_raw:
+        paths.append(Path(events_file_raw))
+    meta = lane.get("meta")
+    if isinstance(meta, dict):
+        conversation_file_raw = str(meta.get("conversation_log_file", "")).strip()
+        if conversation_file_raw:
+            paths.append(Path(conversation_file_raw))
+
+    latest_signal: datetime | None = None
+    events_15 = 0
+    events_60 = 0
+    events_300 = 0
+
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        for event in _read_tail_json_objects(resolved, max_lines=300):
+            parsed = _parse_event_timestamp(event.get("timestamp") or event.get("time") or "")
+            if parsed is None:
+                continue
+            if latest_signal is None or parsed >= latest_signal:
+                latest_signal = parsed
+            age_sec = (now - parsed).total_seconds()
+            if age_sec < 0:
+                age_sec = 0
+            if age_sec <= 15:
+                events_15 += 1
+            if age_sec <= 60:
+                events_60 += 1
+            if age_sec <= 300:
+                events_300 += 1
+
+    if latest_signal is None:
+        latest_signal_at = ""
+        latest_signal_age_sec = -1
+    else:
+        latest_signal_at = latest_signal.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        latest_signal_age_sec = max(0, int((now - latest_signal).total_seconds()))
+
+    running = bool(lane.get("running", False))
+    health = str(lane.get("health", "unknown")).strip().lower()
+    if not running:
+        live_state = "offline"
+        live_label = "offline"
+    elif latest_signal_age_sec != -1 and latest_signal_age_sec <= 20:
+        live_state = "thinking"
+        live_label = "thinking"
+    elif latest_signal_age_sec != -1 and latest_signal_age_sec <= 90:
+        live_state = "active"
+        live_label = "active"
+    elif health in {"stale", "error", "stopped_unexpected"}:
+        live_state = "stale"
+        live_label = "stale"
+    else:
+        live_state = "active" if running else "offline"
+        live_label = "listening" if running else "offline"
+
+    signal_level = min(1.0, max(events_15 / 6.0, events_60 / 24.0, events_300 / 80.0))
+    if live_state == "thinking":
+        signal_level = max(signal_level, 0.75)
+    elif live_state == "active":
+        signal_level = max(signal_level, 0.35)
+    elif live_state == "stale":
+        signal_level = max(signal_level, 0.15)
+
+    return {
+        "latest_signal_at": latest_signal_at,
+        "latest_signal_age_sec": latest_signal_age_sec,
+        "signal_events_15s": events_15,
+        "signal_events_60s": events_60,
+        "signal_events_300s": events_300,
+        "signal_level": round(signal_level, 3),
+        "live_state": live_state,
+        "live_label": live_label,
+    }
+
+
+def _safe_collab_runtime_snapshot(config: ManagerConfig) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    lane_payload = _safe_lane_status_snapshot(config)
+    raw_rows = lane_payload.get("lanes", [])
+    if not isinstance(raw_rows, list):
+        raw_rows = []
+
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    lane_errors = lane_payload.get("errors", [])
+    if isinstance(lane_errors, list):
+        errors.extend(str(item).strip() for item in lane_errors if str(item).strip())
+    elif str(lane_errors).strip():
+        errors.append(str(lane_errors).strip())
+
+    for raw_lane in raw_rows:
+        if not isinstance(raw_lane, dict):
+            continue
+        lane_id = str(raw_lane.get("id", "lane")).strip() or "lane"
+        ai = str(raw_lane.get("owner", "unknown")).strip() or "unknown"
+        pid = _watchdog_normalize_pid(raw_lane.get("pid"))
+        running = bool(raw_lane.get("running", False))
+        health = str(raw_lane.get("health", "unknown")).strip() or "unknown"
+        work_title, task_id = _resolve_lane_work_title(raw_lane)
+        running_age_sec = _lane_running_age_seconds(raw_lane, now) if running else -1
+        health_at, health_age_sec = _lane_health_confirmation(raw_lane, now)
+        commits_last_hour = _lane_commit_count_last_hour(raw_lane, now)
+        signal = _lane_signal_metrics(raw_lane, now)
+        row = {
+            "lane_id": lane_id,
+            "ai": ai,
+            "pid": pid,
+            "running": running,
+            "health": health,
+            "work_title": work_title,
+            "task_id": task_id,
+            "running_age_sec": running_age_sec,
+            "latest_health_confirmation_at": health_at,
+            "latest_health_confirmation_age_sec": health_age_sec,
+            "commits_last_hour": commits_last_hour,
+            **signal,
+        }
+        rows.append(row)
+
+    rows.sort(
+        key=lambda item: (
+            0 if bool(item.get("running", False)) else 1,
+            str(item.get("ai", "unknown")).strip(),
+            str(item.get("lane_id", "")).strip(),
+        )
+    )
+
+    running_rows = sum(1 for item in rows if bool(item.get("running", False)))
+    thinking_rows = sum(1 for item in rows if str(item.get("live_state", "")) == "thinking")
+    active_rows = sum(1 for item in rows if str(item.get("live_state", "")) == "active")
+    stale_rows = sum(1 for item in rows if str(item.get("live_state", "")) == "stale")
+    offline_rows = sum(1 for item in rows if str(item.get("live_state", "")) == "offline")
+    commits_total = sum(max(0, _coerce_int(item.get("commits_last_hour"), default=0)) for item in rows)
+
+    latest_signal_times = [
+        _parse_event_timestamp(item.get("latest_signal_at"))
+        for item in rows
+        if str(item.get("latest_signal_at", "")).strip()
+    ]
+    latest_signal_times = [item for item in latest_signal_times if item is not None]
+    latest_health_times = [
+        _parse_event_timestamp(item.get("latest_health_confirmation_at"))
+        for item in rows
+        if str(item.get("latest_health_confirmation_at", "")).strip()
+    ]
+    latest_health_times = [item for item in latest_health_times if item is not None]
+
+    latest_signal_at = ""
+    latest_signal_age_sec = -1
+    if latest_signal_times:
+        last_signal = max(latest_signal_times)
+        latest_signal_at = last_signal.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        latest_signal_age_sec = max(0, int((now - last_signal).total_seconds()))
+
+    latest_health_at = ""
+    if latest_health_times:
+        last_health = max(latest_health_times)
+        latest_health_at = last_health.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    return {
+        "timestamp": now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "ok": bool(lane_payload.get("ok", False)) and not errors,
+        "partial": bool(lane_payload.get("partial", False)) or bool(errors),
+        "errors": errors,
+        "rows": rows,
+        "summary": {
+            "total_rows": len(rows),
+            "running_rows": running_rows,
+            "thinking_rows": thinking_rows,
+            "active_rows": active_rows,
+            "stale_rows": stale_rows,
+            "offline_rows": offline_rows,
+            "commits_last_hour_total": commits_total,
+            "latest_signal_at": latest_signal_at,
+            "latest_signal_age_sec": latest_signal_age_sec,
+            "latest_health_at": latest_health_at,
+        },
     }
 
 
