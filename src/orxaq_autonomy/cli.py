@@ -707,7 +707,8 @@ def main(argv: list[str] | None = None) -> int:
             lane_id = args.lane.strip() or None
             payload = stop_lanes_background(cfg, lane_id=lane_id)
             print(json.dumps(payload, indent=2, sort_keys=True))
-            return 0
+            stop_ok = bool(payload.get("ok", int(payload.get("failed_count", 0)) == 0))
+            return 0 if stop_ok else 1
     except (FileNotFoundError, RuntimeError) as err:
         print(
             json.dumps(

@@ -494,6 +494,28 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(stop.call_args.kwargs["lane_id"], "codex-governance")
 
+    def test_lanes_stop_command_returns_nonzero_when_not_ok(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.stop_lanes_background",
+                return_value={"ok": False, "stopped_count": 0, "failed_count": 1},
+            ):
+                rc = cli.main(["--root", str(root), "lanes-stop"])
+            self.assertEqual(rc, 1)
+
+    def test_lanes_stop_command_infers_success_when_ok_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.stop_lanes_background",
+                return_value={"stopped_count": 1, "failed_count": 0},
+            ):
+                rc = cli.main(["--root", str(root), "lanes-stop"])
+            self.assertEqual(rc, 0)
+
     def test_lanes_status_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
