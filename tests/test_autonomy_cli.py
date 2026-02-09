@@ -374,6 +374,30 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "missing"])
             self.assertEqual(rc, 1)
 
+    def test_lane_inspect_command_degrades_when_lane_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                side_effect=RuntimeError("lane source unavailable"),
+            ), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value={"total_events": 0, "events": [], "owner_counts": {}, "ok": True, "partial": False},
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertTrue(payload["partial"])
+            self.assertEqual(payload["lane"]["id"], "lane-a")
+            self.assertEqual(payload["lane"]["owner"], "unknown")
+            self.assertEqual(payload["lane"]["health"], "error")
+            self.assertTrue(payload["lane_errors"])
+            self.assertIn("lane source unavailable", payload["lane_errors"][0])
+
     def test_lanes_start_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -468,6 +492,26 @@ class CliTests(unittest.TestCase):
             ):
                 rc = cli.main(["--root", str(root), "lanes-status", "--lane", "missing"])
             self.assertEqual(rc, 1)
+
+    def test_lanes_status_command_degrades_when_lane_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                side_effect=RuntimeError("lane status read failed"),
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertTrue(payload["partial"])
+            self.assertEqual(payload["requested_lane"], "lane-a")
+            self.assertEqual(payload["total_count"], 0)
+            self.assertTrue(payload["errors"])
+            self.assertIn("lane status read failed", payload["errors"][0])
 
     def test_lanes_ensure_command(self):
         with tempfile.TemporaryDirectory() as td:
