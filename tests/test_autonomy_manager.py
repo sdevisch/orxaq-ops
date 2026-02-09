@@ -360,6 +360,130 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(metrics["exciting_stat"]["label"], "Token Flow")
             self.assertIn("codex", metrics["by_owner"])
 
+    def test_response_metrics_snapshot_prefers_latest_metric_by_utc_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.metrics_summary_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.metrics_summary_file.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 1,
+                        "quality_score_sum": 1.0,
+                        "latency_sec_sum": 2.0,
+                        "prompt_difficulty_score_sum": 3.0,
+                        "tokens_total": 100,
+                        "tokens_input_total": 60,
+                        "tokens_output_total": 40,
+                        "token_exact_count": 1,
+                        "first_time_pass_count": 1,
+                        "acceptance_pass_count": 1,
+                        "exact_cost_count": 1,
+                        "cost_usd_total": 0.1,
+                        "latest_metric": {
+                            "timestamp": "2026-01-01T01:30:00+01:00",
+                            "task_id": "earlier-utc",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            lane_metrics = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "response_metrics_summary.json"
+            lane_metrics.parent.mkdir(parents=True, exist_ok=True)
+            lane_metrics.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 1,
+                        "quality_score_sum": 0.5,
+                        "latency_sec_sum": 1.0,
+                        "prompt_difficulty_score_sum": 2.0,
+                        "tokens_total": 80,
+                        "tokens_input_total": 50,
+                        "tokens_output_total": 30,
+                        "token_exact_count": 1,
+                        "first_time_pass_count": 1,
+                        "acceptance_pass_count": 1,
+                        "exact_cost_count": 1,
+                        "cost_usd_total": 0.05,
+                        "latest_metric": {
+                            "timestamp": "2026-01-01T00:45:00+00:00",
+                            "task_id": "later-utc",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager._response_metrics_snapshot(
+                cfg,
+                lane_items=[{"metrics_summary_file": str(lane_metrics)}],
+            )
+            self.assertEqual(snapshot["latest_metric"]["task_id"], "later-utc")
+            self.assertEqual(snapshot["latest_metric"]["timestamp"], "2026-01-01T00:45:00+00:00")
+
+    def test_response_metrics_snapshot_uses_source_sequence_for_invalid_latest_metric_timestamps(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.metrics_summary_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.metrics_summary_file.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 1,
+                        "quality_score_sum": 1.0,
+                        "latency_sec_sum": 2.0,
+                        "prompt_difficulty_score_sum": 3.0,
+                        "tokens_total": 100,
+                        "tokens_input_total": 60,
+                        "tokens_output_total": 40,
+                        "token_exact_count": 1,
+                        "first_time_pass_count": 1,
+                        "acceptance_pass_count": 1,
+                        "exact_cost_count": 1,
+                        "cost_usd_total": 0.1,
+                        "latest_metric": {
+                            "timestamp": "z-invalid",
+                            "task_id": "first-invalid",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            lane_metrics = root / "artifacts" / "autonomy" / "lanes" / "lane-a" / "response_metrics_summary.json"
+            lane_metrics.parent.mkdir(parents=True, exist_ok=True)
+            lane_metrics.write_text(
+                json.dumps(
+                    {
+                        "responses_total": 1,
+                        "quality_score_sum": 0.5,
+                        "latency_sec_sum": 1.0,
+                        "prompt_difficulty_score_sum": 2.0,
+                        "tokens_total": 80,
+                        "tokens_input_total": 50,
+                        "tokens_output_total": 30,
+                        "token_exact_count": 1,
+                        "first_time_pass_count": 1,
+                        "acceptance_pass_count": 1,
+                        "exact_cost_count": 1,
+                        "cost_usd_total": 0.05,
+                        "latest_metric": {
+                            "timestamp": "a-invalid",
+                            "task_id": "second-invalid",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager._response_metrics_snapshot(
+                cfg,
+                lane_items=[{"metrics_summary_file": str(lane_metrics)}],
+            )
+            self.assertEqual(snapshot["latest_metric"]["task_id"], "second-invalid")
+            self.assertEqual(snapshot["latest_metric"]["timestamp"], "a-invalid")
+
     def test_monitor_snapshot_retains_output_when_lane_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

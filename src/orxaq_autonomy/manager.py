@@ -1282,6 +1282,8 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
     by_owner: dict[str, dict[str, Any]] = {}
     latest_metric: dict[str, Any] = {}
     latest_timestamp = ""
+    latest_timestamp_parsed: dt.datetime | None = None
+    latest_timestamp_is_valid = False
 
     responses_total = 0
     quality_sum = 0.0
@@ -1422,9 +1424,21 @@ def _response_metrics_snapshot(config: ManagerConfig, lane_items: list[dict[str,
         latest = summary.get("latest_metric", {})
         if isinstance(latest, dict):
             ts = str(latest.get("timestamp", "")).strip()
-            if ts and ts >= latest_timestamp:
-                latest_timestamp = ts
-                latest_metric = latest
+            if ts:
+                parsed = _parse_iso_timestamp(ts)
+                should_replace = False
+                if parsed is not None:
+                    if (not latest_timestamp_is_valid) or latest_timestamp_parsed is None or parsed >= latest_timestamp_parsed:
+                        should_replace = True
+                elif not latest_timestamp_is_valid:
+                    # When all timestamps are invalid, preserve source order by
+                    # allowing later entries to replace earlier ones.
+                    should_replace = True
+                if should_replace:
+                    latest_timestamp = ts
+                    latest_timestamp_parsed = parsed
+                    latest_timestamp_is_valid = parsed is not None
+                    latest_metric = latest
 
         for item in summary.get("optimization_recommendations", []):
             text = str(item).strip()
