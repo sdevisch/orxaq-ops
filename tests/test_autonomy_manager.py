@@ -1524,6 +1524,81 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(payload["failed"][0]["source"], "lane_config")
             start.assert_called_once_with(cfg, "lane-a")
 
+    def test_lane_spec_rebases_legacy_artifact_paths_when_artifacts_dir_overridden(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            overridden_artifacts = root / "runtime-artifacts"
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8")
+                + f"ORXAQ_AUTONOMY_ARTIFACTS_DIR={overridden_artifacts}\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "artifacts_dir": "artifacts/autonomy/lanes/lane-a",
+                                "conversation_log_file": "artifacts/autonomy/lanes/lane-a/conversations.ndjson",
+                                "handoff_dir": "artifacts/autonomy/handoffs",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane = manager.load_lane_specs(cfg)[0]
+            self.assertEqual(lane["artifacts_dir"], (overridden_artifacts / "lanes" / "lane-a").resolve())
+            self.assertEqual(
+                lane["conversation_log_file"],
+                (overridden_artifacts / "lanes" / "lane-a" / "conversations.ndjson").resolve(),
+            )
+            self.assertEqual(lane["handoff_dir"], (overridden_artifacts / "handoffs").resolve())
+
+    def test_lane_spec_keeps_non_legacy_relative_paths_root_relative(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            overridden_artifacts = root / "runtime-artifacts"
+            env_file = root / ".env.autonomy"
+            env_file.write_text(
+                env_file.read_text(encoding="utf-8")
+                + f"ORXAQ_AUTONOMY_ARTIFACTS_DIR={overridden_artifacts}\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "lane-a",
+                                "enabled": True,
+                                "owner": "codex",
+                                "impl_repo": str(root / "impl_repo"),
+                                "test_repo": str(root / "test_repo"),
+                                "tasks_file": "config/tasks.json",
+                                "objective_file": "config/objective.md",
+                                "handoff_dir": "custom/handoffs",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = manager.ManagerConfig.from_root(root)
+            lane = manager.load_lane_specs(cfg)[0]
+            self.assertEqual(lane["handoff_dir"], (root / "custom" / "handoffs").resolve())
+
     def test_build_lane_runner_cmd_includes_dependency_state_and_handoff_dir(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

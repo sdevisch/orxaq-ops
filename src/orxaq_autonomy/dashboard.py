@@ -2446,16 +2446,6 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
         if not isinstance(lane_owner_counts, dict):
             lane_owner_counts = {}
 
-        lane_operational_states = {"ok", "paused", "idle"}
-        lane_operational_count = 0
-        lane_degraded_count = 0
-        for lane in lane_items:
-            health = str(lane.get("health", "unknown")).strip().lower()
-            if health in lane_operational_states:
-                lane_operational_count += 1
-            else:
-                lane_degraded_count += 1
-
         conversation_events = conversation_payload.get("events", [])
         if not isinstance(conversation_events, list):
             conversation_events = []
@@ -2540,6 +2530,20 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             },
             conversation_payload,
         )
+        runtime_lane_items = lanes_snapshot_payload.get("lanes", [])
+        if not isinstance(runtime_lane_items, list):
+            runtime_lane_items = []
+        runtime_lane_items = [item for item in runtime_lane_items if isinstance(item, dict)]
+        runtime_health_counts, runtime_owner_counts, runtime_running_count = _lane_owner_health_counts(runtime_lane_items)
+        lane_operational_states = {"ok", "paused", "idle"}
+        runtime_operational_count = 0
+        runtime_degraded_count = 0
+        for lane in runtime_lane_items:
+            health = str(lane.get("health", "unknown")).strip().lower()
+            if health in lane_operational_states:
+                runtime_operational_count += 1
+            else:
+                runtime_degraded_count += 1
         return {
             "timestamp": "",
             "latest_log_line": f"monitor snapshot error: {message}",
@@ -2560,12 +2564,12 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             "lanes": lanes_snapshot_payload,
             "runtime": {
                 "primary_runner_running": False,
-                "lane_agents_running": running_count > 0,
-                "effective_agents_running": running_count > 0,
-                "lane_operational_count": lane_operational_count,
-                "lane_degraded_count": lane_degraded_count,
-                "lane_health_counts": lane_health_counts,
-                "lane_owner_health": lane_owner_counts,
+                "lane_agents_running": runtime_running_count > 0,
+                "effective_agents_running": runtime_running_count > 0,
+                "lane_operational_count": runtime_operational_count,
+                "lane_degraded_count": runtime_degraded_count,
+                "lane_health_counts": runtime_health_counts,
+                "lane_owner_health": runtime_owner_counts,
                 "push_recovery_events": {
                     "recent_total": 0,
                     "auto_push_race_recovered": 0,

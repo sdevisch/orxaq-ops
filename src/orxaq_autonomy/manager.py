@@ -1943,6 +1943,26 @@ def _resolve_path(root: Path, raw: str, default: Path) -> Path:
     return path.resolve()
 
 
+def _resolve_lane_path(root: Path, raw: str, default: Path, *, artifacts_dir: Path) -> Path:
+    value = raw.strip()
+    if not value:
+        return default.resolve()
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+
+    # Preserve backwards compatibility for lane configs that still reference the
+    # default "artifacts/autonomy/..." paths while honoring ORXAQ_AUTONOMY_ARTIFACTS_DIR.
+    normalized = value.replace("\\", "/").lstrip("./")
+    legacy_prefix = "artifacts/autonomy"
+    if normalized == legacy_prefix or normalized.startswith(f"{legacy_prefix}/"):
+        suffix = normalized[len(legacy_prefix) :].lstrip("/")
+        rebased = artifacts_dir / suffix if suffix else artifacts_dir
+        return rebased.resolve()
+
+    return (root / path).resolve()
+
+
 def _tail_ndjson(path: Path, limit: int) -> list[dict[str, Any]]:
     if limit <= 0 or not path.exists():
         return []
@@ -1990,32 +2010,47 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
     if owner not in {"codex", "gemini", "claude"}:
         raise RuntimeError(f"Unsupported lane owner {owner!r} for lane {lane_id!r}")
     runtime_dir = (config.lanes_runtime_dir / lane_id).resolve()
-    artifacts_dir = _resolve_path(config.root_dir, str(item.get("artifacts_dir", "")), runtime_dir)
-    state_file = _resolve_path(
+    artifacts_dir = _resolve_lane_path(
+        config.root_dir,
+        str(item.get("artifacts_dir", "")),
+        runtime_dir,
+        artifacts_dir=config.artifacts_dir,
+    )
+    state_file = _resolve_lane_path(
         config.root_dir,
         str(item.get("state_file", "")),
         artifacts_dir / "state.json",
+        artifacts_dir=config.artifacts_dir,
     )
-    heartbeat_file = _resolve_path(
+    heartbeat_file = _resolve_lane_path(
         config.root_dir,
         str(item.get("heartbeat_file", "")),
         artifacts_dir / "heartbeat.json",
+        artifacts_dir=config.artifacts_dir,
     )
-    lock_file = _resolve_path(config.root_dir, str(item.get("lock_file", "")), artifacts_dir / "runner.lock")
-    conversation_log_file = _resolve_path(
+    lock_file = _resolve_lane_path(
+        config.root_dir,
+        str(item.get("lock_file", "")),
+        artifacts_dir / "runner.lock",
+        artifacts_dir=config.artifacts_dir,
+    )
+    conversation_log_file = _resolve_lane_path(
         config.root_dir,
         str(item.get("conversation_log_file", "")),
         artifacts_dir / "conversations.ndjson",
+        artifacts_dir=config.artifacts_dir,
     )
-    metrics_file = _resolve_path(
+    metrics_file = _resolve_lane_path(
         config.root_dir,
         str(item.get("metrics_file", "")),
         artifacts_dir / "response_metrics.ndjson",
+        artifacts_dir=config.artifacts_dir,
     )
-    metrics_summary_file = _resolve_path(
+    metrics_summary_file = _resolve_lane_path(
         config.root_dir,
         str(item.get("metrics_summary_file", "")),
         artifacts_dir / "response_metrics_summary.json",
+        artifacts_dir=config.artifacts_dir,
     )
     pricing_file = _resolve_path(
         config.root_dir,
@@ -2051,10 +2086,11 @@ def _build_lane_spec(config: ManagerConfig, item: dict[str, Any]) -> dict[str, A
             str(item.get("dependency_state_file", "")),
             config.state_file,
         ),
-        "handoff_dir": _resolve_path(
+        "handoff_dir": _resolve_lane_path(
             config.root_dir,
             str(item.get("handoff_dir", "")),
             config.artifacts_dir / "handoffs",
+            artifacts_dir=config.artifacts_dir,
         ),
         "artifacts_dir": artifacts_dir,
         "heartbeat_file": heartbeat_file,
