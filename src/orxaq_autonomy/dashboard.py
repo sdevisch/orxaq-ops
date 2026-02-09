@@ -948,10 +948,25 @@ def _dashboard_html(refresh_sec: int) -> str:
           }}, FETCH_TIMEOUT_MS);
         }});
         const response = await Promise.race([fetch(path, options), timeoutPromise]);
-        if (!response.ok) {{
-          throw new Error(`HTTP ${{response.status}}`);
+        const rawBody = await response.text();
+        let payload = null;
+        if (rawBody) {{
+          try {{
+            payload = JSON.parse(rawBody);
+          }} catch (_jsonErr) {{
+            payload = null;
+          }}
         }}
-        return {{ ok: true, payload: await response.json(), error: "" }};
+        if (!response.ok) {{
+          const detail = payload && typeof payload === "object" && payload.error
+            ? String(payload.error)
+            : (rawBody ? rawBody.slice(0, 200) : "");
+          const message = detail
+            ? `HTTP ${{response.status}}: ${{detail}}`
+            : `HTTP ${{response.status}}`;
+          return {{ ok: false, payload, error: message }};
+        }}
+        return {{ ok: true, payload: payload || {{}}, error: "" }};
       }} catch (err) {{
         return {{ ok: false, payload: null, error: String(err) }};
       }} finally {{
@@ -965,8 +980,11 @@ def _dashboard_html(refresh_sec: int) -> str:
       query.set("action", action);
       if (laneTarget) query.set("lane", laneTarget);
       const result = await fetchJson(`/api/lanes/action?${{query.toString()}}`);
-      if (!result.ok || !result.payload) {{
-        setLaneActionStatus(`${{action}} failed: ${{result.error}}`, true);
+      if (!result.ok) {{
+        const detail = result.payload && result.payload.error
+          ? String(result.payload.error)
+          : result.error;
+        setLaneActionStatus(`${{action}} failed: ${{detail}}`, true);
         return;
       }}
       const payload = result.payload || {{}};
@@ -1178,7 +1196,7 @@ def start_dashboard(
                     action = query.get("action", [""])[0]
                     lane_id = query.get("lane", [""])[0]
                     payload = _safe_lane_action(config, action=action, lane_id=lane_id)
-                    status = HTTPStatus.OK if payload.get("ok", False) else HTTPStatus.SERVICE_UNAVAILABLE
+                    status = _lane_action_http_status(payload)
                     self._send_json(payload, status=status)
                     return
                 if parsed.path == "/api/lanes":
@@ -1553,6 +1571,17 @@ def _safe_lane_action(config: ManagerConfig, *, action: str, lane_id: str = "") 
             "lane": normalized_lane or "",
             "error": str(err),
         }
+
+
+def _lane_action_http_status(payload: dict[str, Any]) -> HTTPStatus:
+    if bool(payload.get("ok", False)):
+        return HTTPStatus.OK
+    error = str(payload.get("error", "")).strip().lower()
+    if error == "unsupported action":
+        return HTTPStatus.BAD_REQUEST
+    if error.startswith("unknown lane id "):
+        return HTTPStatus.NOT_FOUND
+    return HTTPStatus.SERVICE_UNAVAILABLE
 
 
 def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -> dict[str, Any]:

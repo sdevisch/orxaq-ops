@@ -1,6 +1,7 @@
 import pathlib
 import sys
 from datetime import datetime, timezone
+from http import HTTPStatus
 import unittest
 from unittest import mock
 
@@ -46,6 +47,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("filterFallbackConversationEvents", html)
         self.assertIn("FETCH_TIMEOUT_MS", html)
         self.assertIn("timeout after", html)
+        self.assertIn("const rawBody = await response.text();", html)
+        self.assertIn("HTTP ${response.status}: ${detail}", html)
+        self.assertIn("result.payload && result.payload.error", html)
 
     def test_safe_monitor_snapshot_degrades_on_failure(self):
         with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("boom")):
@@ -245,6 +249,24 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["failed_count"], 0)
         self.assertEqual(payload["lane"], "")
+
+    def test_lane_action_http_status_ok_when_action_succeeds(self):
+        status = dashboard._lane_action_http_status({"ok": True})
+        self.assertEqual(status, HTTPStatus.OK)
+
+    def test_lane_action_http_status_bad_request_for_unsupported_action(self):
+        status = dashboard._lane_action_http_status({"ok": False, "error": "unsupported action"})
+        self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+
+    def test_lane_action_http_status_not_found_for_unknown_lane(self):
+        status = dashboard._lane_action_http_status(
+            {"ok": False, "error": "Unknown lane id 'missing-lane'. Update /tmp/lanes.json."}
+        )
+        self.assertEqual(status, HTTPStatus.NOT_FOUND)
+
+    def test_lane_action_http_status_service_unavailable_for_runtime_error(self):
+        status = dashboard._lane_action_http_status({"ok": False, "error": "lane runtime unavailable"})
+        self.assertEqual(status, HTTPStatus.SERVICE_UNAVAILABLE)
 
     def test_safe_daw_snapshot_uses_monitor_fallback_when_monitor_fails(self):
         cfg = mock.Mock()
