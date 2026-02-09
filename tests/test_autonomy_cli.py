@@ -523,6 +523,43 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["suppressed_source_error_count"], 2)
             self.assertIn("conversation source unavailable", data["suppressed_source_errors"])
 
+    def test_conversations_command_normalizes_scalar_errors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            payload = {
+                "total_events": 1,
+                "events": [
+                    {"owner": "codex", "lane_id": "lane-a", "event_type": "status", "content": "alpha"},
+                ],
+                "owner_counts": {"codex": 1},
+                "sources": [
+                    {
+                        "lane_id": "lane-a",
+                        "kind": "lane",
+                        "resolved_kind": "lane",
+                        "path": "/tmp/lanes/lane-a/conversations.ndjson",
+                        "resolved_path": "/tmp/lanes/lane-a/conversations.ndjson",
+                        "ok": True,
+                        "error": "",
+                        "event_count": 1,
+                    },
+                ],
+                "partial": True,
+                "ok": False,
+                "errors": "lane-a source lagging",
+            }
+            with mock.patch("orxaq_autonomy.cli.conversations_snapshot", return_value=payload):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "conversations", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertFalse(data["ok"])
+            self.assertTrue(data["partial"])
+            self.assertEqual(data["errors"], ["lane-a source lagging"])
+            self.assertEqual(data["suppressed_source_error_count"], 0)
+
     def test_lane_inspect_command_returns_lane_and_filtered_conversations(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -1142,6 +1179,32 @@ class CliTests(unittest.TestCase):
             self.assertTrue(data["partial"])
             self.assertEqual(data["suppressed_errors"], [])
             self.assertIn("lane status source unavailable", data["errors"][0])
+
+    def test_lanes_status_with_lane_filter_normalizes_scalar_errors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.lane_status_snapshot",
+                return_value={
+                    "lanes_file": "config/lanes.json",
+                    "ok": False,
+                    "partial": True,
+                    "errors": "lane status source unavailable",
+                    "lanes": [
+                        {"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"},
+                    ],
+                },
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lanes-status", "--json", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertFalse(data["ok"])
+            self.assertTrue(data["partial"])
+            self.assertEqual(data["suppressed_errors"], [])
+            self.assertEqual(data["errors"], ["lane status source unavailable"])
 
     def test_lanes_status_with_lane_filter_keeps_colon_global_errors(self):
         with tempfile.TemporaryDirectory() as td:

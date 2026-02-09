@@ -287,6 +287,22 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(filtered["errors"], ["lane status source: timeout"])
         self.assertEqual(filtered["suppressed_errors"], ["lane-b: heartbeat stale"])
 
+    def test_filter_lane_status_payload_normalizes_scalar_errors(self):
+        payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": False,
+            "partial": True,
+            "errors": "lane status source unavailable",
+            "lanes": [
+                {"id": "lane-a", "owner": "codex", "running": True, "health": "ok"},
+            ],
+        }
+        filtered = dashboard._filter_lane_status_payload(payload, lane_id="lane-a")
+        self.assertFalse(filtered["ok"])
+        self.assertTrue(filtered["partial"])
+        self.assertEqual(filtered["suppressed_errors"], [])
+        self.assertEqual(filtered["errors"], ["lane status source unavailable"])
+
     def test_safe_conversations_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()
         cfg.conversation_log_file = pathlib.Path("/tmp/conversations.ndjson")
@@ -358,6 +374,21 @@ class DashboardTests(unittest.TestCase):
             filtered["suppressed_source_errors"],
         )
         self.assertEqual(filtered["suppressed_source_error_count"], 2)
+
+    def test_filter_conversation_payload_for_lane_normalizes_scalar_errors(self):
+        payload = {
+            "ok": False,
+            "partial": True,
+            "errors": "lane-a source lagging",
+            "sources": [
+                {"lane_id": "lane-a", "kind": "lane", "ok": True, "error": "", "event_count": 1},
+            ],
+        }
+        filtered = dashboard._filter_conversation_payload_for_lane(payload, lane_id="lane-a")
+        self.assertFalse(filtered["ok"])
+        self.assertTrue(filtered["partial"])
+        self.assertEqual(filtered["errors"], ["lane-a source lagging"])
+        self.assertEqual(filtered["suppressed_source_error_count"], 0)
 
     def test_apply_conversation_filters_matches_owner_and_lane(self):
         payload = {

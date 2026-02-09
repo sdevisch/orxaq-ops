@@ -1916,9 +1916,7 @@ def _filter_conversation_payload_for_lane(
         return False
 
     suppressed_payload_errors: list[str] = []
-    payload_errors = payload.get("errors", [])
-    if not isinstance(payload_errors, list):
-        payload_errors = []
+    payload_errors = _normalize_error_messages(payload.get("errors", []))
     for entry in payload_errors:
         message = str(entry).strip()
         if not message:
@@ -1945,6 +1943,21 @@ def _filter_conversation_payload_for_lane(
     filtered["suppressed_source_errors"] = merged_suppressed_errors
     filtered["suppressed_source_error_count"] = len(merged_suppressed_errors)
     return filtered
+
+
+def _normalize_error_messages(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        values = raw
+    elif raw in (None, "", []):
+        values = []
+    else:
+        values = [raw]
+    normalized: list[str] = []
+    for item in values:
+        message = str(item).strip()
+        if message:
+            normalized.append(message)
+    return normalized
 
 
 def _lane_conversation_rollup(conversation_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -2351,10 +2364,7 @@ def _filter_lane_status_payload(payload: dict[str, Any], *, lane_id: str = "") -
         for item in lane_items
         if isinstance(item, dict) and str(item.get("id", "")).strip()
     }
-    lane_errors = payload.get("errors", [])
-    if not isinstance(lane_errors, list):
-        lane_errors = []
-    normalized_errors = [str(item).strip() for item in lane_errors if str(item).strip()]
+    normalized_errors = _normalize_error_messages(payload.get("errors", []))
     suppressed_errors: list[str] = []
 
     if requested_lane:
