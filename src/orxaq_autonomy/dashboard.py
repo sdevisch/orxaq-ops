@@ -452,6 +452,7 @@ def _dashboard_html(refresh_sec: int) -> str:
         <div class="inline-controls">
           <div class="actions">
             <input id="laneTarget" type="text" placeholder="lane id (optional)" />
+            <button id="laneStatus">Status</button>
             <button id="laneEnsure">Ensure</button>
             <button id="laneStart">Start</button>
             <button id="laneStop">Stop</button>
@@ -1281,6 +1282,38 @@ def _dashboard_html(refresh_sec: int) -> str:
       await refresh();
     }}
 
+    async function inspectLaneStatus() {{
+      const laneTarget = String(byId("laneTarget").value || "").trim();
+      const result = await fetchJson(laneStatusPath());
+      if (!result.ok) {{
+        const detail = result.payload && result.payload.error
+          ? String(result.payload.error)
+          : result.error;
+        setLaneActionStatus(`status failed: ${{detail}}`, true);
+        return;
+      }}
+      const payload = result.payload || {{}};
+      lastSuccessfulLanePayload = payload;
+      const running = Number(payload.running_count || 0);
+      const total = Number(payload.total_count || 0);
+      const healthCounts = (payload.health_counts && typeof payload.health_counts === "object")
+        ? payload.health_counts
+        : {{}};
+      const degraded = Number(
+        healthCounts.degraded || healthCounts.error || healthCounts.stale || healthCounts.unknown || 0
+      );
+      const errors = Array.isArray(payload.errors)
+        ? payload.errors.filter((item) => String(item || "").trim())
+        : [];
+      const partial = Boolean(payload.partial);
+      const suffix = laneTarget ? ` lane=${{laneTarget}}` : "";
+      setLaneActionStatus(
+        `status${{suffix}} running=${{running}}/${{total}} degraded=${{degraded}} errors=${{errors.length}} partial=${{yn(partial)}}`,
+        partial || errors.length > 0,
+      );
+      await refresh();
+    }}
+
     async function refresh() {{
       const [monitorResult, convResult, laneResult, dawResult] = await Promise.all([
         fetchJson('/api/monitor'),
@@ -1411,6 +1444,7 @@ def _dashboard_html(refresh_sec: int) -> str:
     }});
     byId("convApply").addEventListener("click", applyConversationFilters);
     byId("convClear").addEventListener("click", clearConversationFilters);
+    byId("laneStatus").addEventListener("click", inspectLaneStatus);
     byId("laneEnsure").addEventListener("click", () => invokeLaneAction("ensure"));
     byId("laneStart").addEventListener("click", () => invokeLaneAction("start"));
     byId("laneStop").addEventListener("click", () => invokeLaneAction("stop"));
