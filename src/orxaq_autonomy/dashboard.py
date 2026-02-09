@@ -530,6 +530,71 @@ def _dashboard_html(refresh_sec: int) -> str:
       query.set("lane", laneTarget);
       return `/api/lanes?${{query.toString()}}`;
     }}
+    function fallbackLanePayloadFromMonitor(monitorPayload, laneTarget, laneEndpointError) {{
+      const monitorLanes = (
+        monitorPayload &&
+        monitorPayload.lanes &&
+        typeof monitorPayload.lanes === "object"
+      ) ? monitorPayload.lanes : {{}};
+      const requestedLane = String(laneTarget || "").trim();
+      const laneItemsRaw = Array.isArray(monitorLanes.lanes)
+        ? monitorLanes.lanes.filter((item) => item && typeof item === "object")
+        : [];
+      const laneItems = requestedLane
+        ? laneItemsRaw.filter((lane) => String(lane.id || "").trim() === requestedLane)
+        : laneItemsRaw;
+
+      const healthCounts = {{}};
+      const ownerCounts = {{}};
+      for (const lane of laneItems) {{
+        const health = String(lane.health || "unknown").trim().toLowerCase() || "unknown";
+        healthCounts[health] = Number(healthCounts[health] || 0) + 1;
+        const owner = String(lane.owner || "unknown").trim() || "unknown";
+        if (!ownerCounts[owner]) {{
+          ownerCounts[owner] = {{ total: 0, running: 0, healthy: 0, degraded: 0 }};
+        }}
+        const ownerEntry = ownerCounts[owner];
+        ownerEntry.total += 1;
+        if (lane.running) ownerEntry.running += 1;
+        if (health === "ok" || health === "paused" || health === "idle") {{
+          ownerEntry.healthy += 1;
+        }} else {{
+          ownerEntry.degraded += 1;
+        }}
+      }}
+
+      const errors = [];
+      if (Array.isArray(monitorLanes.errors)) {{
+        for (const item of monitorLanes.errors) {{
+          const message = String(item || "").trim();
+          if (message) errors.push(message);
+        }}
+      }}
+      if (laneEndpointError) {{
+        errors.push(`lane endpoint: ${{String(laneEndpointError).trim()}}`);
+      }}
+      if (requestedLane && laneItems.length === 0) {{
+        const lanesFile = String(monitorLanes.lanes_file || "").trim();
+        if (lanesFile) {{
+          errors.push(`Unknown lane id '${{requestedLane}}'. Update ${{lanesFile}}.`);
+        }} else {{
+          errors.push(`Unknown lane id '${{requestedLane}}'.`);
+        }}
+      }}
+
+      return {{
+        ...monitorLanes,
+        requested_lane: requestedLane || "all",
+        lanes: laneItems,
+        total_count: laneItems.length,
+        running_count: laneItems.filter((lane) => Boolean(lane.running)).length,
+        health_counts: healthCounts,
+        owner_counts: ownerCounts,
+        errors,
+        ok: false,
+        partial: true,
+      }};
+    }}
     function filterFallbackConversationEvents(events, filters) {{
       const ownerFilter = String((filters && filters.owner) || "").trim().toLowerCase();
       const laneFilter = String((filters && filters.lane) || "").trim().toLowerCase();
@@ -1067,7 +1132,10 @@ def _dashboard_html(refresh_sec: int) -> str:
 
       let monitorPayload = monitorResult.payload;
       let effectiveConversationPayload = null;
-      const lanePayload = laneResult.ok ? laneResult.payload : null;
+      const laneTarget = String(byId("laneTarget").value || "").trim();
+      const lanePayload = laneResult.ok
+        ? laneResult.payload
+        : fallbackLanePayloadFromMonitor(monitorPayload, laneTarget, laneResult.error);
 
       if (convResult.ok && convResult.payload) {{
         effectiveConversationPayload = convResult.payload;

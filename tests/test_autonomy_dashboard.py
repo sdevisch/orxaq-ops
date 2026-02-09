@@ -48,6 +48,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("conversationSources", html)
         self.assertIn("conversationPath", html)
         self.assertIn("laneStatusPath", html)
+        self.assertIn("fallbackLanePayloadFromMonitor", html)
+        self.assertIn("lane endpoint:", html)
         self.assertIn("filterFallbackConversationEvents", html)
         self.assertIn("buildConversationSourceMap", html)
         self.assertIn("FETCH_TIMEOUT_MS", html)
