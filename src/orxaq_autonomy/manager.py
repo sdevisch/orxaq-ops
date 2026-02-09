@@ -1488,6 +1488,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "health_counts": {},
         "owner_counts": {},
         "ok": False,
+        "partial": True,
         "errors": [],
     }
     try:
@@ -1495,6 +1496,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     except Exception as err:
         lanes["errors"] = [str(err)]
         lanes["error"] = str(err)
+        lanes["partial"] = True
     _mark_source("lanes", bool(lanes.get("ok", False)), "; ".join(lanes.get("errors", [])))
     progress = _combined_progress_snapshot(config, lanes)
 
@@ -1512,8 +1514,26 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     try:
         conv = conversations_snapshot(config, lines=60, include_lanes=True)
     except Exception as err:
-        conv["errors"] = [str(err)]
+        message = str(err)
+        conv["errors"] = [message]
         conv["partial"] = True
+        conv["ok"] = False
+        conv["sources"] = [
+            {
+                "path": str(config.conversation_log_file),
+                "resolved_path": str(config.conversation_log_file),
+                "kind": "primary",
+                "resolved_kind": "primary",
+                "lane_id": "",
+                "owner": "",
+                "ok": False,
+                "missing": not config.conversation_log_file.exists(),
+                "recoverable_missing": False,
+                "fallback_used": False,
+                "error": message,
+                "event_count": 0,
+            }
+        ]
     _mark_source("conversations", bool(conv.get("ok", False)), "; ".join(conv.get("errors", [])))
     conv_events = conv.get("events", [])
     if not isinstance(conv_events, list):
@@ -1605,6 +1625,7 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "lanes": lanes,
         "response_metrics": response_metrics,
         "conversations": {
+            "ok": bool(conv.get("ok", False)),
             "total_events": conv.get("total_events", 0),
             "owner_counts": conv.get("owner_counts", {}),
             "latest": (recent_conversations[-1] if recent_conversations else {}),

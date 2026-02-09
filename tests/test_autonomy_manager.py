@@ -398,7 +398,52 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse(snapshot["diagnostics"]["ok"])
             self.assertFalse(snapshot["diagnostics"]["sources"]["lanes"]["ok"])
             self.assertFalse(snapshot["lanes"]["ok"])
+            self.assertTrue(snapshot["lanes"]["partial"])
             self.assertIn("lane source unavailable", snapshot["lanes"]["errors"][0])
+
+    def test_monitor_snapshot_retains_output_when_conversation_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": True,
+                    "errors": [],
+                    "running_count": 1,
+                    "total_count": 1,
+                    "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+                    "health_counts": {"ok": 1},
+                    "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                side_effect=RuntimeError("conversation source unavailable"),
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertFalse(snapshot["diagnostics"]["sources"]["conversations"]["ok"])
+            self.assertFalse(snapshot["conversations"]["ok"])
+            self.assertTrue(snapshot["conversations"]["partial"])
+            self.assertEqual(snapshot["conversations"]["total_events"], 0)
+            self.assertEqual(len(snapshot["conversations"]["sources"]), 1)
+            self.assertEqual(snapshot["conversations"]["sources"][0]["kind"], "primary")
+            self.assertEqual(snapshot["conversations"]["sources"][0]["path"], str(cfg.conversation_log_file))
+            self.assertIn("conversation source unavailable", snapshot["conversations"]["errors"][0])
 
     def test_monitor_snapshot_retains_output_when_response_metrics_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
