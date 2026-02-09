@@ -1274,6 +1274,12 @@ class ManagerTests(unittest.TestCase):
             lane_events_seen = [item for item in snapshot["events"] if item.get("source_kind") == "lane_events"]
             self.assertEqual(len(lane_events_seen), 1)
             self.assertIn("task_done", lane_events_seen[0].get("content", ""))
+            lane_source = next(item for item in snapshot["sources"] if item.get("lane_id") == "lane-a")
+            self.assertTrue(lane_source["ok"])
+            self.assertTrue(lane_source["missing"])
+            self.assertTrue(lane_source["recoverable_missing"])
+            self.assertTrue(lane_source["fallback_used"])
+            self.assertEqual(lane_source["resolved_kind"], "lane_events")
 
     def test_conversations_snapshot_falls_back_when_lane_conversation_read_fails(self):
         with tempfile.TemporaryDirectory() as td:

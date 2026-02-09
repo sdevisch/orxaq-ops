@@ -3226,6 +3226,8 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
                     resolved_path = fallback_path
                     source_kind = "lane_events"
                     fallback_used = True
+                    if source["kind"] == "lane":
+                        recoverable_missing = True
                 except Exception as err:
                     source_ok = False
                     source_error = str(err)

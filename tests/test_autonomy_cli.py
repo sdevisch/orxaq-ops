@@ -766,6 +766,63 @@ class CliTests(unittest.TestCase):
             self.assertFalse(payload["ok"])
             self.assertTrue(payload["partial"])
 
+    def test_lane_inspect_reports_recoverable_missing_lane_conversation_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "errors": [],
+                "health_counts": {"ok": 1},
+                "owner_counts": {"codex": {"total": 1, "running": 1, "healthy": 1, "degraded": 0}},
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "health": "ok"}],
+            }
+            conv_payload = {
+                "total_events": 1,
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "owner": "codex",
+                        "lane_id": "lane-a",
+                        "event_type": "status",
+                        "content": "recovered via lane events",
+                    }
+                ],
+                "owner_counts": {"codex": 1},
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "sources": [
+                    {
+                        "lane_id": "lane-a",
+                        "ok": True,
+                        "missing": True,
+                        "recoverable_missing": True,
+                        "fallback_used": True,
+                        "error": "",
+                        "event_count": 1,
+                    }
+                ],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conv_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "lane-inspect", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            health = payload["conversation_source_health"]
+            self.assertEqual(health["lane"], "lane-a")
+            self.assertEqual(health["state"], "ok")
+            self.assertEqual(health["reported_sources"], 1)
+            self.assertEqual(health["fallback_count"], 1)
+            self.assertEqual(health["missing_count"], 1)
+            self.assertEqual(health["recoverable_missing_count"], 1)
+            self.assertEqual(health["error_count"], 0)
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["partial"])
+
     def test_lane_inspect_command_degrades_when_conversation_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
