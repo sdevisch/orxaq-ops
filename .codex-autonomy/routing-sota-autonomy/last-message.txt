@@ -1,0 +1,61 @@
+{
+  "status": "partial",
+  "summary": "Implemented routing/economics hardening across router, runner, manager, and dashboard: enforced provider allow-lists in deterministic fallback selection, added explicit fallback telemetry fields, preserved and aggregated estimated tokens + blended estimated cost/1M across summaries, carried provider-level cost/tokens/cost-per-1M through manager aggregation, surfaced estimated tokens and blended cost/1M directly in the Routing Monitor tab, expanded local fast/strong policy allowed-model coverage, and added regression tests for routing allow-list enforcement and economics aggregation.",
+  "commit": null,
+  "validations": [
+    {
+      "command": "make lint",
+      "result": "passed"
+    },
+    {
+      "command": "make test",
+      "result": "passed",
+      "details": "Ran 295 tests, OK"
+    },
+    {
+      "command": "make version-check",
+      "result": "passed"
+    },
+    {
+      "command": "make repo-hygiene",
+      "result": "passed"
+    },
+    {
+      "command": "make hosted-controls-check",
+      "result": "failed",
+      "details": "Network/API dependency unavailable: error connecting to api.github.com"
+    }
+  ],
+  "next_actions": [
+    "Re-run `make hosted-controls-check` from an environment with GitHub API access.",
+    "Allow `.git` write access in this runtime and run `git add ... && git commit -m \"Harden routing allow-lists and economics telemetry\"`.",
+    "Push the commit after successful hosted-controls validation."
+  ],
+  "blocker": {
+    "hosted_controls_check": "Hard dependency on GitHub API connectivity (api.github.com unreachable in current environment).",
+    "git_commit": "Sandbox denies writes under `.git` (`fatal: Unable to create '.git/index.lock': Operation not permitted`), so commit/push cannot be performed."
+  },
+  "usage": {
+    "files_changed": [
+      "src/orxaq_autonomy/runner.py",
+      "scripts/routellm_local_router.py",
+      "src/orxaq_autonomy/manager.py",
+      "src/orxaq_autonomy/dashboard.py",
+      "config/routellm_policy.local-fast.json",
+      "config/routellm_policy.local-strong.json",
+      "tests/test_autonomy_runner.py",
+      "tests/test_routellm_local_router.py",
+      "tests/test_autonomy_manager.py",
+      "tests/test_autonomy_dashboard.py"
+    ],
+    "key_test_additions": [
+      "tests/test_autonomy_runner.py::test_resolve_routed_model_enforces_allowed_fallback_when_requested_model_disallowed",
+      "tests/test_autonomy_runner.py::test_resolve_routed_model_disallowed_router_selection_uses_deterministic_allowed_fallback",
+      "tests/test_routellm_local_router.py::test_route_model_provider_disabled_enforces_allowed_fallback_when_requested_not_allowed",
+      "tests/test_autonomy_manager.py::test_response_metrics_snapshot_aggregates_estimated_tokens_and_provider_costs"
+    ],
+    "extra_checks": [
+      "python3 -m unittest tests.test_routellm_local_router tests.test_autonomy_runner tests.test_autonomy_manager tests.test_autonomy_dashboard (204 tests, OK)"
+    ]
+  }
+}

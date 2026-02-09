@@ -1,8 +1,38 @@
+# Enhanced File Handling Policy for Orxaq Autonomy
+
+# Universal text handling
 * text=auto eol=lf
-*.py text eol=lf
-*.toml text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-*.md text eol=lf
-*.json text eol=lf
+
+# Python specifics
+*.py text diff=python filter=lfs merge=lf
+*.py filter=lfs diff=lfs merge=lfs -text
+
+# Configuration files
+*.json text
+*.yaml text
+*.yml text
+*.toml text
+*.ini text
+
+# Markdown and documentation
+*.md text diff=markdown
+
+# Binary and sensitive files
+*.pkl binary
+*.bin binary
+*.log binary
+*.sqlite binary
+*.db binary
+
+# Executable scripts
 *.sh text eol=lf
+*.bash text eol=lf
+
+# Cryptographic and security files
+*.key binary
+*.pem binary
+*.crt binary
+
+# Merge configurations
+*.py merge=python
+*.md merge=text
