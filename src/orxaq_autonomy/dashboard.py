@@ -876,6 +876,18 @@ def _dashboard_html(refresh_sec: int) -> str:
       return byLane;
     }}
 
+    function eventTimestampInfo(raw) {{
+      const text = String(raw || "").trim();
+      if (!text) {{
+        return {{ valid: false, epochMs: Number.NEGATIVE_INFINITY }};
+      }}
+      const parsed = new Date(text);
+      if (!Number.isFinite(parsed.getTime())) {{
+        return {{ valid: false, epochMs: Number.NEGATIVE_INFINITY }};
+      }}
+      return {{ valid: true, epochMs: parsed.getTime() }};
+    }}
+
     function buildLatestConversationByLane(payload) {{
       const events = payload && Array.isArray(payload.events) ? payload.events : [];
       const byLane = {{}};
@@ -884,9 +896,21 @@ def _dashboard_html(refresh_sec: int) -> str:
         const laneId = String(event.lane_id || "").trim();
         if (!laneId) continue;
         const existing = byLane[laneId];
-        const ts = String(event.timestamp || "").trim();
-        const existingTs = existing ? String(existing.timestamp || "").trim() : "";
-        if (!existing || ts >= existingTs) {{
+        if (!existing) {{
+          byLane[laneId] = event;
+          continue;
+        }}
+        const candidateTs = eventTimestampInfo(event.timestamp);
+        const existingTs = eventTimestampInfo(existing.timestamp);
+        if (!candidateTs.valid && !existingTs.valid) {{
+          // Preserve sequence when both timestamps are invalid.
+          byLane[laneId] = event;
+          continue;
+        }}
+        if (!candidateTs.valid) {{
+          continue;
+        }}
+        if (!existingTs.valid || candidateTs.epochMs >= existingTs.epochMs) {{
           byLane[laneId] = event;
         }}
       }}
@@ -1643,6 +1667,14 @@ def _parse_event_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _conversation_event_sort_key(item: dict[str, Any]) -> tuple[int, float, str]:
+    parsed = _parse_event_timestamp(item.get("timestamp", ""))
+    if parsed is None:
+        # Keep invalid timestamps ordered by source sequence (stable sort).
+        return (0, float("-inf"), "")
+    return (1, parsed.timestamp(), "")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -2541,7 +2573,9 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
         conversation_events = conversation_payload.get("events", [])
         if not isinstance(conversation_events, list):
             conversation_events = []
-        recent_events = [item for item in conversation_events if isinstance(item, dict)][-20:]
+        normalized_conversation_events = [item for item in conversation_events if isinstance(item, dict)]
+        normalized_conversation_events = sorted(normalized_conversation_events, key=_conversation_event_sort_key)
+        recent_events = normalized_conversation_events[-20:]
 
         conversation_errors = conversation_payload.get("errors", [])
         if not isinstance(conversation_errors, list):
@@ -2551,6 +2585,13 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
         conversation_sources = conversation_payload.get("sources", [])
         if not isinstance(conversation_sources, list):
             conversation_sources = []
+        normalized_conversation_sources = [item for item in conversation_sources if isinstance(item, dict)]
+        source_error_count = sum(1 for item in normalized_conversation_sources if str(item.get("error", "")).strip())
+        source_missing_count = sum(1 for item in normalized_conversation_sources if bool(item.get("missing", False)))
+        source_recoverable_missing_count = sum(
+            1 for item in normalized_conversation_sources if bool(item.get("recoverable_missing", False))
+        )
+        source_fallback_count = sum(1 for item in normalized_conversation_sources if bool(item.get("fallback_used", False)))
 
         conversation_owner_counts = conversation_payload.get("owner_counts", {})
         if not isinstance(conversation_owner_counts, dict):
@@ -2685,13 +2726,17 @@ def _safe_monitor_snapshot(config: ManagerConfig) -> dict:
             },
             "conversations": {
                 "ok": bool(conversation_payload.get("ok", False)),
-                "total_events": conversation_payload.get("total_events", len(conversation_events)),
+                "total_events": conversation_payload.get("total_events", len(normalized_conversation_events)),
                 "owner_counts": conversation_owner_counts,
                 "latest": (recent_events[-1] if recent_events else {}),
                 "recent_events": recent_events,
                 "partial": bool(conversation_payload.get("partial", False)) or bool(conversation_errors),
                 "errors": conversation_errors,
-                "sources": conversation_sources,
+                "sources": normalized_conversation_sources,
+                "source_error_count": source_error_count,
+                "source_missing_count": source_missing_count,
+                "source_recoverable_missing_count": source_recoverable_missing_count,
+                "source_fallback_count": source_fallback_count,
             },
             "repos": {
                 "implementation": {"ok": False, "error": message},

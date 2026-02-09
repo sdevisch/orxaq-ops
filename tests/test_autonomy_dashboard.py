@@ -71,6 +71,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("using cached snapshot", html)
         self.assertIn("buildConversationSourceMap", html)
         self.assertIn("buildLatestConversationByLane", html)
+        self.assertIn("eventTimestampInfo", html)
         self.assertIn("latest_conversation=", html)
         self.assertIn("FETCH_TIMEOUT_MS", html)
         self.assertIn("timeout after", html)
@@ -201,6 +202,96 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["runtime"]["primary_runner_running"])
         self.assertTrue(payload["runtime"]["effective_agents_running"])
         self.assertTrue(payload["diagnostics"]["sources"]["status"]["ok"])
+
+    def test_safe_monitor_snapshot_sorts_fallback_conversations_by_utc_timestamp(self):
+        lane_payload = {
+            "lanes_file": "/tmp/lanes.json",
+            "ok": False,
+            "partial": True,
+            "errors": ["lane status unavailable"],
+            "running_count": 0,
+            "total_count": 0,
+            "health_counts": {},
+            "owner_counts": {},
+            "lanes": [],
+        }
+        conv_payload = {
+            "ok": False,
+            "partial": True,
+            "errors": ["primary conversation stream degraded"],
+            "total_events": 4,
+            "owner_counts": {"codex": 2, "gemini": 1, "claude": 1},
+            "events": [
+                {
+                    "timestamp": "abc-invalid-a",
+                    "owner": "claude",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "invalid-first",
+                },
+                {
+                    "timestamp": "2026-01-01T00:45:00+00:00",
+                    "owner": "gemini",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "later",
+                },
+                {
+                    "timestamp": "2026-01-01T01:30:00+01:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "earlier",
+                },
+                {
+                    "timestamp": "definitely-invalid-z",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "invalid-last",
+                },
+            ],
+            "sources": [
+                {
+                    "kind": "primary",
+                    "resolved_kind": "primary",
+                    "lane_id": "",
+                    "owner": "",
+                    "ok": False,
+                    "missing": False,
+                    "recoverable_missing": False,
+                    "fallback_used": False,
+                    "error": "primary stream unavailable",
+                    "event_count": 0,
+                },
+                {
+                    "kind": "lane",
+                    "resolved_kind": "lane_events",
+                    "lane_id": "lane-a",
+                    "owner": "codex",
+                    "ok": True,
+                    "missing": True,
+                    "recoverable_missing": True,
+                    "fallback_used": True,
+                    "error": "",
+                    "event_count": 3,
+                },
+            ],
+        }
+        with mock.patch("orxaq_autonomy.dashboard.monitor_snapshot", side_effect=RuntimeError("monitor unavailable")), mock.patch(
+            "orxaq_autonomy.dashboard._safe_lane_status_snapshot",
+            return_value=lane_payload,
+        ), mock.patch(
+            "orxaq_autonomy.dashboard._safe_conversations_snapshot",
+            return_value=conv_payload,
+        ):
+            payload = dashboard._safe_monitor_snapshot(mock.Mock())
+        self.assertEqual(payload["conversations"]["recent_events"][-1]["content"], "later")
+        self.assertEqual(payload["conversations"]["latest"]["content"], "later")
+        self.assertEqual(payload["conversations"]["source_error_count"], 1)
+        self.assertEqual(payload["conversations"]["source_missing_count"], 1)
+        self.assertEqual(payload["conversations"]["source_recoverable_missing_count"], 1)
+        self.assertEqual(payload["conversations"]["source_fallback_count"], 1)
 
     def test_safe_lane_status_snapshot_degrades_on_failure(self):
         cfg = mock.Mock()
