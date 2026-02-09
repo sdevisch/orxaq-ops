@@ -27,16 +27,23 @@ def _now_iso() -> str:
     return _now_utc().isoformat()
 
 
-def _format_local_timestamp(value: Any) -> str:
+def _parse_iso_timestamp(value: Any) -> dt.datetime | None:
     raw = str(value or "").strip()
     if not raw:
-        return ""
+        return None
     try:
         parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        return raw
+        return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _format_local_timestamp(value: Any) -> str:
+    parsed = _parse_iso_timestamp(value)
+    if parsed is None:
+        return str(value or "").strip()
     local = parsed.astimezone()
     return local.strftime("%Y-%m-%d %H:%M:%S %Z")
 
@@ -1555,7 +1562,9 @@ def monitor_snapshot(config: ManagerConfig) -> dict[str, Any]:
     conv_events = conv.get("events", [])
     if not isinstance(conv_events, list):
         conv_events = []
-    recent_conversations = [item for item in conv_events if isinstance(item, dict)][-20:]
+    normalized_conv_events = [item for item in conv_events if isinstance(item, dict)]
+    normalized_conv_events = sorted(normalized_conv_events, key=_conversation_event_sort_key)
+    recent_conversations = normalized_conv_events[-20:]
     lane_items = lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []
     try:
         response_metrics = _response_metrics_snapshot(config, lane_items)
@@ -3119,6 +3128,14 @@ def _normalize_conversation_event(
     return event
 
 
+def _conversation_event_sort_key(item: dict[str, Any]) -> tuple[int, float, str]:
+    raw = str(item.get("timestamp", "")).strip()
+    parsed = _parse_iso_timestamp(raw)
+    if parsed is None:
+        return (0, float("-inf"), raw)
+    return (1, parsed.timestamp(), raw)
+
+
 def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lanes: bool = True) -> dict[str, Any]:
     line_limit = max(1, min(2000, int(lines)))
     lane_owner_map: dict[str, str] = {}
@@ -3248,7 +3265,7 @@ def conversations_snapshot(config: ManagerConfig, lines: int = 200, include_lane
             }
         )
     source_reports.extend(lane_error_sources)
-    events = sorted(events, key=lambda item: str(item.get("timestamp", "")))[-line_limit:]
+    events = sorted(events, key=_conversation_event_sort_key)[-line_limit:]
 
     owners: dict[str, int] = {}
     for event in events:

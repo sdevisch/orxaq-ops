@@ -688,6 +688,47 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(len(snapshot["conversations"]["recent_events"]), 3)
             self.assertEqual(snapshot["conversations"]["latest"]["content"], "c")
 
+    def test_monitor_snapshot_orders_recent_conversations_by_utc_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={"ok": True, "errors": [], "running_count": 0, "total_count": 0, "lanes": []},
+            ), mock.patch(
+                "orxaq_autonomy.manager.conversations_snapshot",
+                return_value={
+                    "total_events": 2,
+                    "events": [
+                        {"timestamp": "2026-01-01T01:30:00+01:00", "owner": "codex", "content": "earlier"},
+                        {"timestamp": "2026-01-01T00:45:00+00:00", "owner": "gemini", "content": "later"},
+                    ],
+                    "owner_counts": {"codex": 1, "gemini": 1},
+                    "partial": False,
+                    "ok": True,
+                    "errors": [],
+                    "sources": [],
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager._repo_monitor_snapshot",
+                return_value={
+                    "ok": True,
+                    "error": "",
+                    "path": "/tmp/repo",
+                    "branch": "main",
+                    "head": "abc123",
+                    "upstream": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "sync_state": "synced",
+                    "dirty": False,
+                    "changed_files": 0,
+                },
+            ), mock.patch("orxaq_autonomy.manager.tail_logs", return_value=""):
+                snapshot = manager.monitor_snapshot(cfg)
+            self.assertEqual(snapshot["conversations"]["recent_events"][-1]["content"], "later")
+            self.assertEqual(snapshot["conversations"]["latest"]["content"], "later")
+
     def test_monitor_snapshot_counts_idle_lane_as_operational(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
@@ -1087,6 +1128,36 @@ class ManagerTests(unittest.TestCase):
             self.assertIn("gemini", snapshot["owner_counts"])
             self.assertTrue(snapshot["ok"])
             self.assertFalse(snapshot["partial"])
+
+    def test_conversations_snapshot_orders_events_by_utc_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.conversation_log_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": "2026-01-01T01:30:00+01:00",
+                                "owner": "codex",
+                                "content": "earlier",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": "2026-01-01T00:45:00+00:00",
+                                "owner": "codex",
+                                "content": "later",
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = manager.conversations_snapshot(cfg, lines=20, include_lanes=False)
+            self.assertEqual(snapshot["total_events"], 2)
+            self.assertEqual(snapshot["events"][-1]["content"], "later")
 
     def test_conversations_snapshot_degrades_if_lane_specs_fail(self):
         with tempfile.TemporaryDirectory() as td:
