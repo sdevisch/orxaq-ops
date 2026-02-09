@@ -599,6 +599,18 @@ def _lane_error_mentions_unknown_lane(error: str, lane_id: str) -> bool:
     return lane in message
 
 
+def _lane_error_mentions_unavailable_lane(error: str, lane_id: str) -> bool:
+    message = str(error).strip().lower()
+    lane = lane_id.strip().lower()
+    if not message or not lane:
+        return False
+    if not message.startswith("requested lane "):
+        return False
+    if "is unavailable because lane status sources failed." not in message:
+        return False
+    return lane in message
+
+
 def _lane_owner_health_counts(lanes: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, dict[str, int]], int]:
     health_counts: dict[str, int] = {}
     owner_counts: dict[str, dict[str, int]] = {}
@@ -722,7 +734,11 @@ def _augment_lane_status_with_conversations(
         combined_lane_errors = [
             message
             for message in combined_lane_errors
-            if not any(_lane_error_mentions_unknown_lane(message, lane_id) for lane_id in recovered_lanes)
+            if not any(
+                _lane_error_mentions_unknown_lane(message, lane_id)
+                or _lane_error_mentions_unavailable_lane(message, lane_id)
+                for lane_id in recovered_lanes
+            )
         ]
         for lane_id in recovered_lanes:
             warning = f"Lane status missing for {lane_id!r}; using conversation-derived fallback."

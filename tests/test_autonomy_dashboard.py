@@ -592,6 +592,48 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(enriched["partial"])
         self.assertFalse(enriched["ok"])
 
+    def test_augment_lane_payload_with_conversation_rollup_clears_unavailable_error_for_recovered_lane(self):
+        lane_payload = {
+            "requested_lane": "lane-a",
+            "errors": [
+                "lane status source unavailable",
+                "Requested lane 'lane-a' is unavailable because lane status sources failed.",
+            ],
+            "lanes": [],
+            "health_counts": {},
+            "owner_counts": {},
+            "ok": False,
+            "partial": True,
+        }
+        conversation_payload = {
+            "ok": True,
+            "partial": False,
+            "errors": [],
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:01+00:00",
+                    "owner": "codex",
+                    "lane_id": "lane-a",
+                    "event_type": "status",
+                    "content": "ready",
+                }
+            ],
+            "sources": [
+                {"lane_id": "lane-a", "ok": True, "error": "", "event_count": 1},
+            ],
+        }
+        enriched = dashboard._augment_lane_payload_with_conversation_rollup(lane_payload, conversation_payload)
+        self.assertEqual(enriched["recovered_lane_count"], 1)
+        self.assertNotIn(
+            "Requested lane 'lane-a' is unavailable because lane status sources failed.",
+            enriched["errors"],
+        )
+        self.assertIn("lane status source unavailable", enriched["errors"])
+        self.assertIn(
+            "Lane status missing for 'lane-a'; using conversation-derived fallback.",
+            enriched["errors"],
+        )
+
     def test_augment_lane_payload_with_conversation_rollup_recovers_partial_missing_lanes(self):
         lane_payload = {
             "requested_lane": "all",

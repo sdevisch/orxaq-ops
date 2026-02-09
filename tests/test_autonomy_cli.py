@@ -1132,6 +1132,67 @@ class CliTests(unittest.TestCase):
                 ["Lane status missing for 'missing'; using conversation-derived fallback."],
             )
 
+    def test_lanes_status_recovery_clears_requested_lane_unavailable_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            lane_payload = {
+                "lanes_file": "config/lanes.json",
+                "ok": False,
+                "partial": True,
+                "errors": [
+                    "lane status source unavailable",
+                    "Requested lane 'missing' is unavailable because lane status sources failed.",
+                ],
+                "running_count": 1,
+                "total_count": 1,
+                "lanes": [{"id": "lane-a", "owner": "codex", "running": True, "pid": 100, "health": "ok"}],
+            }
+            conversation_payload = {
+                "ok": True,
+                "partial": False,
+                "errors": [],
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                        "owner": "gemini",
+                        "lane_id": "missing",
+                        "event_type": "status",
+                        "content": "recover from conversation",
+                    }
+                ],
+                "sources": [{"lane_id": "missing", "ok": True, "error": "", "event_count": 1}],
+            }
+            with mock.patch("orxaq_autonomy.cli.lane_status_snapshot", return_value=lane_payload), mock.patch(
+                "orxaq_autonomy.cli.conversations_snapshot",
+                return_value=conversation_payload,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(
+                        [
+                            "--root",
+                            str(root),
+                            "lanes-status",
+                            "--json",
+                            "--lane",
+                            "missing",
+                            "--with-conversations",
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            data = json.loads(buffer.getvalue())
+            self.assertEqual(data["recovered_lane_count"], 1)
+            self.assertNotIn(
+                "Requested lane 'missing' is unavailable because lane status sources failed.",
+                data["errors"],
+            )
+            self.assertIn("lane status source unavailable", data["errors"])
+            self.assertIn(
+                "Lane status missing for 'missing'; using conversation-derived fallback.",
+                data["errors"],
+            )
+
     def test_lanes_status_recovers_partial_missing_lane_with_conversation_rollup(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
