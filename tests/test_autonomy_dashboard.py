@@ -245,6 +245,30 @@ class DashboardRenderingTests(unittest.TestCase):
             self.assertEqual(snapshot["state_counts"]["unknown"], 0)
             self.assertEqual(snapshot["blocked_tasks"], [])
 
+    def test_health_dashboard_cli_renders_distributed_todo_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            cfg = self._prep_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "todo-a": {"status": "pending"},
+                        "todo-b": {"status": "blocked"},
+                        "todo-c": {"status": "done"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with mock.patch("sys.stdout", output):
+                rc = cli.main(["--root", str(root), "health"])
+            self.assertEqual(rc, 0)
+            rendered = json.loads(output.getvalue())
+            self.assertEqual(rendered["state_counts"]["pending"], 1)
+            self.assertEqual(rendered["state_counts"]["blocked"], 1)
+            self.assertEqual(rendered["state_counts"]["done"], 1)
+            self.assertEqual(rendered["blocked_tasks"], ["todo-b"])
+
     def test_status_dashboard_renders_activity_log_tail(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -298,6 +322,21 @@ class DashboardRenderingTests(unittest.TestCase):
             with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
                 "orxaq_autonomy.cli.tail_logs",
                 return_value="\r\n distributed todo synced",
+            ), mock.patch("sys.stdout", output):
+                rc = cli.main(["--root", str(root), "status"])
+            self.assertEqual(rc, 0)
+            rendered = output.getvalue()
+            self.assertIn("--- logs ---", rendered)
+            self.assertIn("distributed todo synced", rendered)
+
+    def test_status_dashboard_renders_activity_section_for_carriage_return_prefixed_non_empty_tail(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            output = StringIO()
+            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
+                "orxaq_autonomy.cli.tail_logs",
+                return_value="\rdistributed todo synced",
             ), mock.patch("sys.stdout", output):
                 rc = cli.main(["--root", str(root), "status"])
             self.assertEqual(rc, 0)
