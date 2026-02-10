@@ -120,6 +120,15 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 0, "live_uncovered": 2, "live_coverage_total": 2},
         )
 
+    def test_normalized_metric_values_are_plain_ints(self):
+        payload = {"live_covered": "1", "live_uncovered": "2", "live_coverage_total": "99"}
+        normalized = normalize_todo_coverage_metrics(payload)
+        self.assertEqual(
+            normalized,
+            {"live_covered": 1, "live_uncovered": 2, "live_coverage_total": 3},
+        )
+        self.assertTrue(all(type(value) is int for value in normalized.values()))
+
 
 if __name__ == "__main__":
     unittest.main()
