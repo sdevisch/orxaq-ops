@@ -10,8 +10,15 @@ Responsibilities:
 
 import json
 import os
+import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=os.path.join(os.getcwd(), 'artifacts', 'autonomy', 'health_monitor.log')
+)
 
 class CollaborationHealthMonitor:
     def __init__(self, root_path: str = None):
@@ -48,12 +55,19 @@ class CollaborationHealthMonitor:
 
     def _parse_recent_feedback(self) -> List[Dict[str, str]]:
         """
-        Parse recent testing feedback from system context.
+        Parse recent testing feedback from system context, supporting dynamic and persistent tracking.
 
         :return: List of feedback dictionaries
         """
-        # This would typically come from a more dynamic source
-        return [
+        feedback_path = os.path.join(self.root_path, 'config', 'recent_feedback.json')
+        try:
+            with open(feedback_path, 'r') as f:
+                recent_feedback = json.load(f)
+        except FileNotFoundError:
+            recent_feedback = []
+
+        # Augment with known blocking issues
+        hardcoded_feedback = [
             {
                 'task': 'causal-independent-tests',
                 'status': 'blocked',
@@ -68,25 +82,49 @@ class CollaborationHealthMonitor:
             }
         ]
 
+        # Combine dynamic and hardcoded feedback, prioritizing dynamic sources
+        return recent_feedback + [
+            fb for fb in hardcoded_feedback
+            if not any(fb['task'] == rfb.get('task') for rfb in recent_feedback)
+        ]
+
     def generate_health_report(self) -> Dict[str, Any]:
         """
-        Generate a comprehensive health report.
+        Generate a comprehensive health report with enhanced logging and diagnostic information.
 
         :return: Health status report dictionary
         """
-        degradations = self.detect_degradations()
+        try:
+            degradations = self.detect_degradations()
+            logging.info(f"Detected {len(degradations)} collaboration degradations")
 
-        report = {
-            'timestamp': datetime.now().isoformat(),
-            'overall_status': 'degraded' if degradations else 'healthy',
-            'degradations': degradations,
-            'delegation_tasks': self._generate_delegation_tasks(degradations)
-        }
+            report = {
+                'timestamp': datetime.now().isoformat(),
+                'overall_status': 'degraded' if degradations else 'healthy',
+                'degradations': degradations,
+                'delegation_tasks': self._generate_delegation_tasks(degradations),
+                'diagnostic_metadata': {
+                    'detection_method': 'dynamic_feedback_parsing',
+                    'runtime_environment': {
+                        'root_path': str(self.root_path),
+                        'python_version': f"{os.sys.version_info.major}.{os.sys.version_info.minor}"
+                    }
+                }
+            }
 
-        # Write to health files
-        self._write_health_files(report)
+            # Write to health files
+            self._write_health_files(report)
 
-        return report
+            logging.info(f"Health report generated: Status {report['overall_status']}")
+            return report
+
+        except Exception as e:
+            logging.error(f"Error generating health report: {str(e)}", exc_info=True)
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'overall_status': 'error',
+                'error_details': str(e)
+            }
 
     def _generate_delegation_tasks(self, degradations: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
