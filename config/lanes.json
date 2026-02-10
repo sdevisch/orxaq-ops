@@ -7,17 +7,19 @@
       "name": "Autonomous Governance Lane",
       "owner": "codex",
       "description": "Governance and contract management",
+      "impl_repo": ".",
+      "test_repo": ".",
       "priority": 1,
       "tasks_file": "config/lanes/innovation_governance_tasks.json",
-      "dependency_state_file": "state/state.json",
-      "handoff_dir": "artifacts/autonomy/handoffs",
       "objective_file": "config/objectives/innovation_governance.md",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "dependency_state_file": "state/state.json",
       "validate_commands": [
         "make lint",
         "make test"
       ],
       "exclusive_paths": [
-        "artifacts/autonomy/sota_testing_innovation/innovation_governance_contract.md",
+        "artifacts/autonomy/sota_testing_innovation/*",
         "config/lanes.json"
       ],
       "env": {}
@@ -28,11 +30,13 @@
       "name": "Autonomous Testing Lane",
       "owner": "gemini",
       "description": "Expand and harden test suites",
+      "impl_repo": ".",
+      "test_repo": ".",
       "priority": 2,
       "tasks_file": "config/lanes/innovation_governance_tasks.json",
-      "dependency_state_file": "state/state.json",
-      "handoff_dir": "artifacts/autonomy/handoffs",
       "objective_file": "config/objectives/testing_lane.md",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "dependency_state_file": "state/state.json",
       "validate_commands": [
         "make lint",
         "make test"
