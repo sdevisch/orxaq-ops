@@ -16,4 +16,4 @@ Expected checks:
 
 Status: requested (pending execution by Gemini)
 
-Patch commit under review: bbf7d32
+Patch commit under review: 488426c
