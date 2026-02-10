@@ -80,6 +80,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 0, "live_uncovered": 0, "live_coverage_total": 0},
         )
 
+    def test_float_like_string_components_are_treated_as_invalid(self):
+        payload = {"live_covered": "1.9", "live_uncovered": "2.1", "live_coverage_total": 99}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 0, "live_uncovered": 0, "live_coverage_total": 0},
+        )
+
     def test_input_payload_is_not_mutated(self):
         payload = {"live_covered": 2, "live_uncovered": 3, "live_coverage_total": 0}
         _ = normalize_todo_coverage_metrics(payload)
