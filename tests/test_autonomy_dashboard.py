@@ -148,6 +148,19 @@ class DashboardTodoMetricsTests(unittest.TestCase):
         )
         self.assertTrue(all(type(value) is int for value in normalized.values()))
 
+    def test_extra_payload_fields_do_not_affect_normalized_totals(self):
+        payload = {
+            "live_covered": 2,
+            "live_uncovered": 1,
+            "live_coverage_total": 999,
+            "live_coverage_ratio": "0.66",
+            "meta": {"source": "dashboard"},
+        }
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 2, "live_uncovered": 1, "live_coverage_total": 3},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
