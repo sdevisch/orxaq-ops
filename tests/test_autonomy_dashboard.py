@@ -109,6 +109,17 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 4, "live_uncovered": 2, "live_coverage_total": 6},
         )
 
+    def test_int_like_objects_are_rejected_for_determinism(self):
+        class IntLike:
+            def __int__(self):
+                return 9
+
+        payload = {"live_covered": IntLike(), "live_uncovered": "2", "live_coverage_total": 999}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 0, "live_uncovered": 2, "live_coverage_total": 2},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
