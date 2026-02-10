@@ -6,6 +6,8 @@ from typing import Any
 
 
 def _to_non_negative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
     try:
         parsed = int(value)
     except (TypeError, ValueError):
