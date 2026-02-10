@@ -59,6 +59,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 0, "live_uncovered": 0, "live_coverage_total": 0},
         )
 
+    def test_invalid_components_do_not_trust_reported_total(self):
+        payload = {"live_covered": "NaN", "live_uncovered": None, "live_coverage_total": 12}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 0, "live_uncovered": 0, "live_coverage_total": 0},
+        )
+
     def test_input_payload_is_not_mutated(self):
         payload = {"live_covered": 2, "live_uncovered": 3, "live_coverage_total": 0}
         _ = normalize_todo_coverage_metrics(payload)
