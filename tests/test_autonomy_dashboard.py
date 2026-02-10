@@ -102,6 +102,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 2, "live_uncovered": 3, "live_coverage_total": 0},
         )
 
+    def test_signed_or_spaced_strings_remain_deterministic(self):
+        payload = {"live_covered": " +4 ", "live_uncovered": " 2 ", "live_coverage_total": 999}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 4, "live_uncovered": 2, "live_coverage_total": 6},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
