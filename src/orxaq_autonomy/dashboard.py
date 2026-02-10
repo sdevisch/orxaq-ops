@@ -18,16 +18,14 @@ def normalize_todo_coverage_metrics(summary: dict[str, Any] | None) -> dict[str,
 
     Rules:
     - `covered`/`uncovered` are clamped to non-negative ints.
-    - `total` is at least `covered + uncovered`.
-    - if provided total is lower than covered+uncovered, the derived sum wins.
+    - `total` is exactly `covered + uncovered`.
+    - provided total values are ignored when inconsistent.
     """
 
     data = summary if isinstance(summary, dict) else {}
     covered = _to_non_negative_int(data.get("live_covered"))
     uncovered = _to_non_negative_int(data.get("live_uncovered"))
-    derived_total = covered + uncovered
-    provided_total = _to_non_negative_int(data.get("live_coverage_total"))
-    total = max(derived_total, provided_total)
+    total = covered + uncovered
     return {
         "live_covered": covered,
         "live_uncovered": uncovered,

@@ -33,8 +33,21 @@ class DashboardTodoMetricsTests(unittest.TestCase):
         }
         self.assertEqual(
             normalize_todo_coverage_metrics(payload),
-            {"live_covered": 5, "live_uncovered": 0, "live_coverage_total": 8},
+            {"live_covered": 5, "live_uncovered": 0, "live_coverage_total": 5},
         )
+
+    def test_total_is_always_equal_to_sum(self):
+        payload = {"live_covered": 1, "live_uncovered": 2, "live_coverage_total": 99}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 1, "live_uncovered": 2, "live_coverage_total": 3},
+        )
+
+    def test_normalization_is_stable_on_repeated_calls(self):
+        payload = {"live_covered": "2", "live_uncovered": "3", "live_coverage_total": 0}
+        first = normalize_todo_coverage_metrics(payload)
+        second = normalize_todo_coverage_metrics(first)
+        self.assertEqual(first, second)
 
     def test_none_or_nondict_payloads_return_zeroed_metrics(self):
         self.assertEqual(
