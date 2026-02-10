@@ -1,26 +1,22 @@
 {
-  "version": 1,
   "lanes": [
     {
-      "id": "innovation-governance",
+      "id": "lane-a",
       "enabled": true,
+      "name": "Autonomous Governance Lane",
       "owner": "codex",
-      "description": "Autonomous innovation governance and contract management",
-      "impl_repo": ".",
-      "test_repo": ".",
-      "tasks_file": "config/lanes/innovation_governance_tasks.json",
-      "dependency_state_file": "state/state.json",
-      "handoff_dir": "artifacts/autonomy/handoffs",
-      "objective_file": "artifacts/autonomy/sota_testing_innovation/innovation_governance_contract.md",
-      "validate_commands": [
-        "make lint",
-        "make test"
-      ],
-      "exclusive_paths": [
-        "artifacts/autonomy/sota_testing_innovation/*",
-        "config/lanes.json"
-      ],
-      "env": {}
+      "description": "Governance and contract management",
+      "priority": 1,
+      "tasks_file": "config/lanes/innovation_governance_tasks.json"
+    },
+    {
+      "id": "lane-b",
+      "enabled": true,
+      "name": "Autonomous Testing Lane",
+      "owner": "gemini",
+      "description": "Expand and harden test suites",
+      "priority": 2,
+      "tasks_file": "config/lanes/innovation_governance_tasks.json"
     }
   ]
 }
