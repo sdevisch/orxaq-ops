@@ -1,512 +1,210 @@
-import json
+import importlib
 import pathlib
 import sys
 import tempfile
 import unittest
-from io import StringIO
-from unittest import mock
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) in sys.path:
-    sys.path.remove(str(SRC))
-sys.path.insert(0, str(SRC))
+def load_runner_module():
+    root = pathlib.Path(__file__).resolve().parents[1]
+    src = root / "src"
+    src_path = str(src)
+    sys.path[:] = [entry for entry in sys.path if entry != src_path]
+    sys.path.insert(0, src_path)
+    importlib.invalidate_caches()
+    for module_name in list(sys.modules):
+        if module_name == "orxaq_autonomy" or module_name.startswith("orxaq_autonomy."):
+            sys.modules.pop(module_name, None)
+    return importlib.import_module("orxaq_autonomy.runner")
 
-from orxaq_autonomy import cli, manager
+
+runner = load_runner_module()
 
 
-class DashboardRenderingTests(unittest.TestCase):
-    def _prep_root(self, root: pathlib.Path) -> manager.ManagerConfig:
-        (root / "config").mkdir(parents=True, exist_ok=True)
-        (root / "state").mkdir(parents=True, exist_ok=True)
-        (root / "artifacts" / "autonomy").mkdir(parents=True, exist_ok=True)
-        (root / "config" / "tasks.json").write_text("[]\n", encoding="utf-8")
-        (root / "config" / "objective.md").write_text("objective\n", encoding="utf-8")
-        (root / "config" / "codex_result.schema.json").write_text("{}\n", encoding="utf-8")
-        (root / "config" / "skill_protocol.json").write_text("{}\n", encoding="utf-8")
-        (root / ".env.autonomy").write_text("OPENAI_API_KEY=test\nGEMINI_API_KEY=test\n", encoding="utf-8")
-        return manager.ManagerConfig.from_root(root)
+class DashboardTodoActivityTests(unittest.TestCase):
+    def test_format_top_todo_activity_returns_accessible_fallback(self):
+        self.assertEqual(runner.format_top_todo_activity([]), ["No follow-up actions reported."])
 
-    def test_health_dashboard_renders_distributed_todo_counts(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": "pending"},
-                        "todo-b": {"status": "in_progress"},
-                        "todo-c": {"status": "done"},
-                        "todo-d": {"status": "blocked"},
-                        "todo-e": {"status": "invalid_status"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["pending"], 1)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 1)
-            self.assertEqual(snapshot["state_counts"]["done"], 1)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 1)
-            self.assertEqual(snapshot["blocked_tasks"], ["todo-d"])
+    def test_format_top_todo_activity_normalizes_and_limits(self):
+        actions = [
+            "  tighten contrast on todo widget  ",
+            "",
+            "tighten contrast on todo widget",
+            "increase heading size",
+            "add aria labels",
+            "improve spacing",
+            "raise line-height",
+        ]
+        got = runner.format_top_todo_activity(actions, limit=3)
+        self.assertEqual(
+            got,
+            [
+                "1. tighten contrast on todo widget",
+                "2. increase heading size",
+                "3. add aria labels",
+                "2 more actions not shown.",
+            ],
+        )
 
-    def test_health_dashboard_normalizes_status_and_non_dict_todos(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": " BLOCKED "},
-                        "todo-b": {"status": " Done "},
-                        "todo-c": {"status": " In_Progress "},
-                        "todo-d": "pending",
-                        "todo-e": None,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 1)
-            self.assertEqual(snapshot["state_counts"]["done"], 1)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 2)
-            self.assertEqual(snapshot["blocked_tasks"], ["todo-a"])
+    def test_format_top_todo_activity_strips_existing_list_prefixes(self):
+        actions = [
+            " - tighten contrast on todo widget ",
+            "1. tighten contrast on todo widget",
+            "* add aria labels",
+            "2) add aria labels",
+            " improve   spacing\nin widget ",
+        ]
+        got = runner.format_top_todo_activity(actions)
+        self.assertEqual(
+            got,
+            [
+                "1. tighten contrast on todo widget",
+                "2. add aria labels",
+                "3. improve spacing in widget",
+            ],
+        )
 
-    def test_health_dashboard_normalizes_spaced_and_hyphenated_in_progress_status(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": "In Progress"},
-                        "todo-b": {"status": "IN-PROGRESS"},
-                        "todo-c": {"status": "done"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 2)
-            self.assertEqual(snapshot["state_counts"]["done"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 0)
+    def test_format_top_todo_activity_strips_markdown_checklist_prefixes(self):
+        actions = [
+            "- [ ] tighten contrast on todo widget",
+            "* [x] add aria labels",
+            "- [X] improve spacing",
+        ]
+        got = runner.format_top_todo_activity(actions)
+        self.assertEqual(
+            got,
+            [
+                "1. tighten contrast on todo widget",
+                "2. add aria labels",
+                "3. improve spacing",
+            ],
+        )
 
-    def test_health_dashboard_normalizes_mixed_whitespace_and_hyphen_in_progress_status(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": " in-\tprogress "},
-                        "todo-b": {"status": "pending"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 1)
-            self.assertEqual(snapshot["state_counts"]["pending"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 0)
+    def test_format_top_todo_activity_uses_singular_overflow_copy(self):
+        got = runner.format_top_todo_activity(["fix contrast", "improve heading"], limit=1)
+        self.assertEqual(got, ["1. fix contrast", "1 more action not shown."])
 
-    def test_health_dashboard_normalizes_crlf_and_repeated_hyphen_in_progress_status(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": " \r\nIN--\r\nPROGRESS\t"},
-                        "todo-b": {"status": "blocked"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 1)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 0)
-            self.assertEqual(snapshot["blocked_tasks"], ["todo-b"])
+    def test_format_top_todo_activity_coerces_non_positive_limit(self):
+        got = runner.format_top_todo_activity(["fix contrast", "improve heading", "add aria labels"], limit=0)
+        self.assertEqual(got, ["1. fix contrast", "2 more actions not shown."])
 
-    def test_health_dashboard_counts_missing_or_non_string_dict_status_as_unknown(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": " BLOCKED "},
-                        "todo-b": {},
-                        "todo-c": {"status": None},
-                        "todo-d": {"status": 5},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 3)
-            self.assertEqual(snapshot["blocked_tasks"], ["todo-a"])
+    def test_format_top_todo_activity_dedupes_case_insensitively(self):
+        got = runner.format_top_todo_activity(["Fix contrast", "fix contrast", "FIX CONTRAST"])
+        self.assertEqual(got, ["1. Fix contrast"])
 
-    def test_health_dashboard_counts_boolean_dict_status_as_unknown(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": True},
-                        "todo-b": {"status": "done"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["done"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 1)
-            self.assertEqual(snapshot["blocked_tasks"], [])
+    def test_format_top_todo_activity_prefers_structured_action_text(self):
+        got = runner.format_top_todo_activity(
+            [
+                {"action": "tighten contrast on todo widget"},
+                {"title": "add aria labels"},
+                {"note": "missing supported keys"},
+                ("improve", "spacing"),
+            ]
+        )
+        self.assertEqual(
+            got,
+            [
+                "1. tighten contrast on todo widget",
+                "2. add aria labels",
+                "3. improve spacing",
+            ],
+        )
 
-    def test_health_dashboard_collects_all_normalized_blocked_tasks(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": "blocked"},
-                        "todo-b": {"status": " BLOCKED "},
-                        "todo-c": {"status": "in-progress"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 2)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 1)
-            self.assertEqual(snapshot["blocked_tasks"], ["todo-a", "todo-b"])
+    def test_format_top_todo_activity_handles_nested_structured_actions(self):
+        got = runner.format_top_todo_activity(
+            [
+                {"action": {"summary": "tighten contrast on todo widget"}},
+                {"task": ["improve", "heading", "spacing"]},
+            ]
+        )
+        self.assertEqual(
+            got,
+            [
+                "1. tighten contrast on todo widget",
+                "2. improve heading spacing",
+            ],
+        )
 
-    def test_health_dashboard_treats_repeated_underscore_in_progress_status_as_unknown(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": "IN__PROGRESS"},
-                        "todo-b": {"status": "done"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 0)
-            self.assertEqual(snapshot["state_counts"]["done"], 1)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 1)
+    def test_normalize_outcome_preserves_structured_next_actions_for_dashboard(self):
+        normalized = runner.normalize_outcome(
+            {
+                "status": "done",
+                "summary": "ok",
+                "next_actions": [{"action": "tighten contrast on todo widget"}, ("improve", "spacing")],
+            }
+        )
+        got = runner.format_top_todo_activity(normalized["next_actions"])
+        self.assertEqual(got, ["1. tighten contrast on todo widget", "2. improve spacing"])
 
-    def test_health_dashboard_counts_malformed_distributed_state_payload_as_unknown(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text("{invalid-json", encoding="utf-8")
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["pending"], 0)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 0)
-            self.assertEqual(snapshot["state_counts"]["done"], 0)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 0)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 1)
-            self.assertEqual(snapshot["blocked_tasks"], [])
+    def test_format_top_todo_activity_handles_single_string_payload(self):
+        got = runner.format_top_todo_activity(" improve heading contrast ")
+        self.assertEqual(got, ["1. improve heading contrast"])
 
-    def test_health_dashboard_counts_non_dict_distributed_state_payload_as_unknown(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(json.dumps(["todo-a", "todo-b"]), encoding="utf-8")
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["pending"], 0)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 0)
-            self.assertEqual(snapshot["state_counts"]["done"], 0)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 0)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 1)
-            self.assertEqual(snapshot["blocked_tasks"], [])
+    def test_format_top_todo_activity_truncates_overlong_items(self):
+        long_action = "improve heading contrast " * 8
+        got = runner.format_top_todo_activity([long_action], limit=1)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0].startswith("1. "))
+        self.assertTrue(got[0].endswith("..."))
+        self.assertLessEqual(len(got[0]), 123)
 
-    def test_health_dashboard_keeps_counts_zero_when_distributed_state_file_is_missing(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.unlink(missing_ok=True)
-            snapshot = manager.health_snapshot(cfg)
-            self.assertEqual(snapshot["state_counts"]["pending"], 0)
-            self.assertEqual(snapshot["state_counts"]["in_progress"], 0)
-            self.assertEqual(snapshot["state_counts"]["done"], 0)
-            self.assertEqual(snapshot["state_counts"]["blocked"], 0)
-            self.assertEqual(snapshot["state_counts"]["unknown"], 0)
-            self.assertEqual(snapshot["blocked_tasks"], [])
+    def test_format_top_todo_activity_truncates_at_word_boundary(self):
+        long_action = "alpha beta " * 20
+        got = runner.format_top_todo_activity([long_action], limit=1)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0].endswith("..."))
+        self.assertNotIn("bet...", got[0])
 
-    def test_health_dashboard_cli_renders_distributed_todo_summary(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            cfg = self._prep_root(root)
-            cfg.state_file.write_text(
-                json.dumps(
-                    {
-                        "todo-a": {"status": "pending"},
-                        "todo-b": {"status": "blocked"},
-                        "todo-c": {"status": "done"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            output = StringIO()
-            with mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "health"])
-            self.assertEqual(rc, 0)
-            rendered = json.loads(output.getvalue())
-            self.assertEqual(rendered["state_counts"]["pending"], 1)
-            self.assertEqual(rendered["state_counts"]["blocked"], 1)
-            self.assertEqual(rendered["state_counts"]["done"], 1)
-            self.assertEqual(rendered["blocked_tasks"], ["todo-b"])
+    def test_summarize_run_writes_top_todo_activity_section(self):
+        task = runner.Task(
+            id="dashboard-a11y",
+            owner="codex",
+            priority=1,
+            title="Improve dashboard todo readability",
+            description="desc",
+            depends_on=[],
+            acceptance=[],
+        )
+        outcome = {
+            "status": "done",
+            "summary": "ok",
+            "commit": "abc123",
+            "blocker": "",
+            "next_actions": ["improve heading contrast"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner.summarize_run(task=task, repo=pathlib.Path(tmp), outcome=outcome, report_dir=pathlib.Path(tmp))
+            reports = list(pathlib.Path(tmp).glob("dashboard-a11y_*.md"))
+            self.assertEqual(len(reports), 1)
+            text = reports[0].read_text(encoding="utf-8")
+            self.assertIn("## Top Todo Activity", text)
+            self.assertIn("1. improve heading contrast", text)
+            self.assertNotIn("- 1. improve heading contrast", text)
 
-    def test_status_dashboard_renders_activity_log_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="worker heartbeat\ndistributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("distributed todo synced", rendered)
-
-    def test_status_dashboard_renders_activity_section_for_zero_like_non_empty_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="0",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("\n0\n", rendered)
-
-    def test_status_dashboard_renders_activity_section_for_newline_prefixed_non_empty_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="\n\t distributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("distributed todo synced", rendered)
-
-    def test_status_dashboard_renders_activity_section_for_crlf_prefixed_non_empty_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="\r\n distributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("distributed todo synced", rendered)
-
-    def test_status_dashboard_renders_activity_section_for_carriage_return_prefixed_non_empty_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="\rdistributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("distributed todo synced", rendered)
-
-    def test_status_dashboard_renders_activity_section_for_non_ok_status_snapshot(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch(
-                "orxaq_autonomy.cli.status_snapshot",
-                return_value={"ok": False, "error": "runner unhealthy"},
-            ), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="distributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": false', rendered.lower())
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("distributed todo synced", rendered)
-
-    def test_status_dashboard_renders_activity_section_for_non_ok_status_snapshot_with_newline_prefixed_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch(
-                "orxaq_autonomy.cli.status_snapshot",
-                return_value={"ok": False, "error": "runner unhealthy"},
-            ), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="\n distributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": false', rendered.lower())
-            self.assertIn("--- logs ---", rendered)
-            self.assertIn("distributed todo synced", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_empty_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": true', rendered.lower())
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_whitespace_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="   \n\t",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_crlf_whitespace_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="\r\n\r\n\t",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": true', rendered.lower())
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_whitespace_tail_when_snapshot_not_ok(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch(
-                "orxaq_autonomy.cli.status_snapshot",
-                return_value={"ok": False, "error": "runner unhealthy"},
-            ), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="   \n\t",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": false', rendered.lower())
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_crlf_whitespace_tail_when_snapshot_not_ok(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch(
-                "orxaq_autonomy.cli.status_snapshot",
-                return_value={"ok": False, "error": "runner unhealthy"},
-            ), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value="\r\n \r\n\t",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": false', rendered.lower())
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_non_string_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value=None,
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_bytes_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch("orxaq_autonomy.cli.status_snapshot", return_value={"ok": True}), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value=b"distributed todo synced",
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertNotIn("--- logs ---", rendered)
-
-    def test_status_dashboard_omits_activity_section_for_non_string_tail_when_snapshot_not_ok(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            output = StringIO()
-            with mock.patch(
-                "orxaq_autonomy.cli.status_snapshot",
-                return_value={"ok": False, "error": "runner unhealthy"},
-            ), mock.patch(
-                "orxaq_autonomy.cli.tail_logs",
-                return_value={"log": "distributed todo synced"},
-            ), mock.patch("sys.stdout", output):
-                rc = cli.main(["--root", str(root), "status"])
-            self.assertEqual(rc, 0)
-            rendered = output.getvalue()
-            self.assertIn('"ok": false', rendered.lower())
-            self.assertNotIn("--- logs ---", rendered)
+    def test_summarize_run_writes_fallback_todo_activity_as_bullet(self):
+        task = runner.Task(
+            id="dashboard-a11y-empty",
+            owner="codex",
+            priority=1,
+            title="Improve dashboard todo readability",
+            description="desc",
+            depends_on=[],
+            acceptance=[],
+        )
+        outcome = {
+            "status": "partial",
+            "summary": "no follow-up actions",
+            "commit": "",
+            "blocker": "",
+            "next_actions": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner.summarize_run(task=task, repo=pathlib.Path(tmp), outcome=outcome, report_dir=pathlib.Path(tmp))
+            reports = list(pathlib.Path(tmp).glob("dashboard-a11y-empty_*.md"))
+            self.assertEqual(len(reports), 1)
+            text = reports[0].read_text(encoding="utf-8")
+            self.assertIn("## Top Todo Activity", text)
+            self.assertIn("- No follow-up actions reported.", text)
 
 
 if __name__ == "__main__":
