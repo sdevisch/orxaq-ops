@@ -1,9 +1,12 @@
+import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -48,6 +51,26 @@ class CliTests(unittest.TestCase):
             self._prep_root(root)
             with mock.patch("orxaq_autonomy.cli.health_snapshot", return_value={"healthy": True}):
                 rc = cli.main(["--root", str(root), "health"])
+            self.assertEqual(rc, 0)
+
+    def test_dashboard_status_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.dashboard_health_status", return_value={
+                "timestamp": "2026-02-09T12:00:00Z",
+                "overall_status": "healthy",
+                "collaboration_health": {
+                    "task_distribution": {"pending": 1, "in_progress": 2, "done": 3, "blocked": 0},
+                    "blocked_tasks": [],
+                    "stale_heartbeats": False
+                },
+                "root_cause_hypotheses": [],
+                "impacted_components": {"lanes": [], "swarms": []},
+                "recommendations": [],
+                "logs": ""
+            }):
+                rc = cli.main(["--root", str(root), "dashboard-status"])
             self.assertEqual(rc, 0)
 
 

@@ -11,6 +11,7 @@ from .context import write_default_skill_protocol
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
+    dashboard_health_status,
     ensure_background,
     health_snapshot,
     install_keepalive,
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
+    sub.add_parser("dashboard-status")
     pre = sub.add_parser("preflight")
     pre.add_argument("--allow-dirty", action="store_true")
     sub.add_parser("reset")
@@ -89,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "health":
         print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
+        return 0
+    if args.command == "dashboard-status":
+        print(json.dumps(dashboard_health_status(cfg), indent=2, sort_keys=True))
         return 0
     if args.command == "preflight":
         payload = preflight(cfg, require_clean=not args.allow_dirty)

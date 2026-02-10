@@ -588,3 +588,63 @@ def tail_logs(config: ManagerConfig, lines: int = 40) -> str:
         return ""
     content = config.log_file.read_text(encoding="utf-8").splitlines()
     return "\n".join(content[-lines:])
+
+
+def dashboard_health_status(config: ManagerConfig) -> dict[str, Any]:
+    """
+    Generate a comprehensive dashboard health status report.
+
+    Provides detailed insights into collaboration system health and degradation.
+    """
+    # Start with existing health snapshot
+    health = health_snapshot(config)
+
+    # Establish base status
+    status = "healthy"
+    if health.get("heartbeat_stale", False):
+        status = "degraded"
+    if health.get("state_counts", {}).get("blocked", 0) > 0:
+        status = "critical"
+
+    # Analyze task distribution for potential issues
+    task_distribution = health.get("state_counts", {})
+
+    # Detect collaboration degradation signals
+    root_cause_hypotheses = []
+    if task_distribution.get("blocked", 0) > 0:
+        root_cause_hypotheses.append("Task blockages detected")
+
+    if health.get("heartbeat_stale", False):
+        root_cause_hypotheses.append("Heartbeat interruption")
+
+    # Comprehensive dashboard status
+    dashboard_status = {
+        "timestamp": health.get("timestamp", _now_iso()),
+        "overall_status": status,
+        "collaboration_health": {
+            "task_distribution": task_distribution,
+            "blocked_tasks": health.get("blocked_tasks", []),
+            "stale_heartbeats": health.get("heartbeat_stale", False)
+        },
+        "root_cause_hypotheses": root_cause_hypotheses,
+        "impacted_components": {
+            "lanes": [],  # Could be expanded with more detailed lane detection
+            "swarms": []  # Could be expanded with more detailed swarm detection
+        },
+        "recommendations": [
+            "Review blocked tasks" if task_distribution.get("blocked", 0) > 0 else None,
+            "Check heartbeat mechanism" if health.get("heartbeat_stale", False) else None
+        ],
+        "logs": tail_logs(config, lines=20)
+    }
+
+    # Remove None values from recommendations
+    dashboard_status["recommendations"] = [r for r in dashboard_status["recommendations"] if r is not None]
+
+    # Write to dashboard health file for persistence
+    dashboard_file = config.artifacts_dir / "dashboard_health.json"
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    dashboard_file.write_text(json.dumps(dashboard_status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    dashboard_status["dashboard_file"] = str(dashboard_file)
+
+    return dashboard_status
