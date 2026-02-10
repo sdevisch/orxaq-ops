@@ -129,6 +129,18 @@ class DashboardTodoMetricsTests(unittest.TestCase):
         )
         self.assertTrue(all(type(value) is int for value in normalized.values()))
 
+    def test_int_subclass_inputs_are_normalized_to_plain_ints(self):
+        class IntSubclass(int):
+            pass
+
+        payload = {"live_covered": IntSubclass(3), "live_uncovered": IntSubclass(4)}
+        normalized = normalize_todo_coverage_metrics(payload)
+        self.assertEqual(
+            normalized,
+            {"live_covered": 3, "live_uncovered": 4, "live_coverage_total": 7},
+        )
+        self.assertTrue(all(type(value) is int for value in normalized.values()))
+
 
 if __name__ == "__main__":
     unittest.main()

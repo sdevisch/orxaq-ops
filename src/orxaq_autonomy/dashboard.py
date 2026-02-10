@@ -9,7 +9,8 @@ def _to_non_negative_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
     if isinstance(value, int):
-        return value if value >= 0 else 0
+        parsed = int(value)
+        return parsed if parsed >= 0 else 0
     if not isinstance(value, str):
         return 0
     try:
