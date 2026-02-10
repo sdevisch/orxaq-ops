@@ -123,6 +123,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 4, "live_uncovered": 2, "live_coverage_total": 6},
         )
 
+    def test_negative_string_components_are_clamped_to_zero(self):
+        payload = {"live_covered": "-3", "live_uncovered": "2", "live_coverage_total": 999}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 0, "live_uncovered": 2, "live_coverage_total": 2},
+        )
+
     def test_int_like_objects_are_rejected_for_determinism(self):
         class IntLike:
             def __int__(self):
