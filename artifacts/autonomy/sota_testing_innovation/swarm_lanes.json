@@ -1,0 +1,23 @@
+[
+  {
+    "id": "lane-a",
+    "name": "Codex Governance Lane",
+    "owner": "codex",
+    "description": "Governance and architecture review lane",
+    "priority": 1
+  },
+  {
+    "id": "lane-b",
+    "name": "Gemini Testing Lane",
+    "owner": "gemini",
+    "description": "Expand and harden test suites",
+    "priority": 2
+  },
+  {
+    "id": "lane-c",
+    "name": "Claude Innovation Lane",
+    "owner": "claude",
+    "description": "Autonomous innovation and experimentation",
+    "priority": 3
+  }
+]
