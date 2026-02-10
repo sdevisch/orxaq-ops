@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .context import write_default_skill_protocol
 from .ide import generate_workspace, open_in_ide
+from .health_monitor import CollaborationHealthMonitor
 from .manager import (
     ManagerConfig,
     dashboard_health_status,
@@ -93,7 +94,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
         return 0
     if args.command == "dashboard-status":
-        print(json.dumps(dashboard_health_status(cfg), indent=2, sort_keys=True))
+        health_monitor = CollaborationHealthMonitor(root_path=cfg.root_dir)
+        report = health_monitor.generate_health_report()
+        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     if args.command == "preflight":
         payload = preflight(cfg, require_clean=not args.allow_dirty)
