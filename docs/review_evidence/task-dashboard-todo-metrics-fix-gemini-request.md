@@ -15,3 +15,5 @@ Expected checks:
 - No behavior regressions outside dashboard todo metric normalization tests.
 
 Status: requested (pending execution by Gemini)
+
+Patch commit under review: a497749
