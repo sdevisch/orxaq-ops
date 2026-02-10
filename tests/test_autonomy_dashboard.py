@@ -94,6 +94,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 3, "live_uncovered": 0, "live_coverage_total": 3},
         )
 
+    def test_missing_covered_does_not_trust_reported_total(self):
+        payload = {"live_uncovered": "4", "live_coverage_total": 99}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 0, "live_uncovered": 4, "live_coverage_total": 4},
+        )
+
     def test_boolean_components_are_treated_as_invalid(self):
         payload = {"live_covered": True, "live_uncovered": False, "live_coverage_total": 99}
         self.assertEqual(
