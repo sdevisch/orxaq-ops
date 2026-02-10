@@ -25,6 +25,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 4, "live_uncovered": 3, "live_coverage_total": 7},
         )
 
+    def test_invalid_reported_total_is_ignored(self):
+        payload = {"live_covered": 4, "live_uncovered": 3, "live_coverage_total": "invalid"}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 4, "live_uncovered": 3, "live_coverage_total": 7},
+        )
+
     def test_inputs_are_normalized_deterministically(self):
         payload = {
             "live_covered": "5",
