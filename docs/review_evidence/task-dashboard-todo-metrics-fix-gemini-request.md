@@ -1,0 +1,17 @@
+# Cross-Model Review Request
+
+Task: task-dashboard-todo-metrics-fix  
+Issue: #1  
+Branch: codex/issue-1-dashboard-todo-metrics-fix
+
+Requested reviewer: Gemini
+
+Scope to review:
+- tests/test_autonomy_dashboard.py
+
+Expected checks:
+- Deterministic handling of None/non-dict payloads.
+- Input immutability regression coverage.
+- No behavior regressions outside dashboard todo metric normalization tests.
+
+Status: requested (pending execution by Gemini)
