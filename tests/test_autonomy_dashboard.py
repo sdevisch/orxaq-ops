@@ -66,6 +66,13 @@ class DashboardTodoMetricsTests(unittest.TestCase):
             {"live_covered": 0, "live_uncovered": 0, "live_coverage_total": 0},
         )
 
+    def test_blank_string_components_do_not_trust_reported_total(self):
+        payload = {"live_covered": "", "live_uncovered": " ", "live_coverage_total": 42}
+        self.assertEqual(
+            normalize_todo_coverage_metrics(payload),
+            {"live_covered": 0, "live_uncovered": 0, "live_coverage_total": 0},
+        )
+
     def test_reported_total_alone_does_not_create_coverage(self):
         payload = {"live_coverage_total": 42}
         self.assertEqual(
