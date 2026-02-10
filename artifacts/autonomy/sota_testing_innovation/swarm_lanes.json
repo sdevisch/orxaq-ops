@@ -1,23 +1,26 @@
 [
   {
     "id": "lane-a",
-    "name": "Codex Governance Lane",
+    "name": "Autonomous Governance Lane",
     "owner": "codex",
-    "description": "Governance and architecture review lane",
-    "priority": 1
+    "description": "Governance and contract management",
+    "priority": 1,
+    "tasks_file": "config/lanes/innovation_governance_tasks.json"
   },
   {
     "id": "lane-b",
-    "name": "Gemini Testing Lane",
+    "name": "Autonomous Testing Lane",
     "owner": "gemini",
     "description": "Expand and harden test suites",
-    "priority": 2
+    "priority": 2,
+    "tasks_file": "config/lanes/innovation_governance_tasks.json"
   },
   {
     "id": "lane-c",
-    "name": "Claude Innovation Lane",
+    "name": "Autonomous Innovation Lane",
     "owner": "claude",
-    "description": "Autonomous innovation and experimentation",
-    "priority": 3
+    "description": "Experiment and innovation pipeline",
+    "priority": 3,
+    "tasks_file": "config/lanes/innovation_governance_tasks.json"
   }
 ]
