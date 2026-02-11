@@ -24,6 +24,17 @@ Provide one OpenAI-compatible interface for multi-provider routing with lane-bas
 - Required providers drive strict pass/fail (`required_down == 0`).
 - Fallback order comes from `router.fallback_order`.
 
+## Profiles (W3-D)
+
+- Profiles directory: `profiles/`
+  - `local.yaml`
+  - `lan.yaml`
+  - `travel.yaml`
+- Apply a profile:
+  - `python3 -m orxaq_autonomy.cli --root . profile-apply local --config ./config/router.example.yaml --profiles-dir ./profiles --output ./config/router.active.yaml`
+- Run router checks using a profile directly:
+  - `python3 -m orxaq_autonomy.cli --root . router-check --config ./config/router.example.yaml --profile travel --profiles-dir ./profiles --active-config ./config/router.active.yaml --output ./artifacts/router_check.json --strict`
+
 ## Orxaq Integration
 
 `orxaq` live LLM calls support router-mode via env vars:

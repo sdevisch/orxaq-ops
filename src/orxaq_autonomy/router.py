@@ -79,6 +79,106 @@ def _extract_providers(payload: dict[str, Any]) -> list[RouterProvider]:
     return providers
 
 
+def _provider_name_set(payload: dict[str, Any]) -> set[str]:
+    return {
+        str(row.get("name", "")).strip()
+        for row in payload.get("providers", [])
+        if isinstance(row, dict) and str(row.get("name", "")).strip()
+    }
+
+
+def _read_profile(profile_path: Path) -> dict[str, Any]:
+    raw = profile_path.read_text(encoding="utf-8")
+    payload = _load_structured_payload(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("router profile must be an object")
+    return payload
+
+
+def apply_router_profile(
+    *,
+    root: str = ".",
+    profile_name: str,
+    base_config_path: str = "./config/router.example.yaml",
+    profiles_dir: str = "./profiles",
+    output_path: str = "./config/router.active.yaml",
+) -> dict[str, Any]:
+    root_path = Path(root).expanduser().resolve()
+    if not profile_name.strip():
+        raise ValueError("profile_name is required")
+
+    base_config_file = Path(base_config_path).expanduser()
+    if not base_config_file.is_absolute():
+        base_config_file = (root_path / base_config_file).resolve()
+
+    profiles_root = Path(profiles_dir).expanduser()
+    if not profiles_root.is_absolute():
+        profiles_root = (root_path / profiles_root).resolve()
+    profile_file = (profiles_root / f"{profile_name.strip()}.yaml").resolve()
+    if not profile_file.exists():
+        profile_file = (profiles_root / f"{profile_name.strip()}.json").resolve()
+    if not profile_file.exists():
+        raise ValueError(f"profile not found: {profile_name}")
+
+    output_file = Path(output_path).expanduser()
+    if not output_file.is_absolute():
+        output_file = (root_path / output_file).resolve()
+
+    base_payload = _read_router_config(str(base_config_file))
+    profile_payload = _read_profile(profile_file)
+    providers = base_payload.get("providers", [])
+    if not isinstance(providers, list):
+        raise ValueError("router config must define providers[]")
+
+    provider_names = _provider_name_set(base_payload)
+    required_names_raw = profile_payload.get("required_providers", [])
+    if not isinstance(required_names_raw, list):
+        raise ValueError("profile required_providers must be a list")
+    required_names = {str(item).strip() for item in required_names_raw if str(item).strip()}
+    unknown_required = sorted(name for name in required_names if name not in provider_names)
+    if unknown_required:
+        raise ValueError(f"profile includes unknown providers: {', '.join(unknown_required)}")
+
+    active_payload = json.loads(json.dumps(base_payload))
+    for row in active_payload.get("providers", []):
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        row["required"] = name in required_names
+
+    lanes = profile_payload.get("lanes", None)
+    if isinstance(lanes, dict):
+        active_payload["lanes"] = {
+            str(lane).strip(): [str(item).strip() for item in values if str(item).strip()]
+            for lane, values in lanes.items()
+            if isinstance(values, list) and str(lane).strip()
+        }
+    router_cfg = active_payload.get("router", {})
+    if not isinstance(router_cfg, dict):
+        router_cfg = {}
+    profile_router = profile_payload.get("router", {})
+    if isinstance(profile_router, dict):
+        fallback = profile_router.get("fallback_order", None)
+        if isinstance(fallback, list):
+            router_cfg["fallback_order"] = [str(item).strip() for item in fallback if str(item).strip()]
+    active_payload["router"] = router_cfg
+    active_payload["profile"] = {
+        "name": profile_name.strip(),
+        "source": str(profile_file),
+    }
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(active_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "profile": profile_name.strip(),
+        "base_config": str(base_config_file),
+        "profile_path": str(profile_file),
+        "active_config": str(output_file),
+        "required_providers": sorted(required_names),
+    }
+
+
 def _resolve_lane_providers(payload: dict[str, Any], lane: str | None) -> list[str]:
     lanes = payload.get("lanes", {})
     if not isinstance(lanes, dict):
@@ -194,6 +294,9 @@ def run_router_check(
     root: str = ".",
     config_path: str = "./config/router.example.yaml",
     output_path: str = "./artifacts/router_check.json",
+    profile: str = "",
+    profiles_dir: str = "./profiles",
+    active_config_output: str = "./config/router.active.yaml",
     lane: str = "",
     timeout_sec: int = 5,
 ) -> dict[str, Any]:
@@ -204,6 +307,18 @@ def run_router_check(
     output_file = Path(output_path).expanduser()
     if not output_file.is_absolute():
         output_file = (root_path / output_file).resolve()
+
+    profile_name = profile.strip()
+    profile_result: dict[str, Any] | None = None
+    if profile_name:
+        profile_result = apply_router_profile(
+            root=str(root_path),
+            profile_name=profile_name,
+            base_config_path=str(config_file),
+            profiles_dir=profiles_dir,
+            output_path=active_config_output,
+        )
+        config_file = Path(profile_result["active_config"]).resolve()
 
     payload = _read_router_config(str(config_file))
     providers = _extract_providers(payload)
@@ -225,6 +340,8 @@ def run_router_check(
         "root": str(root_path),
         "config_path": str(config_file),
         "output_path": str(output_file),
+        "profile": profile_name or None,
+        "profile_result": profile_result,
         "lane": lane.strip() or None,
         "providers": [row.to_dict() for row in statuses],
         "summary": {

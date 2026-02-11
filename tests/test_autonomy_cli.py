@@ -100,6 +100,31 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             check.assert_called_once()
 
+    def test_profile_apply_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.apply_router_profile",
+                return_value={"ok": True, "profile": "local"},
+            ) as apply_profile:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "profile-apply",
+                        "local",
+                        "--config",
+                        "./config/router.example.yaml",
+                        "--profiles-dir",
+                        "./profiles",
+                        "--output",
+                        "./config/router.active.yaml",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            apply_profile.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

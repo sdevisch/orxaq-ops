@@ -34,7 +34,7 @@ from .manager import (
     tail_logs,
     uninstall_keepalive,
 )
-from .router import run_router_check
+from .router import apply_router_profile, run_router_check
 
 
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
@@ -87,9 +87,17 @@ def main(argv: list[str] | None = None) -> int:
     router = sub.add_parser("router-check")
     router.add_argument("--config", default="./config/router.example.yaml")
     router.add_argument("--output", default="./artifacts/router_check.json")
+    router.add_argument("--profile", default="")
+    router.add_argument("--profiles-dir", default="./profiles")
+    router.add_argument("--active-config", default="./config/router.active.yaml")
     router.add_argument("--lane", default="")
     router.add_argument("--timeout-sec", type=int, default=5)
     router.add_argument("--strict", action="store_true")
+    profile_apply = sub.add_parser("profile-apply")
+    profile_apply.add_argument("name")
+    profile_apply.add_argument("--config", default="./config/router.example.yaml")
+    profile_apply.add_argument("--profiles-dir", default="./profiles")
+    profile_apply.add_argument("--output", default="./config/router.active.yaml")
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -226,12 +234,29 @@ def main(argv: list[str] | None = None) -> int:
             root=str(cfg.root_dir),
             config_path=args.config,
             output_path=args.output,
+            profile=args.profile,
+            profiles_dir=args.profiles_dir,
+            active_config_output=args.active_config,
             lane=args.lane,
             timeout_sec=max(1, int(args.timeout_sec)),
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         if args.strict and not bool(report.get("summary", {}).get("overall_ok", False)):
             return 1
+        return 0
+    if args.command == "profile-apply":
+        try:
+            payload = apply_router_profile(
+                root=str(cfg.root_dir),
+                profile_name=args.name,
+                base_config_path=args.config,
+                profiles_dir=args.profiles_dir,
+                output_path=args.output,
+            )
+        except Exception as err:  # noqa: BLE001
+            print(json.dumps({"ok": False, "error": str(err)}, sort_keys=True))
+            return 1
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "init-skill-protocol":
         out = (cfg.root_dir / args.output).resolve()

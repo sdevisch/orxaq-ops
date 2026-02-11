@@ -75,6 +75,7 @@ make health
 make logs
 make stop
 make router-check
+make profile-apply PROFILE=local
 make install-keepalive
 make keepalive-status
 make workspace
@@ -113,6 +114,8 @@ Budget and routing controls:
 
 - routing policy file: `config/routing_policy.yaml`
 - router config example: `config/router.example.yaml`
+- routing profiles: `profiles/local.yaml`, `profiles/lan.yaml`, `profiles/travel.yaml`
+- active router config written by profile apply: `config/router.active.yaml`
 - runtime budget telemetry: `artifacts/autonomy/budget.json`
 - health snapshot includes latest `budget` section (`make health`)
 - stop report: `artifacts/autonomy/AUTONOMY_STOP_REPORT.md`
