@@ -1,0 +1,18 @@
+{
+  "budget": {
+    "max_cost_per_run_usd": 15,
+    "max_wall_clock_sec": 14400,
+    "max_tokens_per_run": 750000
+  },
+  "retry": {
+    "max_attempts_per_task": 6,
+    "backoff_base_sec": 30,
+    "backoff_max_sec": 1800
+  },
+  "lanes": {
+    "L0": ["lmstudio-local"],
+    "L1": ["openai-primary", "gemini-primary"],
+    "L2": ["claude-primary"],
+    "L3": []
+  }
+}

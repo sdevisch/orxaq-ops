@@ -1,0 +1,8 @@
+{
+  "name": "travel",
+  "required_lanes": ["L1"],
+  "overrides": {
+    "required": ["openai-primary"],
+    "optional": ["gemini-primary", "claude-primary", "lmstudio-local"]
+  }
+}

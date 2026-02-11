@@ -1,0 +1,25 @@
+[
+  {
+    "id": "W2-A-1",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Task queue schema check",
+    "description": "Validate queue and emit checkpoint.",
+    "depends_on": [],
+    "acceptance": [
+      "Schema validates",
+      "Checkpoint updated"
+    ]
+  },
+  {
+    "id": "W2-A-2",
+    "owner": "gemini",
+    "priority": 2,
+    "title": "Independent validation",
+    "description": "Run lint and tests on changed surface.",
+    "depends_on": ["W2-A-1"],
+    "acceptance": [
+      "Validation completed"
+    ]
+  }
+]
