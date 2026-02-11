@@ -83,19 +83,32 @@ class RPASchedulerTests(unittest.TestCase):
         )
         jobs = [RPAJob(id="job-a", domain="example.com", command=["echo", "ok"])]
         attempt_times: list[float] = []
+        clock = [0.0]
+
+        def now_fn() -> float:
+            return clock[0]
+
+        def sleep_fn(seconds: float) -> None:
+            clock[0] += max(0.0, seconds)
 
         def run_job(_job: RPAJob):
-            attempt_times.append(time.monotonic())
+            attempt_times.append(now_fn())
             if len(attempt_times) < 3:
                 return False, "transient"
             return True, ""
 
-        report = run_rpa_schedule(policy=policy, jobs=jobs, run_job=run_job)
+        report = run_rpa_schedule(
+            policy=policy,
+            jobs=jobs,
+            run_job=run_job,
+            now_fn=now_fn,
+            sleep_fn=sleep_fn,
+        )
         self.assertTrue(report["ok"])
         self.assertEqual(report["attempts_total"], 3)
         self.assertEqual(report["jobs_succeeded"], 1)
-        self.assertGreaterEqual(attempt_times[1] - attempt_times[0], 0.009)
-        self.assertGreaterEqual(attempt_times[2] - attempt_times[1], 0.018)
+        self.assertAlmostEqual(attempt_times[1] - attempt_times[0], 0.01, places=6)
+        self.assertAlmostEqual(attempt_times[2] - attempt_times[1], 0.02, places=6)
 
     def test_load_scheduler_config_builds_orxaq_commands(self):
         with tempfile.TemporaryDirectory() as td:
