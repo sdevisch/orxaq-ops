@@ -50,6 +50,31 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
+    def test_stop_command_writes_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.autonomy_stop",
+                return_value={"ok": True, "report_path": "artifacts/autonomy/AUTONOMY_STOP_REPORT.md"},
+            ) as stop:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "stop",
+                        "--reason",
+                        "manual intervention",
+                        "--file-issue",
+                        "--issue-repo",
+                        "Orxaq/orxaq-ops",
+                        "--issue-label",
+                        "autonomy",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            stop.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -110,6 +110,14 @@ Budget and routing controls:
 - routing policy file: `config/routing_policy.yaml`
 - runtime budget telemetry: `artifacts/autonomy/budget.json`
 - health snapshot includes latest `budget` section (`make health`)
+- stop report: `artifacts/autonomy/AUTONOMY_STOP_REPORT.md`
+
+Stop with report + optional issue filing:
+
+```bash
+python3 -m orxaq_autonomy.cli --root . stop --reason "blocked by failing CI"
+python3 -m orxaq_autonomy.cli --root . stop --reason "manual intervention" --file-issue --issue-repo Orxaq/orxaq-ops --issue-label autonomy --issue-label blocked
+```
 
 ## Reuse Model
 
