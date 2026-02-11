@@ -643,8 +643,9 @@ def run_validations(
                 if fallback_result.returncode == 0:
                     failure_details = ""
                     break
+                fallback_output = (fallback_result.stdout + "\n" + fallback_result.stderr).strip()
                 fallback_errors.append(
-                    f"`{fallback}` failed:\n{(fallback_result.stdout + '\n' + fallback_result.stderr).strip()}"
+                    f"`{fallback}` failed:\n{fallback_output}"
                 )
             if not failure_details:
                 continue
