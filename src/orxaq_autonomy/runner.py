@@ -98,7 +98,7 @@ PROTECTED_BRANCH_REJECTION_PATTERNS = (
     "gh013",
     "protected branch hook declined",
 )
-PROTECTED_BRANCH_NAMES = {"main", "master", "trunk"}
+PROTECTED_BRANCH_NAMES = {"main", "master", "develop", "trunk"}
 
 NON_INTERACTIVE_ENV_OVERRIDES = {
     "CI": "1",
@@ -1942,60 +1942,15 @@ def _push_with_recovery(
         retry = run_command(retry_cmd, cwd=repo, timeout_sec=timeout_sec)
         if retry.returncode == 0:
             return True, f"{message}; pushed new branch `{new_branch}`"
-        push_cmd = retry_cmd
         output = (retry.stdout + "\n" + retry.stderr).strip()
+        moved_ok, moved_value = _set_remote_from_move_hint(repo, output, timeout_sec)
+        if moved_ok:
+            retry_after_move = run_command(retry_cmd, cwd=repo, timeout_sec=timeout_sec)
+            if retry_after_move.returncode == 0:
+                return True, f"{message}; pushed new branch `{new_branch}` after updating origin to `{moved_value}`"
+            output = (retry_after_move.stdout + "\n" + retry_after_move.stderr).strip()
 
-    ok, current_branch = _current_branch(repo)
-    if not ok:
-        return False, output
-    no_verify_cmd = ["git", "push", "--no-verify"]
-    if set_upstream:
-        no_verify_cmd.extend(["-u", "origin", current_branch])
-    no_verify = run_command(no_verify_cmd, cwd=repo, timeout_sec=timeout_sec)
-    if no_verify.returncode == 0:
-        return True, (
-            "push succeeded with --no-verify fallback after failure:\n"
-            f"{output}"
-        )
-
-    no_verify_output = (no_verify.stdout + "\n" + no_verify.stderr).strip()
-    moved_ok, moved_value = _set_remote_from_move_hint(repo, no_verify_output, timeout_sec)
-    if moved_ok:
-        no_verify_retry = run_command(no_verify_cmd, cwd=repo, timeout_sec=timeout_sec)
-        if no_verify_retry.returncode == 0:
-            return True, (
-                "push succeeded with --no-verify after updating moved remote "
-                f"to `{moved_value}`; initial failure was:\n{output}"
-            )
-        no_verify_output = (no_verify_retry.stdout + "\n" + no_verify_retry.stderr).strip()
-
-    if _is_protected_branch_rejection(no_verify_output):
-        switched, message = ensure_pushable_branch(repo, owner=owner, timeout_sec=timeout_sec)
-        if switched:
-            ok, branch_after_switch = _current_branch(repo)
-            if ok:
-                branch_no_verify_cmd = ["git", "push", "--no-verify", "-u", "origin", branch_after_switch]
-                branch_push = run_command(branch_no_verify_cmd, cwd=repo, timeout_sec=timeout_sec)
-                if branch_push.returncode == 0:
-                    return True, (
-                        "push succeeded with --no-verify after protected-branch switch: "
-                        f"{message}"
-                    )
-                branch_output = (branch_push.stdout + "\n" + branch_push.stderr).strip()
-                moved_branch_ok, moved_branch_value = _set_remote_from_move_hint(repo, branch_output, timeout_sec)
-                if moved_branch_ok:
-                    branch_retry = run_command(branch_no_verify_cmd, cwd=repo, timeout_sec=timeout_sec)
-                    if branch_retry.returncode == 0:
-                        return True, (
-                            "push succeeded with --no-verify after protected-branch switch and moved remote "
-                            f"update to `{moved_branch_value}`: {message}"
-                        )
-                    branch_output = (branch_retry.stdout + "\n" + branch_retry.stderr).strip()
-                no_verify_output = f"{no_verify_output}\n\nbranch-push fallback failed:\n{branch_output}"
-            else:
-                no_verify_output = f"{no_verify_output}\n\nunable to determine branch after switch: {branch_after_switch}"
-
-    return False, f"{output}\n\nno-verify fallback failed:\n{no_verify_output}"
+    return False, output
 
 
 def ensure_repo_pushed(repo: Path, timeout_sec: int = 180, owner: str = "autonomy") -> tuple[bool, str]:
@@ -2315,10 +2270,13 @@ def run_codex_task(
     base_cmd = [
         codex_cmd,
         "exec",
+        "--sandbox",
+        "danger-full-access",
+        "--config",
+        'approval_policy="never"',
         "--cd",
         str(repo),
         "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
         "--output-schema",
         str(schema_path),
         "--output-last-message",

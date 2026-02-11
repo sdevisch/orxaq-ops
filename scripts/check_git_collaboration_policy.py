@@ -9,7 +9,17 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+try:
+    from orxaq_autonomy.breakglass import validate_scope
+except ModuleNotFoundError:
+    src_dir = (Path(__file__).resolve().parents[1] / "src").resolve()
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    sys.modules.pop("orxaq_autonomy", None)
+    from orxaq_autonomy.breakglass import validate_scope
 
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "develop", "trunk")
 DEFAULT_ALLOWED_BRANCH_PREFIXES = (
@@ -36,11 +46,45 @@ AGENT_SESSION_ENV_KEYS = (
     "CURSOR_AGENT",
 )
 SESSION_BRANCH_STATE_FILE = "agent_session_branch_map.json"
+OVERRIDE_SCOPE_BY_ENV = {
+    "ORXAQ_ALLOW_PROTECTED_BRANCH_COMMITS": "allow_protected_branch_commits",
+    "ORXAQ_ALLOW_AGENT_BRANCH_REUSE": "allow_agent_branch_reuse",
+    "ORXAQ_ALLOW_BEHIND_PUSH": "allow_behind_push",
+}
 
 
 def _env_true(name: str) -> bool:
     value = str(os.environ.get(name, "")).strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _allow_override(
+    *,
+    repo_root: Path,
+    env_name: str,
+    context: str,
+    problems: list[str],
+) -> bool:
+    if not _env_true(env_name):
+        return False
+    scope = OVERRIDE_SCOPE_BY_ENV.get(env_name, "")
+    if not scope:
+        problems.append(f"Override env {env_name} has no mapped breakglass scope.")
+        return False
+    ok, message = validate_scope(
+        repo_root,
+        scope=scope,
+        actor="git-collaboration-policy",
+        context=context,
+        record_usage=True,
+    )
+    if ok:
+        return True
+    problems.append(
+        f"{env_name}=1 requires active breakglass scope {scope!r}: {message}. "
+        "Use `orxaq-autonomy breakglass-open` and provide ORXAQ_BREAKGLASS_TOKEN."
+    )
+    return False
 
 
 def _run_git(repo_root: Path, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -125,7 +169,12 @@ def _check_agent_branch_freshness(
     agent_prefixes: tuple[str, ...],
     problems: list[str],
 ) -> None:
-    if _env_true("ORXAQ_ALLOW_AGENT_BRANCH_REUSE"):
+    if _allow_override(
+        repo_root=repo_root,
+        env_name="ORXAQ_ALLOW_AGENT_BRANCH_REUSE",
+        context=f"branch-freshness:{branch}",
+        problems=problems,
+    ):
         return
     session_token = _active_agent_session_token()
     if not session_token:
@@ -166,6 +215,7 @@ def _check_agent_branch_freshness(
 
 def _check_branch_policy(
     *,
+    repo_root: Path,
     branch: str,
     protected_branches: tuple[str, ...],
     allowed_prefixes: tuple[str, ...],
@@ -176,11 +226,18 @@ def _check_branch_policy(
         problems.append("Detached HEAD is not allowed for collaborative work. Create/switch to a named branch.")
         return
 
-    if branch in protected_branches and not _env_true("ORXAQ_ALLOW_PROTECTED_BRANCH_COMMITS"):
+    allow_protected = _allow_override(
+        repo_root=repo_root,
+        env_name="ORXAQ_ALLOW_PROTECTED_BRANCH_COMMITS",
+        context=f"protected-branch:{branch}",
+        problems=problems,
+    )
+    if branch in protected_branches and not allow_protected:
         problems.append(
             "Direct commits on protected branch "
             f"{branch!r} are blocked. Use a feature branch (for agents: codex/*). "
-            "Set ORXAQ_ALLOW_PROTECTED_BRANCH_COMMITS=1 only for approved emergencies."
+            "Emergency override requires active breakglass scope "
+            f"{OVERRIDE_SCOPE_BY_ENV['ORXAQ_ALLOW_PROTECTED_BRANCH_COMMITS']!r}."
         )
 
     if branch not in protected_branches and not branch.startswith(allowed_prefixes):
@@ -253,7 +310,7 @@ def _check_forbidden_tracked_globs(
         )
 
 
-def _check_upstream_behind(repo_root: Path, problems: list[str]) -> None:
+def _check_upstream_behind(repo_root: Path, branch: str, problems: list[str]) -> None:
     upstream = _run_git(repo_root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], check=False)
     if upstream.returncode != 0:
         return
@@ -268,10 +325,17 @@ def _check_upstream_behind(repo_root: Path, problems: list[str]) -> None:
     behind = int(raw[0])
     ahead = int(raw[1])
 
-    if behind > 0 and not _env_true("ORXAQ_ALLOW_BEHIND_PUSH"):
+    allow_behind_push = _allow_override(
+        repo_root=repo_root,
+        env_name="ORXAQ_ALLOW_BEHIND_PUSH",
+        context=f"upstream-behind:{branch}:{upstream_ref}",
+        problems=problems,
+    )
+    if behind > 0 and not allow_behind_push:
         problems.append(
             f"Branch is behind upstream ({upstream_ref}) by {behind} commit(s) and ahead by {ahead}. "
-            "Rebase/merge before push. Set ORXAQ_ALLOW_BEHIND_PUSH=1 only for controlled exceptions."
+            "Rebase/merge before push. Emergency override requires active breakglass scope "
+            f"{OVERRIDE_SCOPE_BY_ENV['ORXAQ_ALLOW_BEHIND_PUSH']!r}."
         )
 
 
@@ -307,6 +371,7 @@ def main() -> int:
         return 1
 
     _check_branch_policy(
+        repo_root=repo_root,
         branch=branch,
         protected_branches=protected_branches,
         allowed_prefixes=allowed_prefixes,
@@ -338,7 +403,7 @@ def main() -> int:
     )
 
     if args.check_upstream_behind:
-        _check_upstream_behind(repo_root, problems)
+        _check_upstream_behind(repo_root, branch, problems)
 
     if problems:
         print("Git collaboration policy failed:")

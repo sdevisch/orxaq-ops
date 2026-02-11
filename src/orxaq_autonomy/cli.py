@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .breakglass import (
+    close_session as breakglass_close_session,
+    open_session as breakglass_open_session,
+    status as breakglass_status_snapshot,
+)
 from .context import write_default_skill_protocol
 from .dashboard import start_dashboard
 from .ide import generate_workspace, open_in_ide
@@ -958,6 +963,18 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("install-keepalive")
     sub.add_parser("uninstall-keepalive")
     sub.add_parser("keepalive-status")
+    breakglass_open = sub.add_parser("breakglass-open")
+    breakglass_open.add_argument("--scope", action="append", default=[])
+    breakglass_open.add_argument("--reason", required=True)
+    breakglass_open.add_argument("--ttl-sec", type=int, default=1800)
+    breakglass_open.add_argument("--actor", default="")
+    breakglass_open.add_argument("--token", default="")
+    breakglass_close = sub.add_parser("breakglass-close")
+    breakglass_close.add_argument("--reason", default="")
+    breakglass_close.add_argument("--actor", default="")
+    breakglass_close.add_argument("--token", default="")
+    breakglass_close.add_argument("--require-token", action="store_true")
+    sub.add_parser("breakglass-status")
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -1149,6 +1166,30 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "keepalive-status":
             print(json.dumps(keepalive_status(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "breakglass-open":
+            payload = breakglass_open_session(
+                cfg.root_dir,
+                scopes=args.scope,
+                reason=args.reason,
+                ttl_sec=args.ttl_sec,
+                actor=args.actor,
+                token=args.token,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "breakglass-close":
+            payload = breakglass_close_session(
+                cfg.root_dir,
+                actor=args.actor,
+                reason=args.reason,
+                token=args.token,
+                require_token=args.require_token,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "breakglass-status":
+            print(json.dumps(breakglass_status_snapshot(cfg.root_dir), indent=2, sort_keys=True))
             return 0
         if args.command == "init-skill-protocol":
             out = (cfg.root_dir / args.output).resolve()
@@ -1567,7 +1608,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             stop_ok = bool(payload.get("ok", int(payload.get("failed_count", 0)) == 0))
             return 0 if stop_ok else 1
-    except (FileNotFoundError, RuntimeError) as err:
+    except (FileNotFoundError, RuntimeError, ValueError) as err:
         print(
             json.dumps(
                 {

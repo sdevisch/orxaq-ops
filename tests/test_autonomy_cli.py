@@ -142,6 +142,81 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "bootstrap", "--require-clean", "--skip-keepalive", "--ide", "none"])
             self.assertEqual(rc, 1)
 
+    def test_breakglass_open_status_close_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+
+            opened_stdout = io.StringIO()
+            with redirect_stdout(opened_stdout):
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "breakglass-open",
+                        "--scope",
+                        "allow_protected_branch_commits",
+                        "--reason",
+                        "incident-123",
+                        "--ttl-sec",
+                        "60",
+                        "--token",
+                        "known-token",
+                        "--actor",
+                        "tester",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            opened = json.loads(opened_stdout.getvalue())
+            self.assertTrue(opened["active"])
+            self.assertTrue(opened["valid"])
+            self.assertEqual(opened["token"], "known-token")
+
+            status_stdout = io.StringIO()
+            with redirect_stdout(status_stdout):
+                rc = cli.main(["--root", str(root), "breakglass-status"])
+            self.assertEqual(rc, 0)
+            status_payload = json.loads(status_stdout.getvalue())
+            self.assertTrue(status_payload["active"])
+            self.assertEqual(
+                status_payload["scopes"],
+                ["allow_protected_branch_commits"],
+            )
+
+            close_stdout = io.StringIO()
+            with redirect_stdout(close_stdout):
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "breakglass-close",
+                        "--token",
+                        "known-token",
+                        "--require-token",
+                        "--reason",
+                        "resolved",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            closed = json.loads(close_stdout.getvalue())
+            self.assertFalse(closed["active"])
+            self.assertFalse(closed["valid"])
+
+    def test_breakglass_open_command_requires_scope(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            rc = cli.main(
+                [
+                    "--root",
+                    str(root),
+                    "breakglass-open",
+                    "--reason",
+                    "incident-no-scope",
+                ]
+            )
+            self.assertEqual(rc, 1)
+
     def test_cli_returns_structured_error_on_runtime_exception(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

@@ -8,7 +8,7 @@ AUTONOMY_DIRTY_TREE := $(strip $(shell git status --porcelain --untracked-files=
 AUTONOMY_ALLOW_INPLACE_DIRTY ?= 0
 AUTONOMY_EXEC_ISOLATION_ARGS ?= $(if $(filter 1 true yes,$(AUTONOMY_ALLOW_INPLACE_DIRTY)),$(if $(AUTONOMY_DIRTY_TREE),--no-worktree-isolation,),)
 ROUTELLM_FULL_AUTO_TASK ?= routellm-npv-autonomy
-ROUTELLM_BASE_REF ?= $(AUTONOMY_ACTIVE_REF)
+ROUTELLM_BASE_REF ?= origin/main
 ROUTELLM_EXEC_ARGS ?= $(AUTONOMY_EXEC_ISOLATION_ARGS)
 ROUTELLM_TASKS_FILE ?= $(ROOT)/config/lanes/codex_routellm_npv_tasks.json
 ROUTELLM_OBJECTIVE_FILE ?= $(ROOT)/config/objectives/codex_routellm_npv.md
@@ -17,7 +17,7 @@ ROUTELLM_MCP_CONTEXT_FILE ?= $(ROOT)/config/mcp_context.routellm_npv.example.jso
 ROUTELLM_ENV_OVERRIDES := ORXAQ_AUTONOMY_TASKS_FILE=$(ROUTELLM_TASKS_FILE) ORXAQ_AUTONOMY_OBJECTIVE_FILE=$(ROUTELLM_OBJECTIVE_FILE) ORXAQ_AUTONOMY_CODEX_PROMPT_FILE=$(ROUTELLM_CODEX_PROMPT_FILE) ORXAQ_AUTONOMY_MCP_CONTEXT_FILE=$(ROUTELLM_MCP_CONTEXT_FILE)
 ROUTING_SOTA_FULL_AUTO_TASK ?= routing-sota-autonomy
 ROUTING_SOTA_PROMPT_FILE ?= $(ROOT)/config/prompts/codex_state_of_the_art_routing_autonomy_prompt.md
-ROUTING_SOTA_BASE_REF ?= $(AUTONOMY_ACTIVE_REF)
+ROUTING_SOTA_BASE_REF ?= origin/main
 ROUTING_SOTA_EXEC_ARGS ?= $(AUTONOMY_EXEC_ISOLATION_ARGS)
 PROCESS_WATCHDOG_SCRIPT ?= /Users/sdevisch/.codex/skills/autonomous-process-watchdog/scripts/process_watchdog.py
 SWARM_TODO_HEALTH_INTERVAL_SEC ?= 3600

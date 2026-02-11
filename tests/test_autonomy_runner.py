@@ -1508,13 +1508,12 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("updating origin", details)
 
-    def test_push_with_recovery_handles_protected_branch_on_no_verify_path(self):
+    def test_push_with_recovery_handles_protected_branch_rejection(self):
         repo = pathlib.Path("/tmp/repo")
         with mock.patch.object(
             runner,
             "_git_output",
             side_effect=[
-                (True, "main"),
                 (True, "main"),
                 (True, "main"),
                 (True, "codex/gemini-repo"),
@@ -1524,10 +1523,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
             "run_command",
             side_effect=[
                 runner.subprocess.CompletedProcess(
-                    ["git", "push"], returncode=1, stdout="", stderr="hook failed before remote check"
-                ),
-                runner.subprocess.CompletedProcess(
-                    ["git", "push", "--no-verify"],
+                    ["git", "push"],
                     returncode=1,
                     stdout="",
                     stderr="GH013: Changes must be made through a pull request.",
@@ -1535,7 +1531,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
                 runner.subprocess.CompletedProcess(["git", "checkout", "codex/gemini-repo"], returncode=1, stdout="", stderr=""),
                 runner.subprocess.CompletedProcess(["git", "checkout", "-b", "codex/gemini-repo"], returncode=0, stdout="", stderr=""),
                 runner.subprocess.CompletedProcess(
-                    ["git", "push", "--no-verify", "-u", "origin", "codex/gemini-repo"],
+                    ["git", "push", "-u", "origin", "codex/gemini-repo"],
                     returncode=0,
                     stdout="",
                     stderr="",
@@ -1544,7 +1540,29 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         ):
             ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="gemini")
         self.assertTrue(ok)
-        self.assertIn("protected-branch switch", details)
+        self.assertIn("pushed new branch", details)
+
+    def test_push_with_recovery_does_not_use_no_verify_fallback(self):
+        repo = pathlib.Path("/tmp/repo")
+        with mock.patch.object(
+            runner,
+            "_git_output",
+            return_value=(True, "codex/gemini-repo"),
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            return_value=runner.subprocess.CompletedProcess(
+                ["git", "push"],
+                returncode=1,
+                stdout="",
+                stderr="hook failed before remote check",
+            ),
+        ) as run_command:
+            ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="gemini")
+        self.assertFalse(ok)
+        self.assertIn("hook failed before remote check", details)
+        issued_commands = [list(call.args[0]) for call in run_command.call_args_list]
+        self.assertNotIn(["git", "push", "--no-verify"], issued_commands)
 
 
 if __name__ == "__main__":
