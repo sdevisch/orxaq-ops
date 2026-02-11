@@ -50,6 +50,28 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
+    def test_pr_open_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.detect_repo", return_value="acme/repo"), mock.patch(
+                "orxaq_autonomy.cli.detect_head_branch",
+                return_value="codex/test",
+            ), mock.patch("orxaq_autonomy.cli.open_pr", return_value={"ok": True, "number": 11}):
+                rc = cli.main(["--root", str(root), "pr-open", "--title", "Test PR"])
+            self.assertEqual(rc, 0)
+
+    def test_pr_wait_non_ok_returns_one(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.detect_repo", return_value="acme/repo"), mock.patch(
+                "orxaq_autonomy.cli.wait_for_pr",
+                return_value={"ok": False, "reason": "failed"},
+            ):
+                rc = cli.main(["--root", str(root), "pr-wait", "--pr", "7"])
+            self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
