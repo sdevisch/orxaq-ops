@@ -220,6 +220,90 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(len(popen_calls), 2)
 
+    def test_autonomy_stop_writes_report_with_required_sections(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "w2-d-task": {
+                            "status": "blocked",
+                            "attempts": 2,
+                            "last_update": "2026-02-11T08:00:00+00:00",
+                            "last_summary": "validation failed",
+                            "last_error": "temporary timeout",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (cfg.impl_repo / "artifacts").mkdir(parents=True, exist_ok=True)
+            (cfg.impl_repo / "artifacts" / "health.json").write_text(
+                json.dumps({"score": 79}),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "orxaq_autonomy.manager._detect_last_ci_failure",
+                return_value={
+                    "pr_url": "https://github.com/Orxaq/orxaq-ops/pull/29",
+                    "check_name": "unit-tests",
+                    "check_status": "fail",
+                    "details_url": "https://example.invalid/job/1",
+                },
+            ):
+                payload = manager.autonomy_stop(cfg, reason="manual stop", file_issue=False)
+            report_path = pathlib.Path(payload["report_path"])
+            self.assertTrue(report_path.exists())
+            rendered = report_path.read_text(encoding="utf-8")
+            self.assertIn("Last Executed Task", rendered)
+            self.assertIn("Last CI Failure", rendered)
+            self.assertIn("health_score", rendered)
+            self.assertIn("Suggested Smallest Fix Path", rendered)
+
+    def test_build_stop_issue_payload_sanitizes_secret_like_values(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            report = {
+                "reason": "manual stop OPENAI_API_KEY=sk-test-1234567890",
+                "health_score": 50,
+                "last_task": {"task_id": "t1"},
+                "last_ci_failure": {"check_name": "lint"},
+                "suggested_smallest_fix_path": "fix",
+            }
+            issue = manager.build_stop_issue_payload(
+                cfg,
+                report_payload=report,
+                report_path=cfg.artifacts_dir / "AUTONOMY_STOP_REPORT.md",
+                issue_repo="Orxaq/orxaq-ops",
+                labels=["autonomy", "blocked"],
+            )
+            self.assertEqual(issue["repo_slug"], "Orxaq/orxaq-ops")
+            self.assertNotIn("sk-test-1234567890", issue["body"])
+            self.assertIn("[REDACTED_OPENAI_KEY]", issue["body"])
+
+    def test_autonomy_stop_files_issue_with_sanitized_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch(
+                "orxaq_autonomy.manager._detect_last_ci_failure",
+                return_value={},
+            ), mock.patch(
+                "orxaq_autonomy.manager._file_stop_issue",
+                return_value="https://github.com/Orxaq/orxaq-ops/issues/999",
+            ) as issue_create:
+                payload = manager.autonomy_stop(
+                    cfg,
+                    reason="manual stop",
+                    file_issue=True,
+                    issue_repo="Orxaq/orxaq-ops",
+                    labels=["autonomy"],
+                )
+            self.assertEqual(payload["issue_url"], "https://github.com/Orxaq/orxaq-ops/issues/999")
+            issue_create.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
