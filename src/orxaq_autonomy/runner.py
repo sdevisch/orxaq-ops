@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .protocols import MCPContextBundle, SkillProtocolSpec, load_mcp_context, load_skill_protocol
+from .task_queue import read_checkpoint, write_checkpoint
 
 STATUS_PENDING = "pending"
 STATUS_IN_PROGRESS = "in_progress"
@@ -421,6 +422,36 @@ def load_state(path: Path, tasks: list[Task]) -> dict[str, dict[str, Any]]:
 
 def save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
     _write_json(path, state)
+
+
+def apply_checkpoint_state(
+    state: dict[str, dict[str, Any]],
+    tasks: list[Task],
+    checkpoint_state: dict[str, Any],
+) -> None:
+    task_ids = {task.id for task in tasks}
+    for task_id, raw in checkpoint_state.items():
+        if task_id not in task_ids or not isinstance(raw, dict):
+            continue
+        current = state[task_id]
+        status = str(raw.get("status", current.get("status", STATUS_PENDING)))
+        if status not in VALID_STATUSES:
+            status = STATUS_PENDING
+        if status == STATUS_IN_PROGRESS:
+            status = STATUS_PENDING
+        state[task_id] = {
+            "status": status,
+            "attempts": _safe_int(raw.get("attempts", current.get("attempts", 0)), 0),
+            "retryable_failures": _safe_int(
+                raw.get("retryable_failures", current.get("retryable_failures", 0)),
+                0,
+            ),
+            "not_before": str(raw.get("not_before", current.get("not_before", ""))),
+            "last_update": str(raw.get("last_update", current.get("last_update", ""))),
+            "last_summary": str(raw.get("last_summary", current.get("last_summary", ""))),
+            "last_error": str(raw.get("last_error", current.get("last_error", ""))),
+            "owner": str(current.get("owner", "")),
+        }
 
 
 def task_dependencies_done(task: Task, state: dict[str, dict[str, Any]]) -> bool:
@@ -1075,6 +1106,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validation-retries", type=int, default=1)
     parser.add_argument("--skill-protocol-file", default="config/skill_protocol.json")
     parser.add_argument("--mcp-context-file", default="")
+    parser.add_argument("--run-id", default="", help="Optional run identifier for checkpoint naming.")
+    parser.add_argument("--resume", default="", help="Resume from an existing checkpoint run id.")
+    parser.add_argument("--checkpoint-dir", default="artifacts/checkpoints")
     args = parser.parse_args(argv)
 
     impl_repo = Path(args.impl_repo).resolve()
@@ -1086,8 +1120,13 @@ def main(argv: list[str] | None = None) -> int:
     artifacts_dir = Path(args.artifacts_dir).resolve()
     heartbeat_file = Path(args.heartbeat_file).resolve()
     lock_file = Path(args.lock_file).resolve()
+    checkpoint_dir = Path(args.checkpoint_dir).resolve()
     skill_protocol_file = Path(args.skill_protocol_file).resolve() if args.skill_protocol_file else None
     mcp_context_file = Path(args.mcp_context_file).resolve() if args.mcp_context_file else None
+    resume_run_id = args.resume.strip()
+    explicit_run_id = args.run_id.strip()
+    run_id = resume_run_id or explicit_run_id or f"{_now_utc().strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+    checkpoint_file = checkpoint_dir / f"{run_id}.json"
 
     if not impl_repo.exists():
         raise FileNotFoundError(f"Implementation repo not found: {impl_repo}")
@@ -1107,24 +1146,40 @@ def main(argv: list[str] | None = None) -> int:
 
     tasks = load_tasks(tasks_file)
     state = load_state(state_file, tasks)
+    if resume_run_id:
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(
+                f"Resume requested but checkpoint not found for run_id={resume_run_id}: {checkpoint_file}"
+            )
+        checkpoint_payload = read_checkpoint(checkpoint_file)
+        checkpoint_state = checkpoint_payload.get("state", {})
+        if not isinstance(checkpoint_state, dict):
+            raise ValueError(f"Checkpoint state invalid in {checkpoint_file}")
+        apply_checkpoint_state(state, tasks, checkpoint_state)
     objective_text = _read_text(objective_file)
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
-    save_state(state_file, state)
 
-    _print(f"Starting autonomy runner with {len(tasks)} tasks")
+    def persist(cycle: int) -> None:
+        save_state(state_file, state)
+        write_checkpoint(path=checkpoint_file, run_id=run_id, cycle=cycle, state=state)
+
+    persist(0)
+
+    _print(f"Starting autonomy runner with {len(tasks)} tasks (run_id={run_id})")
     write_heartbeat(
         heartbeat_file,
         phase="started",
         cycle=0,
         task_id=None,
         message="autonomy runner started",
-        extra={"tasks": len(tasks)},
+        extra={"tasks": len(tasks), "run_id": run_id, "checkpoint_file": str(checkpoint_file)},
     )
 
     for cycle in range(1, args.max_cycles + 1):
         if all(state[t.id]["status"] == STATUS_DONE for t in tasks):
             _print("All tasks are marked done.")
+            persist(cycle)
             write_heartbeat(
                 heartbeat_file,
                 phase="completed",
@@ -1155,6 +1210,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             _print(f"No ready tasks remain. Pending={pending}, Blocked={blocked}")
+            persist(cycle)
             write_heartbeat(
                 heartbeat_file,
                 phase="stalled",
@@ -1171,7 +1227,7 @@ def main(argv: list[str] | None = None) -> int:
         task_state["last_update"] = _now_iso()
         task_state["attempts"] = _safe_int(task_state.get("attempts", 0), 0) + 1
         task_state["not_before"] = ""
-        save_state(state_file, state)
+        persist(cycle)
         write_heartbeat(
             heartbeat_file,
             phase="task_started",
@@ -1184,7 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             _print(f"Dry run enabled; skipping execution for task {task.id}")
             task_state["status"] = STATUS_PENDING
-            save_state(state_file, state)
+            persist(cycle)
             continue
 
         owner_repo = impl_repo if task.owner == "codex" else test_repo
@@ -1321,7 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
                     message="task marked blocked",
                     extra={"attempts": attempts, "error": task_state["last_error"][:300]},
                 )
-            save_state(state_file, state)
+            persist(cycle)
             continue
 
         if status == STATUS_DONE:
@@ -1367,7 +1423,7 @@ def main(argv: list[str] | None = None) -> int:
                         message="delivery contract evaluated",
                         extra={"contract_ok": False},
                     )
-                    save_state(state_file, state)
+                    persist(cycle)
                     continue
 
                 task_state["status"] = STATUS_DONE
@@ -1421,7 +1477,7 @@ def main(argv: list[str] | None = None) -> int:
                     message="validation processed",
                     extra={"validation_ok": valid},
                 )
-            save_state(state_file, state)
+            persist(cycle)
             continue
 
         # Partial progress: keep momentum by rescheduling automatically with backoff.
@@ -1457,9 +1513,10 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=task.id,
                 message="partial retries exhausted",
             )
-        save_state(state_file, state)
+        persist(cycle)
 
     _print(f"Reached max cycles: {args.max_cycles}")
+    persist(args.max_cycles)
     write_heartbeat(
         heartbeat_file,
         phase="max_cycles_reached",

@@ -132,9 +132,12 @@ class ManagerConfig:
     artifacts_dir: Path
     heartbeat_file: Path
     lock_file: Path
+    checkpoint_dir: Path
     runner_pid_file: Path
     supervisor_pid_file: Path
     log_file: Path
+    run_id: str
+    resume_run_id: str
     max_cycles: int
     max_attempts: int
     max_retryable_blocked_retries: int
@@ -195,9 +198,12 @@ class ManagerConfig:
             artifacts_dir=artifacts,
             heartbeat_file=_path("ORXAQ_AUTONOMY_HEARTBEAT_FILE", artifacts / "heartbeat.json"),
             lock_file=_path("ORXAQ_AUTONOMY_LOCK_FILE", artifacts / "runner.lock"),
+            checkpoint_dir=_path("ORXAQ_AUTONOMY_CHECKPOINT_DIR", root / "artifacts" / "checkpoints"),
             runner_pid_file=_path("ORXAQ_AUTONOMY_RUNNER_PID_FILE", artifacts / "runner.pid"),
             supervisor_pid_file=_path("ORXAQ_AUTONOMY_SUPERVISOR_PID_FILE", artifacts / "supervisor.pid"),
             log_file=_path("ORXAQ_AUTONOMY_LOG_FILE", artifacts / "runner.log"),
+            run_id=merged.get("ORXAQ_AUTONOMY_RUN_ID", "").strip(),
+            resume_run_id=merged.get("ORXAQ_AUTONOMY_RESUME_RUN_ID", "").strip(),
             max_cycles=_int("ORXAQ_AUTONOMY_MAX_CYCLES", 10000),
             max_attempts=_int("ORXAQ_AUTONOMY_MAX_ATTEMPTS", 8),
             max_retryable_blocked_retries=_int("ORXAQ_AUTONOMY_MAX_RETRYABLE_BLOCKED_RETRIES", 20),
@@ -284,6 +290,8 @@ def runner_argv(config: ManagerConfig) -> list[str]:
         str(config.heartbeat_file),
         "--lock-file",
         str(config.lock_file),
+        "--checkpoint-dir",
+        str(config.checkpoint_dir),
         "--max-cycles",
         str(config.max_cycles),
         "--max-attempts",
@@ -309,6 +317,10 @@ def runner_argv(config: ManagerConfig) -> list[str]:
     ]
     if config.mcp_context_file is not None:
         args.extend(["--mcp-context-file", str(config.mcp_context_file)])
+    if config.run_id:
+        args.extend(["--run-id", config.run_id])
+    if config.resume_run_id:
+        args.extend(["--resume", config.resume_run_id])
     for cmd in config.validate_commands:
         args.extend(["--validate-command", cmd])
     return args

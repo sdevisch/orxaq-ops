@@ -65,6 +65,9 @@ Optional reusable context controls:
 
 - `ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE` (default `config/skill_protocol.json`)
 - `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
+- `ORXAQ_AUTONOMY_CHECKPOINT_DIR` (default `artifacts/checkpoints`)
+- `ORXAQ_AUTONOMY_RUN_ID` (optional explicit run id)
+- `ORXAQ_AUTONOMY_RESUME_RUN_ID` (resume from `artifacts/checkpoints/<run_id>.json`)
 
 ## Commands
 
