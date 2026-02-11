@@ -48,6 +48,10 @@ class ManagerTests(unittest.TestCase):
             argv = manager.runner_argv(cfg)
             self.assertIn("--skill-protocol-file", argv)
             self.assertIn("--validate-command", argv)
+            self.assertIn("--max-runtime-sec", argv)
+            self.assertIn("--max-total-tokens", argv)
+            self.assertIn("--max-total-cost-usd", argv)
+            self.assertIn("--max-total-retries", argv)
 
     def test_ensure_background_starts_if_supervisor_missing(self):
         with tempfile.TemporaryDirectory() as td:

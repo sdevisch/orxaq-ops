@@ -186,6 +186,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_iso(ts: str) -> dt.datetime | None:
     if not ts:
         return None
@@ -617,8 +624,9 @@ def run_validations(
                 if fallback_result.returncode == 0:
                     failure_details = ""
                     break
+                fallback_output = (fallback_result.stdout + "\n" + fallback_result.stderr).strip()
                 fallback_errors.append(
-                    f"`{fallback}` failed:\n{(fallback_result.stdout + '\n' + fallback_result.stderr).strip()}"
+                    f"`{fallback}` failed:\n{fallback_output}"
                 )
             if not failure_details:
                 continue
@@ -688,8 +696,100 @@ def normalize_outcome(raw: dict[str, Any]) -> dict[str, Any]:
         "validations": raw.get("validations", []),
         "next_actions": [str(x) for x in next_actions],
         "blocker": str(raw.get("blocker", "")).strip(),
+        "usage": raw.get("usage", {}),
+        "tokens": _safe_int(raw.get("tokens", raw.get("total_tokens", 0)), 0),
+        "cost_usd": _safe_float(raw.get("cost_usd", 0.0), 0.0),
         "raw_output": str(raw.get("raw_output", "")).strip(),
     }
+
+
+def extract_usage_metrics(outcome: dict[str, Any]) -> tuple[int, float]:
+    usage = outcome.get("usage")
+    usage_dict = usage if isinstance(usage, dict) else {}
+
+    tokens = _safe_int(outcome.get("tokens", 0), 0)
+    if tokens <= 0:
+        tokens = _safe_int(usage_dict.get("total_tokens", 0), 0)
+    if tokens <= 0:
+        tokens = (
+            _safe_int(usage_dict.get("prompt_tokens", 0), 0)
+            + _safe_int(usage_dict.get("completion_tokens", 0), 0)
+            + _safe_int(usage_dict.get("input_tokens", 0), 0)
+            + _safe_int(usage_dict.get("output_tokens", 0), 0)
+        )
+    if tokens < 0:
+        tokens = 0
+
+    cost_usd = _safe_float(outcome.get("cost_usd", usage_dict.get("cost_usd", 0.0)), 0.0)
+    if cost_usd < 0:
+        cost_usd = 0.0
+    return tokens, cost_usd
+
+
+def init_budget_state(
+    *,
+    max_runtime_sec: int,
+    max_total_tokens: int,
+    max_total_cost_usd: float,
+    max_total_retries: int,
+    trace_enabled: bool,
+) -> dict[str, Any]:
+    return {
+        "started_at": _now_iso(),
+        "elapsed_sec": 0,
+        "totals": {"tokens": 0, "cost_usd": 0.0, "retry_events": 0},
+        "limits": {
+            "max_runtime_sec": max(0, max_runtime_sec),
+            "max_total_tokens": max(0, max_total_tokens),
+            "max_total_cost_usd": max(0.0, max_total_cost_usd),
+            "max_total_retries": max(0, max_total_retries),
+        },
+        "trace_enabled": trace_enabled,
+        "last_task_id": "",
+        "violations": [],
+    }
+
+
+def update_budget_elapsed(budget: dict[str, Any], started_monotonic: float) -> None:
+    budget["elapsed_sec"] = max(0, int(time.monotonic() - started_monotonic))
+
+
+def update_budget_usage(budget: dict[str, Any], *, task_id: str, tokens: int, cost_usd: float) -> None:
+    totals = budget.setdefault("totals", {})
+    totals["tokens"] = _safe_int(totals.get("tokens", 0), 0) + max(0, tokens)
+    totals["cost_usd"] = round(_safe_float(totals.get("cost_usd", 0.0), 0.0) + max(0.0, cost_usd), 6)
+    budget["last_task_id"] = task_id
+
+
+def increment_retry_events(budget: dict[str, Any]) -> None:
+    totals = budget.setdefault("totals", {})
+    totals["retry_events"] = _safe_int(totals.get("retry_events", 0), 0) + 1
+
+
+def evaluate_budget_violations(budget: dict[str, Any]) -> list[str]:
+    totals = budget.get("totals", {})
+    limits = budget.get("limits", {})
+    elapsed_sec = _safe_int(budget.get("elapsed_sec", 0), 0)
+    tokens = _safe_int(totals.get("tokens", 0), 0)
+    cost = _safe_float(totals.get("cost_usd", 0.0), 0.0)
+    retries = _safe_int(totals.get("retry_events", 0), 0)
+    max_runtime_sec = _safe_int(limits.get("max_runtime_sec", 0), 0)
+    max_total_tokens = _safe_int(limits.get("max_total_tokens", 0), 0)
+    max_total_cost_usd = _safe_float(limits.get("max_total_cost_usd", 0.0), 0.0)
+    max_total_retries = _safe_int(limits.get("max_total_retries", 0), 0)
+
+    violations: list[str] = []
+    if max_runtime_sec > 0 and elapsed_sec > max_runtime_sec:
+        violations.append(f"runtime budget exceeded: {elapsed_sec}s > {max_runtime_sec}s")
+    if max_total_tokens > 0 and tokens > max_total_tokens:
+        violations.append(f"token budget exceeded: {tokens} > {max_total_tokens}")
+    if max_total_cost_usd > 0 and cost > max_total_cost_usd:
+        violations.append(f"cost budget exceeded: {cost:.6f} > {max_total_cost_usd:.6f}")
+    if max_total_retries > 0 and retries > max_total_retries:
+        violations.append(f"retry budget exceeded: {retries} > {max_total_retries}")
+
+    budget["violations"] = violations
+    return violations
 
 
 def run_codex_task(
@@ -940,6 +1040,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gemini-model", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--validation-retries", type=int, default=1)
+    parser.add_argument("--max-runtime-sec", type=int, default=0, help="Hard runtime budget in seconds (0 disables).")
+    parser.add_argument("--max-total-tokens", type=int, default=0, help="Hard token budget across the run (0 disables).")
+    parser.add_argument(
+        "--max-total-cost-usd",
+        type=float,
+        default=0.0,
+        help="Hard cost budget in USD across the run (0 disables).",
+    )
+    parser.add_argument(
+        "--max-total-retries",
+        type=int,
+        default=0,
+        help="Hard cap on total retry scheduling events across the run (0 disables).",
+    )
+    parser.add_argument(
+        "--budget-report-file",
+        default="",
+        help="Path for budget telemetry JSON report (defaults to <artifacts-dir>/budget.json).",
+    )
     parser.add_argument("--skill-protocol-file", default="config/skill_protocol.json")
     parser.add_argument("--mcp-context-file", default="")
     args = parser.parse_args(argv)
@@ -953,6 +1072,9 @@ def main(argv: list[str] | None = None) -> int:
     artifacts_dir = Path(args.artifacts_dir).resolve()
     heartbeat_file = Path(args.heartbeat_file).resolve()
     lock_file = Path(args.lock_file).resolve()
+    budget_report_file = (
+        Path(args.budget_report_file).resolve() if args.budget_report_file else artifacts_dir / "budget.json"
+    )
     skill_protocol_file = Path(args.skill_protocol_file).resolve() if args.skill_protocol_file else None
     mcp_context_file = Path(args.mcp_context_file).resolve() if args.mcp_context_file else None
 
@@ -977,7 +1099,16 @@ def main(argv: list[str] | None = None) -> int:
     objective_text = _read_text(objective_file)
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
+    run_started_monotonic = time.monotonic()
+    budget_state = init_budget_state(
+        max_runtime_sec=max(0, args.max_runtime_sec),
+        max_total_tokens=max(0, args.max_total_tokens),
+        max_total_cost_usd=max(0.0, float(args.max_total_cost_usd)),
+        max_total_retries=max(0, args.max_total_retries),
+        trace_enabled=bool(os.environ.get("ORXAQ_TRACE_ENABLED", "")),
+    )
     save_state(state_file, state)
+    _write_json(budget_report_file, budget_state)
 
     _print(f"Starting autonomy runner with {len(tasks)} tasks")
     write_heartbeat(
@@ -990,6 +1121,22 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     for cycle in range(1, args.max_cycles + 1):
+        update_budget_elapsed(budget_state, run_started_monotonic)
+        violations = evaluate_budget_violations(budget_state)
+        _write_json(budget_report_file, budget_state)
+        if violations:
+            detail = "; ".join(violations)
+            _print(f"Run budget exceeded: {detail}")
+            write_heartbeat(
+                heartbeat_file,
+                phase="budget_exceeded",
+                cycle=cycle,
+                task_id=None,
+                message=detail,
+                extra={"violations": violations},
+            )
+            return 4
+
         if all(state[t.id]["status"] == STATUS_DONE for t in tasks):
             _print("All tasks are marked done.")
             write_heartbeat(
@@ -999,6 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=None,
                 message="all tasks completed",
             )
+            _write_json(budget_report_file, budget_state)
             return 0
 
         now = _now_utc()
@@ -1126,6 +1274,17 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)
+        used_tokens, used_cost_usd = extract_usage_metrics(outcome)
+        if used_tokens or used_cost_usd:
+            update_budget_usage(
+                budget_state,
+                task_id=task.id,
+                tokens=used_tokens,
+                cost_usd=used_cost_usd,
+            )
+            update_budget_elapsed(budget_state, run_started_monotonic)
+            evaluate_budget_violations(budget_state)
+            _write_json(budget_report_file, budget_state)
         status = str(outcome.get("status", STATUS_BLOCKED)).lower()
         blocker_text = str(outcome.get("blocker", ""))
         summary_text = str(outcome.get("summary", ""))
@@ -1142,6 +1301,8 @@ def main(argv: list[str] | None = None) -> int:
             retryable_failures = _safe_int(task_state.get("retryable_failures", 0), 0)
 
             if retryable and retryable_failures < args.max_retryable_blocked_retries:
+                increment_retry_events(budget_state)
+                update_budget_elapsed(budget_state, run_started_monotonic)
                 delay = schedule_retry(
                     entry=task_state,
                     summary=summary_text or "Transient blocker encountered.",
@@ -1159,7 +1320,11 @@ def main(argv: list[str] | None = None) -> int:
                     message=f"retryable blocker; retry in {delay}s",
                     extra={"attempts": attempts, "retryable_failures": task_state["retryable_failures"]},
                 )
+                evaluate_budget_violations(budget_state)
+                _write_json(budget_report_file, budget_state)
             elif attempts < args.max_attempts:
+                increment_retry_events(budget_state)
+                update_budget_elapsed(budget_state, run_started_monotonic)
                 delay = schedule_retry(
                     entry=task_state,
                     summary=summary_text or "Blocked; retrying for autonomous recovery.",
@@ -1177,6 +1342,8 @@ def main(argv: list[str] | None = None) -> int:
                     message=f"blocked; retry in {delay}s",
                     extra={"attempts": attempts},
                 )
+                evaluate_budget_violations(budget_state)
+                _write_json(budget_report_file, budget_state)
             else:
                 mark_blocked(task_state, summary_text or "Task blocked", blocker_text or "agent command failed")
                 _print(f"Task {task.id} blocked: {task_state['last_error']}")
@@ -1225,6 +1392,8 @@ def main(argv: list[str] | None = None) -> int:
                 retryable = is_retryable_error(details)
                 attempts = _safe_int(task_state.get("attempts", 0), 0)
                 if retryable:
+                    increment_retry_events(budget_state)
+                    update_budget_elapsed(budget_state, run_started_monotonic)
                     delay = schedule_retry(
                         entry=task_state,
                         summary="Validation infrastructure failure; retry scheduled.",
@@ -1235,6 +1404,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     _print(f"Task {task.id} validation failed transiently; retry in {delay}s.")
                 elif attempts < args.max_attempts:
+                    increment_retry_events(budget_state)
+                    update_budget_elapsed(budget_state, run_started_monotonic)
                     delay = schedule_retry(
                         entry=task_state,
                         summary="Validation failed after agent reported done.",
@@ -1258,12 +1429,16 @@ def main(argv: list[str] | None = None) -> int:
                     message="validation processed",
                     extra={"validation_ok": valid},
                 )
+                evaluate_budget_violations(budget_state)
+                _write_json(budget_report_file, budget_state)
             save_state(state_file, state)
             continue
 
         # Partial progress: keep momentum by rescheduling automatically with backoff.
         attempts = _safe_int(task_state.get("attempts", 0), 0)
         if attempts < args.max_attempts:
+            increment_retry_events(budget_state)
+            update_budget_elapsed(budget_state, run_started_monotonic)
             delay = schedule_retry(
                 entry=task_state,
                 summary=summary_text or "Partial progress; retry queued.",
@@ -1280,6 +1455,8 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=task.id,
                 message=f"partial; retry in {delay}s",
             )
+            evaluate_budget_violations(budget_state)
+            _write_json(budget_report_file, budget_state)
         else:
             mark_blocked(
                 task_state,
@@ -1304,6 +1481,9 @@ def main(argv: list[str] | None = None) -> int:
         task_id=None,
         message="max cycle limit reached",
     )
+    update_budget_elapsed(budget_state, run_started_monotonic)
+    evaluate_budget_violations(budget_state)
+    _write_json(budget_report_file, budget_state)
     return 3
 
 

@@ -112,6 +112,16 @@ def _runtime_env(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _safe_uid() -> int:
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        try:
+            return int(getuid())
+        except Exception:
+            return 0
+    return 0
+
+
 @dataclass(frozen=True)
 class ManagerConfig:
     root_dir: Path
@@ -138,6 +148,11 @@ class ManagerConfig:
     idle_sleep_sec: int
     agent_timeout_sec: int
     validate_timeout_sec: int
+    max_runtime_sec: int
+    max_total_tokens: int
+    max_total_cost_usd: float
+    max_total_retries: int
+    budget_report_file: Path
     heartbeat_poll_sec: int
     heartbeat_stale_sec: int
     supervisor_restart_delay_sec: int
@@ -165,6 +180,15 @@ class ManagerConfig:
                 return default
             try:
                 return int(raw)
+            except ValueError:
+                return default
+
+        def _float(key: str, default: float) -> float:
+            raw = merged.get(key)
+            if raw is None:
+                return default
+            try:
+                return float(raw)
             except ValueError:
                 return default
 
@@ -201,6 +225,11 @@ class ManagerConfig:
             idle_sleep_sec=_int("ORXAQ_AUTONOMY_IDLE_SLEEP_SEC", 10),
             agent_timeout_sec=_int("ORXAQ_AUTONOMY_AGENT_TIMEOUT_SEC", 3600),
             validate_timeout_sec=_int("ORXAQ_AUTONOMY_VALIDATE_TIMEOUT_SEC", 1800),
+            max_runtime_sec=_int("ORXAQ_AUTONOMY_MAX_RUNTIME_SEC", 0),
+            max_total_tokens=_int("ORXAQ_AUTONOMY_MAX_TOTAL_TOKENS", 0),
+            max_total_cost_usd=_float("ORXAQ_AUTONOMY_MAX_TOTAL_COST_USD", 0.0),
+            max_total_retries=_int("ORXAQ_AUTONOMY_MAX_TOTAL_RETRIES", 0),
+            budget_report_file=_path("ORXAQ_AUTONOMY_BUDGET_REPORT_FILE", artifacts / "budget.json"),
             heartbeat_poll_sec=_int("ORXAQ_AUTONOMY_HEARTBEAT_POLL_SEC", 20),
             heartbeat_stale_sec=_int("ORXAQ_AUTONOMY_HEARTBEAT_STALE_SEC", 300),
             supervisor_restart_delay_sec=_int("ORXAQ_AUTONOMY_SUPERVISOR_RESTART_DELAY_SEC", 5),
@@ -297,6 +326,16 @@ def runner_argv(config: ManagerConfig) -> list[str]:
         str(config.agent_timeout_sec),
         "--validate-timeout-sec",
         str(config.validate_timeout_sec),
+        "--max-runtime-sec",
+        str(config.max_runtime_sec),
+        "--max-total-tokens",
+        str(config.max_total_tokens),
+        "--max-total-cost-usd",
+        str(config.max_total_cost_usd),
+        "--max-total-retries",
+        str(config.max_total_retries),
+        "--budget-report-file",
+        str(config.budget_report_file),
         "--skill-protocol-file",
         str(config.skill_protocol_file),
     ]
@@ -406,10 +445,13 @@ def start_background(config: ManagerConfig) -> None:
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "orxaq_autonomy.cli", "--root", str(config.root_dir), "supervise"],
-        **kwargs,
-    )
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "orxaq_autonomy.cli", "--root", str(config.root_dir), "supervise"],
+            **kwargs,
+        )
+    finally:
+        log_handle.close()
     _write_pid(config.supervisor_pid_file, proc.pid)
     _log(f"autonomy supervisor started (pid={proc.pid})")
 
@@ -489,6 +531,11 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "blocked_tasks": blocked_tasks,
         "heartbeat_stale": stale,
     }
+    if config.budget_report_file.exists():
+        try:
+            out["budget"] = json.loads(config.budget_report_file.read_text(encoding="utf-8"))
+        except Exception:
+            out["budget"] = {"error": "invalid_budget_report"}
     health_file = config.artifacts_dir / "health.json"
     config.artifacts_dir.mkdir(parents=True, exist_ok=True)
     health_file.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -543,8 +590,9 @@ def install_keepalive(config: ManagerConfig) -> str:
 </dict></plist>
 """
         plist.write_text(payload, encoding="utf-8")
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False, capture_output=True)
-        load = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=False, capture_output=True)
+        uid = _safe_uid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
+        load = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=False, capture_output=True)
         if load.returncode != 0:
             raise RuntimeError(load.stdout.decode() + load.stderr.decode())
         return label
@@ -560,7 +608,8 @@ def uninstall_keepalive(config: ManagerConfig) -> str:
     if sys.platform == "darwin":
         label = "com.orxaq.autonomy.ensure"
         plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False, capture_output=True)
+        uid = _safe_uid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
         plist.unlink(missing_ok=True)
         return label
     raise RuntimeError("Automatic keepalive uninstall currently supports Windows and macOS only.")
@@ -574,7 +623,8 @@ def keepalive_status(config: ManagerConfig) -> dict[str, Any]:
     if sys.platform == "darwin":
         label = "com.orxaq.autonomy.ensure"
         plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        result = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], check=False, capture_output=True)
+        uid = _safe_uid()
+        result = subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"], check=False, capture_output=True)
         return {"platform": "macos", "label": label, "active": result.returncode == 0, "plist": str(plist)}
     return {"platform": sys.platform, "active": False, "note": "No native keepalive integration for this platform."}
 

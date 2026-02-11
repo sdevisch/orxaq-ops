@@ -214,6 +214,35 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(details, "ok")
 
+    def test_extract_usage_metrics_prefers_explicit_values(self):
+        outcome = {
+            "tokens": 42,
+            "cost_usd": 0.75,
+            "usage": {"total_tokens": 999, "cost_usd": 99.0},
+        }
+        tokens, cost = runner.extract_usage_metrics(outcome)
+        self.assertEqual(tokens, 42)
+        self.assertEqual(cost, 0.75)
+
+    def test_evaluate_budget_violations_detects_all_caps(self):
+        budget = runner.init_budget_state(
+            max_runtime_sec=10,
+            max_total_tokens=100,
+            max_total_cost_usd=1.0,
+            max_total_retries=3,
+            trace_enabled=False,
+        )
+        budget["elapsed_sec"] = 15
+        budget["totals"]["tokens"] = 120
+        budget["totals"]["cost_usd"] = 1.5
+        budget["totals"]["retry_events"] = 4
+        violations = runner.evaluate_budget_violations(budget)
+        self.assertEqual(len(violations), 4)
+        self.assertTrue(any("runtime budget exceeded" in item for item in violations))
+        self.assertTrue(any("token budget exceeded" in item for item in violations))
+        self.assertTrue(any("cost budget exceeded" in item for item in violations))
+        self.assertTrue(any("retry budget exceeded" in item for item in violations))
+
 
 if __name__ == "__main__":
     unittest.main()
