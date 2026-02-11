@@ -34,6 +34,7 @@ from .manager import (
     tail_logs,
     uninstall_keepalive,
 )
+from .router import run_router_check
 
 
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
@@ -83,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("install-keepalive")
     sub.add_parser("uninstall-keepalive")
     sub.add_parser("keepalive-status")
+    router = sub.add_parser("router-check")
+    router.add_argument("--config", default="./config/router.example.yaml")
+    router.add_argument("--output", default="./artifacts/router_check.json")
+    router.add_argument("--lane", default="")
+    router.add_argument("--timeout-sec", type=int, default=5)
+    router.add_argument("--strict", action="store_true")
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -213,6 +220,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "keepalive-status":
         print(json.dumps(keepalive_status(cfg), indent=2, sort_keys=True))
+        return 0
+    if args.command == "router-check":
+        report = run_router_check(
+            root=str(cfg.root_dir),
+            config_path=args.config,
+            output_path=args.output,
+            lane=args.lane,
+            timeout_sec=max(1, int(args.timeout_sec)),
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if args.strict and not bool(report.get("summary", {}).get("overall_ok", False)):
+            return 1
         return 0
     if args.command == "init-skill-protocol":
         out = (cfg.root_dir / args.output).resolve()
