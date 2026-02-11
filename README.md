@@ -58,6 +58,11 @@ Optional reusable context controls:
 
 - `ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE` (default `config/skill_protocol.json`)
 - `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
+- `ORXAQ_AUTONOMY_MAX_RUNTIME_SEC` (hard run wall-clock budget; `0` disables)
+- `ORXAQ_AUTONOMY_MAX_TOTAL_TOKENS` (hard run token budget; `0` disables)
+- `ORXAQ_AUTONOMY_MAX_TOTAL_COST_USD` (hard run cost budget; `0` disables)
+- `ORXAQ_AUTONOMY_MAX_TOTAL_RETRIES` (hard cap on total retry events; `0` disables)
+- `ORXAQ_AUTONOMY_BUDGET_REPORT_FILE` (default `artifacts/autonomy/budget.json`)
 
 ## Commands
 
@@ -103,11 +108,11 @@ make run
 make supervise
 ```
 
-GitOps safety policy for `pr-merge`:
+Budget and routing controls:
 
-- merge only when PR checks are green (override only with `--allow-ci-yellow`)
-- require swarm-health score from `--swarm-health-json` or `--swarm-health-score`
-- block merge when score is below `--min-swarm-health` threshold
+- routing policy file: `config/routing_policy.yaml`
+- runtime budget telemetry: `artifacts/autonomy/budget.json`
+- health snapshot includes latest `budget` section (`make health`)
 
 ## Reuse Model
 

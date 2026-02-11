@@ -1,0 +1,42 @@
+schema_version: routing-policy.v1
+default_lane: L0
+
+lanes:
+  L0:
+    description: "Local LM Studio and lowest-cost providers for scaffolding, summaries, and retries."
+    providers:
+      - lmstudio-local
+    max_task_tokens: 12000
+    max_task_cost_usd: 0.05
+  L1:
+    description: "Low-cost remote providers for straightforward implementation and tests."
+    providers:
+      - openai-small
+      - anthropic-small
+    max_task_tokens: 24000
+    max_task_cost_usd: 0.5
+  L2:
+    description: "Higher-capability providers for cross-cutting or reliability-critical work."
+    providers:
+      - openai-standard
+      - anthropic-standard
+    max_task_tokens: 48000
+    max_task_cost_usd: 2.0
+  L3:
+    description: "Audit lane for independent safety/security go-no-go review."
+    providers:
+      - openai-audit
+    max_task_tokens: 64000
+    max_task_cost_usd: 5.0
+
+escalation:
+  retry_failures_threshold: 2
+  ambiguous_interface_change: true
+  security_sensitive_paths:
+    - "auth"
+    - "secrets"
+    - "network_egress"
+    - "sandbox"
+    - "deserialization"
+    - "rpa_execution"
+    - "data_governance"
