@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .protocols import MCPContextBundle, SkillProtocolSpec, load_mcp_context, load_skill_protocol
+from .task_queue import read_checkpoint, validate_task_queue_file, write_checkpoint
 
 STATUS_PENDING = "pending"
 STATUS_IN_PROGRESS = "in_progress"
@@ -143,6 +144,31 @@ class RunnerLock:
             return
         self.path.unlink(missing_ok=True)
         self.acquired = False
+
+
+class TaskExecutionLock:
+    """Per-task lock file to prevent duplicate execution in resumed runs."""
+
+    def __init__(self, lock_dir: Path, task_id: str) -> None:
+        self.path = lock_dir / f"{task_id}.lock"
+        self.acquired = False
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            raise RuntimeError(f"task lock already present: {self.path}")
+        payload = {"pid": os.getpid(), "task_lock": str(self.path), "created_at": _now_iso()}
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        fd = os.open(str(self.path), flags)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True))
+            handle.write("\n")
+        self.acquired = True
+
+    def release(self) -> None:
+        if self.acquired:
+            self.path.unlink(missing_ok=True)
+            self.acquired = False
 
 
 def _now_utc() -> dt.datetime:
@@ -914,6 +940,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--tasks-file", default="config/tasks.json")
     parser.add_argument("--state-file", default="state/state.json")
+    parser.add_argument("--run-id", default="", help="Optional explicit run identifier.")
+    parser.add_argument("--resume", default="", help="Resume from checkpoint run id.")
+    parser.add_argument("--checkpoints-dir", default="artifacts/checkpoints")
     parser.add_argument("--objective-file", default="config/objective.md")
     parser.add_argument("--codex-schema", default="config/codex_result.schema.json")
     parser.add_argument("--artifacts-dir", default="artifacts/autonomy")
@@ -948,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
     test_repo = Path(args.test_repo).resolve()
     tasks_file = Path(args.tasks_file).resolve()
     state_file = Path(args.state_file).resolve()
+    checkpoints_dir = Path(args.checkpoints_dir).resolve()
     objective_file = Path(args.objective_file).resolve()
     schema_file = Path(args.codex_schema).resolve()
     artifacts_dir = Path(args.artifacts_dir).resolve()
@@ -965,6 +995,18 @@ def main(argv: list[str] | None = None) -> int:
     if not schema_file.exists():
         raise FileNotFoundError(f"Codex schema file not found: {schema_file}")
 
+    queue_errors = validate_task_queue_file(tasks_file)
+    if queue_errors:
+        raise ValueError(f"Task queue schema validation failed: {'; '.join(queue_errors)}")
+
+    if args.resume:
+        run_id = str(args.resume).strip()
+    elif args.run_id:
+        run_id = str(args.run_id).strip()
+    else:
+        run_id = f"{_now_utc().strftime('%Y%m%dT%H%M%SZ')}_{os.getpid()}"
+    checkpoint_path = checkpoints_dir / f"{run_id}.json"
+
     ensure_cli_exists(args.codex_cmd, "Codex")
     ensure_cli_exists(args.gemini_cmd, "Gemini")
 
@@ -974,10 +1016,21 @@ def main(argv: list[str] | None = None) -> int:
 
     tasks = load_tasks(tasks_file)
     state = load_state(state_file, tasks)
+    if args.resume:
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Resume requested but checkpoint missing: {checkpoint_path}")
+        checkpoint_payload = read_checkpoint(checkpoint_path)
+        checkpoint_state = checkpoint_payload.get("state", {})
+        if not isinstance(checkpoint_state, dict):
+            raise ValueError(f"Invalid checkpoint state in {checkpoint_path}")
+        for task in tasks:
+            if task.id in checkpoint_state and isinstance(checkpoint_state[task.id], dict):
+                state[task.id].update(checkpoint_state[task.id])
     objective_text = _read_text(objective_file)
     skill_protocol = load_skill_protocol(skill_protocol_file)
     mcp_context = load_mcp_context(mcp_context_file)
     save_state(state_file, state)
+    write_checkpoint(path=checkpoint_path, run_id=run_id, cycle=0, state=state)
 
     _print(f"Starting autonomy runner with {len(tasks)} tasks")
     write_heartbeat(
@@ -986,8 +1039,14 @@ def main(argv: list[str] | None = None) -> int:
         cycle=0,
         task_id=None,
         message="autonomy runner started",
-        extra={"tasks": len(tasks)},
+        extra={"tasks": len(tasks), "run_id": run_id},
     )
+
+    task_lock_dir = checkpoints_dir / "locks"
+
+    def _persist_state(cycle: int) -> None:
+        save_state(state_file, state)
+        write_checkpoint(path=checkpoint_path, run_id=run_id, cycle=cycle, state=state)
 
     for cycle in range(1, args.max_cycles + 1):
         if all(state[t.id]["status"] == STATUS_DONE for t in tasks):
@@ -1038,20 +1097,37 @@ def main(argv: list[str] | None = None) -> int:
         task_state["last_update"] = _now_iso()
         task_state["attempts"] = _safe_int(task_state.get("attempts", 0), 0) + 1
         task_state["not_before"] = ""
-        save_state(state_file, state)
+        _persist_state(cycle)
         write_heartbeat(
             heartbeat_file,
             phase="task_started",
             cycle=cycle,
             task_id=task.id,
             message=f"running task {task.id}",
-            extra={"owner": task.owner, "attempts": task_state["attempts"]},
+            extra={"owner": task.owner, "attempts": task_state["attempts"], "run_id": run_id},
         )
+
+        task_lock = TaskExecutionLock(task_lock_dir, task.id)
+        try:
+            task_lock.acquire()
+        except RuntimeError as err:
+            delay = schedule_retry(
+                entry=task_state,
+                summary="Task lock conflict; retry queued.",
+                error=str(err),
+                retryable=False,
+                backoff_base_sec=max(5, min(60, args.retry_backoff_base_sec)),
+                backoff_max_sec=max(60, min(600, args.retry_backoff_max_sec)),
+            )
+            _print(f"Task {task.id} lock conflict; retry in {delay}s.")
+            _persist_state(cycle)
+            continue
 
         if args.dry_run:
             _print(f"Dry run enabled; skipping execution for task {task.id}")
             task_state["status"] = STATUS_PENDING
-            save_state(state_file, state)
+            _persist_state(cycle)
+            task_lock.release()
             continue
 
         owner_repo = impl_repo if task.owner == "codex" else test_repo
@@ -1188,7 +1264,8 @@ def main(argv: list[str] | None = None) -> int:
                     message="task marked blocked",
                     extra={"attempts": attempts, "error": task_state["last_error"][:300]},
                 )
-            save_state(state_file, state)
+            _persist_state(cycle)
+            task_lock.release()
             continue
 
         if status == STATUS_DONE:
@@ -1258,7 +1335,8 @@ def main(argv: list[str] | None = None) -> int:
                     message="validation processed",
                     extra={"validation_ok": valid},
                 )
-            save_state(state_file, state)
+            _persist_state(cycle)
+            task_lock.release()
             continue
 
         # Partial progress: keep momentum by rescheduling automatically with backoff.
@@ -1294,7 +1372,8 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=task.id,
                 message="partial retries exhausted",
             )
-        save_state(state_file, state)
+        _persist_state(cycle)
+        task_lock.release()
 
     _print(f"Reached max cycles: {args.max_cycles}")
     write_heartbeat(

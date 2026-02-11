@@ -100,6 +100,18 @@ make run
 make supervise
 ```
 
+Extended autonomy operations:
+
+```bash
+orxaq-autonomy --root /path/to/orxaq-ops providers-check --strict
+orxaq-autonomy --root /path/to/orxaq-ops task-queue-validate
+orxaq-autonomy --root /path/to/orxaq-ops profile-apply local
+orxaq-autonomy --root /path/to/orxaq-ops pr-open --title "Autonomy PR" --body "objective + acceptance"
+orxaq-autonomy --root /path/to/orxaq-ops pr-wait --pr 123 --timeout-sec 3600
+orxaq-autonomy --root /path/to/orxaq-ops pr-merge --pr 123 --health-report ../orxaq/artifacts/health.json --min-score 85
+orxaq-autonomy --root /path/to/orxaq-ops stop --report --file-issue
+```
+
 ## Reuse Model
 
 This package is reusable in any repo:

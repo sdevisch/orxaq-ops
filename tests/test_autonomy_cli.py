@@ -50,6 +50,36 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
+    def test_task_queue_validate_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.validate_task_queue_file", return_value=[]):
+                rc = cli.main(["--root", str(root), "task-queue-validate", "--tasks-file", "config/tasks.json"])
+            self.assertEqual(rc, 0)
+
+    def test_providers_check_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            (root / "config" / "providers.example.yaml").write_text('{"providers":[]}\n', encoding="utf-8")
+            with mock.patch(
+                "orxaq_autonomy.cli.run_providers_check",
+                return_value={"summary": {"all_required_up": True}, "providers": []},
+            ):
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "providers-check",
+                        "--config",
+                        "config/providers.example.yaml",
+                        "--output",
+                        "artifacts/providers_check.json",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
