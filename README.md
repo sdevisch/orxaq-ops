@@ -114,12 +114,14 @@ Budget and routing controls:
 
 - routing policy file: `config/routing_policy.yaml`
 - router config example: `config/router.example.yaml`
+- RPA scheduler config example: `config/rpa_schedule.example.json`
 - routing profiles: `profiles/local.yaml`, `profiles/lan.yaml`, `profiles/travel.yaml`
 - active router config written by profile apply: `config/router.active.yaml`
 - runtime budget telemetry: `artifacts/autonomy/budget.json`
 - health snapshot includes latest `budget` section (`make health`)
 - stop report: `artifacts/autonomy/AUTONOMY_STOP_REPORT.md`
 - router connectivity report: `artifacts/router_check.json`
+- RPA scheduler report: `artifacts/autonomy/rpa_scheduler_report.json`
 
 Stop with report + optional issue filing:
 
@@ -127,6 +129,7 @@ Stop with report + optional issue filing:
 python3 -m orxaq_autonomy.cli --root . stop --reason "blocked by failing CI"
 python3 -m orxaq_autonomy.cli --root . stop --reason "manual intervention" --file-issue --issue-repo Orxaq/orxaq-ops --issue-label autonomy --issue-label blocked
 python3 -m orxaq_autonomy.cli --root . router-check --config ./config/router.example.yaml --lane L0 --output ./artifacts/router_check.json --strict
+python3 -m orxaq_autonomy.cli --root . rpa-schedule --config ./config/rpa_schedule.example.json --output ./artifacts/autonomy/rpa_scheduler_report.json --strict
 ```
 
 ## Reuse Model

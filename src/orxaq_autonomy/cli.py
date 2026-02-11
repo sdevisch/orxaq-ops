@@ -35,6 +35,7 @@ from .manager import (
     uninstall_keepalive,
 )
 from .router import apply_router_profile, run_router_check
+from .rpa_scheduler import run_rpa_schedule_from_config
 
 
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
@@ -98,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     profile_apply.add_argument("--config", default="./config/router.example.yaml")
     profile_apply.add_argument("--profiles-dir", default="./profiles")
     profile_apply.add_argument("--output", default="./config/router.active.yaml")
+    rpa_schedule = sub.add_parser("rpa-schedule")
+    rpa_schedule.add_argument("--config", default="./config/rpa_schedule.example.json")
+    rpa_schedule.add_argument("--output", default="./artifacts/autonomy/rpa_scheduler_report.json")
+    rpa_schedule.add_argument("--strict", action="store_true")
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -257,6 +262,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": False, "error": str(err)}, sort_keys=True))
             return 1
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "rpa-schedule":
+        payload = run_rpa_schedule_from_config(
+            root=str(cfg.root_dir),
+            config_path=args.config,
+            output_path=args.output,
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.strict and not bool(payload.get("ok", False)):
+            return 1
         return 0
     if args.command == "init-skill-protocol":
         out = (cfg.root_dir / args.output).resolve()

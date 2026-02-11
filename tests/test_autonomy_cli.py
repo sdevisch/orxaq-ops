@@ -125,6 +125,29 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             apply_profile.assert_called_once()
 
+    def test_rpa_schedule_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.run_rpa_schedule_from_config",
+                return_value={"ok": True, "jobs_total": 0},
+            ) as schedule:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "rpa-schedule",
+                        "--config",
+                        "./config/rpa_schedule.example.json",
+                        "--output",
+                        "./artifacts/autonomy/rpa_scheduler_report.json",
+                        "--strict",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            schedule.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
