@@ -218,7 +218,11 @@ class RuntimeSafeguardTests(unittest.TestCase):
     def test_run_command_returns_nonzero_when_binary_missing(self):
         result = runner.run_command(["definitely-not-a-real-binary"], cwd=pathlib.Path("/tmp"), timeout_sec=1)
         self.assertEqual(result.returncode, 127)
-        self.assertIn("No such file", result.stderr)
+        stderr_lower = result.stderr.lower()
+        self.assertTrue(
+            "no such file" in stderr_lower or "cannot find the file" in stderr_lower,
+            msg=f"unexpected missing-binary message: {result.stderr}",
+        )
 
 
 class DeliveryContractTests(unittest.TestCase):
