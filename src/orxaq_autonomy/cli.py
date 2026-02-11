@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .context import write_default_skill_protocol
+from .dashboard import run_dashboard_server
 from .gitops import (
     GitOpsError,
     detect_head_branch,
@@ -103,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
     rpa_schedule.add_argument("--config", default="./config/rpa_schedule.example.json")
     rpa_schedule.add_argument("--output", default="./artifacts/autonomy/rpa_scheduler_report.json")
     rpa_schedule.add_argument("--strict", action="store_true")
+    dashboard = sub.add_parser("dashboard")
+    dashboard.add_argument("--artifacts-dir", default="./artifacts")
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8787)
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -272,6 +277,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         if args.strict and not bool(payload.get("ok", False)):
             return 1
+        return 0
+    if args.command == "dashboard":
+        artifacts_dir = Path(args.artifacts_dir).expanduser()
+        if not artifacts_dir.is_absolute():
+            artifacts_dir = (cfg.root_dir / artifacts_dir).resolve()
+        run_dashboard_server(
+            artifacts_root=artifacts_dir,
+            host=str(args.host),
+            port=max(1, int(args.port)),
+        )
         return 0
     if args.command == "init-skill-protocol":
         out = (cfg.root_dir / args.output).resolve()

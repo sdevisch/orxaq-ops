@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status router-check profile-apply rpa-schedule lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status router-check profile-apply rpa-schedule dashboard lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -64,6 +64,9 @@ profile-apply:
 
 rpa-schedule:
 	$(AUTONOMY) rpa-schedule --config ./config/rpa_schedule.example.json --output ./artifacts/autonomy/rpa_scheduler_report.json
+
+dashboard:
+	$(AUTONOMY) dashboard --artifacts-dir ./artifacts --host 127.0.0.1 --port 8787
 
 setup:
 	$(PYTHON) -m pip install -e .

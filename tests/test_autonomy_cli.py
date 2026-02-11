@@ -148,6 +148,27 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             schedule.assert_called_once()
 
+    def test_dashboard_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.run_dashboard_server") as serve:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "dashboard",
+                        "--artifacts-dir",
+                        "./artifacts",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "8989",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            serve.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

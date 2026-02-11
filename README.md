@@ -78,6 +78,7 @@ make router-check
 make profile-apply PROFILE=local
 make install-keepalive
 make keepalive-status
+make dashboard
 make workspace
 make open-vscode
 make open-cursor
@@ -122,6 +123,7 @@ Budget and routing controls:
 - stop report: `artifacts/autonomy/AUTONOMY_STOP_REPORT.md`
 - router connectivity report: `artifacts/router_check.json`
 - RPA scheduler report: `artifacts/autonomy/rpa_scheduler_report.json`
+- local dashboard: `python3 -m orxaq_autonomy.cli --root . dashboard --artifacts-dir ./artifacts --host 127.0.0.1 --port 8787`
 
 Stop with report + optional issue filing:
 
@@ -173,6 +175,7 @@ See `/Users/sdevisch/dev/orxaq-ops/docs/VERSIONING.md`.
 - `/Users/sdevisch/dev/orxaq-ops/SUPPORT.md`
 - `/Users/sdevisch/dev/orxaq-ops/SECURITY.md`
 - `/Users/sdevisch/dev/orxaq-ops/docs/AI_BEST_PRACTICES.md`
+- `/Users/sdevisch/dev/orxaq-ops/docs/DASHBOARD.md`
 
 ## Non-Admin Hardening (Windows/macOS)
 
