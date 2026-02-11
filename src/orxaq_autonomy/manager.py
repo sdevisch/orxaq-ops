@@ -112,6 +112,13 @@ def _runtime_env(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _current_uid() -> int:
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        return int(getuid())
+    return int(os.environ.get("UID", "0") or "0")
+
+
 @dataclass(frozen=True)
 class ManagerConfig:
     root_dir: Path
@@ -406,10 +413,13 @@ def start_background(config: ManagerConfig) -> None:
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "orxaq_autonomy.cli", "--root", str(config.root_dir), "supervise"],
-        **kwargs,
-    )
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "orxaq_autonomy.cli", "--root", str(config.root_dir), "supervise"],
+            **kwargs,
+        )
+    finally:
+        log_handle.close()
     _write_pid(config.supervisor_pid_file, proc.pid)
     _log(f"autonomy supervisor started (pid={proc.pid})")
 
@@ -543,8 +553,9 @@ def install_keepalive(config: ManagerConfig) -> str:
 </dict></plist>
 """
         plist.write_text(payload, encoding="utf-8")
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False, capture_output=True)
-        load = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=False, capture_output=True)
+        uid = _current_uid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
+        load = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=False, capture_output=True)
         if load.returncode != 0:
             raise RuntimeError(load.stdout.decode() + load.stderr.decode())
         return label
@@ -560,7 +571,8 @@ def uninstall_keepalive(config: ManagerConfig) -> str:
     if sys.platform == "darwin":
         label = "com.orxaq.autonomy.ensure"
         plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False, capture_output=True)
+        uid = _current_uid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
         plist.unlink(missing_ok=True)
         return label
     raise RuntimeError("Automatic keepalive uninstall currently supports Windows and macOS only.")
@@ -574,7 +586,8 @@ def keepalive_status(config: ManagerConfig) -> dict[str, Any]:
     if sys.platform == "darwin":
         label = "com.orxaq.autonomy.ensure"
         plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        result = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], check=False, capture_output=True)
+        uid = _current_uid()
+        result = subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"], check=False, capture_output=True)
         return {"platform": "macos", "label": label, "active": result.returncode == 0, "plist": str(plist)}
     return {"platform": sys.platform, "active": False, "note": "No native keepalive integration for this platform."}
 
