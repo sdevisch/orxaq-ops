@@ -74,6 +74,7 @@ make status
 make health
 make logs
 make stop
+make router-check
 make install-keepalive
 make keepalive-status
 make workspace
@@ -111,15 +112,18 @@ make supervise
 Budget and routing controls:
 
 - routing policy file: `config/routing_policy.yaml`
+- router config example: `config/router.example.yaml`
 - runtime budget telemetry: `artifacts/autonomy/budget.json`
 - health snapshot includes latest `budget` section (`make health`)
 - stop report: `artifacts/autonomy/AUTONOMY_STOP_REPORT.md`
+- router connectivity report: `artifacts/router_check.json`
 
 Stop with report + optional issue filing:
 
 ```bash
 python3 -m orxaq_autonomy.cli --root . stop --reason "blocked by failing CI"
 python3 -m orxaq_autonomy.cli --root . stop --reason "manual intervention" --file-issue --issue-repo Orxaq/orxaq-ops --issue-label autonomy --issue-label blocked
+python3 -m orxaq_autonomy.cli --root . router-check --config ./config/router.example.yaml --lane L0 --output ./artifacts/router_check.json --strict
 ```
 
 ## Reuse Model

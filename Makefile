@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status router-check lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -55,6 +55,9 @@ uninstall-keepalive:
 
 keepalive-status:
 	$(AUTONOMY) keepalive-status
+
+router-check:
+	$(AUTONOMY) router-check --config ./config/router.example.yaml --output ./artifacts/router_check.json --strict
 
 setup:
 	$(PYTHON) -m pip install -e .

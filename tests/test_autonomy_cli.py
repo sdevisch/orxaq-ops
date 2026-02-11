@@ -75,6 +75,31 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             stop.assert_called_once()
 
+    def test_router_check_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.run_router_check",
+                return_value={"summary": {"overall_ok": True}, "providers": []},
+            ) as check:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "router-check",
+                        "--config",
+                        "./config/router.example.yaml",
+                        "--output",
+                        "./artifacts/router_check.json",
+                        "--lane",
+                        "L0",
+                        "--strict",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            check.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
