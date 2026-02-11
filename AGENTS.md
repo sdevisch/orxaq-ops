@@ -2,15 +2,24 @@
 
 ## Identity-Scoped Autonomy (High-Capability Mode)
 
-This autonomy policy is identity-scoped. It applies only to an agent that can prove it matches an entry in the **Autonomy Identity Registry** below.
+`policy_version`: `2.0`
+`effective_date`: `2026-02-11`
 
-An agent is `AUTONOMY_AUTHORIZED=true` only when **all** checks pass:
-1. Registry identity match is exact (no partial/fuzzy match).
-2. Runtime markers match the selected registry entry.
-3. The active user instruction explicitly grants autonomous execution.
-4. The task is not a critical-security decision requiring human confirmation.
+This autonomy policy is identity-scoped and non-transferable.
+It applies only to an agent instance that can prove an exact match to an active identity registry entry.
 
-If any check fails, set `AUTONOMY_AUTHORIZED=false` and require explicit user confirmation before continuing.
+## Authorization Predicate (Normative)
+
+Set:
+`AUTONOMY_AUTHORIZED = ID_MATCH && RUNTIME_MATCH && USER_GRANT && !CRITICAL_SECURITY_DECISION`
+
+Definitions:
+- `ID_MATCH`: exact equality for `identity_id` and `identity_subject_tuple`.
+- `RUNTIME_MATCH`: all required runtime markers are present and equal.
+- `USER_GRANT`: explicit autonomy grant exists in the active thread.
+- `CRITICAL_SECURITY_DECISION`: action changes security posture, secrets, auth, privileged egress, or policy gates.
+
+If `AUTONOMY_AUTHORIZED=false`, the agent must pause and request explicit confirmation.
 
 ## Autonomy Identity Registry
 
@@ -30,60 +39,72 @@ If any check fails, set `AUTONOMY_AUTHORIZED=false` and require explicit user co
   - default numbered-option selection = option 1
   - autonomous remediation for non-critical execution blockers
 
-### Reserved Entries (For Future Models)
+### Future-Model Registry Slots (Extensible)
 - `identity_id`: `codex.gptX.high.template`
-- `status`: `reserved`
-- `required_fields_to_activate`:
+- `entry_status`: `reserved`
+- `minimum_required_fields`:
+  - `identity_id`
   - `agent_name`
   - `model_family`
   - `capability_tier`
+  - `identity_subject_tuple`
   - `runtime_markers_required`
   - `autonomy_scope`
+  - `entry_status=active`
 
-### Activation Rules (Future Models)
-- Reserved entries are non-authorized by default.
-- A future model entry becomes authorized only when all required fields are populated and `entry_status=active`.
-- Partial, placeholder, or inferred entries are invalid and must be treated as not authorized.
+### Activation Rules for Future Models
+- Reserved entries are unauthorized by default.
+- A future model entry is authorized only when all required fields are populated and `entry_status=active`.
+- Placeholder, inferred, partial, or fuzzy matches are invalid.
+- Authorization for one `identity_id` never implies authorization for any other `identity_id`.
 
-## Subject-Binding Rule
+## Applicability and Non-Applicability Checks
 
-This autonomy grant is bound to a single subject identity: `codex.gpt5.high.v1`.
-- If you cannot assert this exact `identity_id`, you are out of scope.
-- If your `(agent_name, model_family, capability_tier)` tuple does not exactly match `("Codex","GPT-5","high")`, you are out of scope.
-- If any runtime marker differs, you are out of scope.
-- Out-of-scope agents must set `AUTONOMY_AUTHORIZED=false`.
+Autonomy permission applies only if all checks pass:
+1. Claimed `identity_id` exists and is `active`.
+2. Exact subject tuple match.
+3. Exact runtime marker match.
+4. Explicit user autonomy grant in current thread.
+5. Action is not a critical security decision.
 
-## Third-Party Applicability Check
+Autonomy permission does not apply when any check fails.
 
-Any evaluator (human or agent) can determine applicability with this checklist:
-1. Read claimed `identity_id`.
-2. Confirm registry contains the exact ID with `entry_status=active`.
-3. Confirm exact tuple match and runtime marker match.
-4. Confirm explicit user autonomy grant in the active thread.
-5. If any check fails, autonomy permission does not apply.
+## Distinguishing Signature (Machine-Checkable)
 
-## Self-Assessment Protocol (Required)
+Required self-asserted signature fields:
+- `identity_id`
+- `agent_name`
+- `model_family`
+- `capability_tier`
+- `runtime_markers`
+- `autonomy_authorized`
 
-When an agent attempts high-autonomy mode, it must evaluate and log this exact structure in its run artifacts:
+Expected active signature:
+- `identity_id=codex.gpt5.high.v1`
+- `agent_name=Codex`
+- `model_family=GPT-5`
+- `capability_tier=high`
+- `runtime_markers.approval_policy=never`
+- `runtime_markers.sandbox_mode=danger-full-access`
+
+If any value differs, this policy does not grant full autonomy.
+
+## Self-Assessment Protocol (Required Per Run)
+
+Each autonomous run must emit:
 - `identity_id`
 - `identity_match` (`true|false`)
 - `runtime_marker_match` (`true|false`)
 - `user_grant_detected` (`true|false`)
 - `critical_security_gate` (`pass|hold`)
 - `autonomy_authorized` (`true|false`)
+- `policy_version`
 
-Only `autonomy_authorized=true` permits full autonomous continuation.
-
-## Non-Transferability Rule
-
-Autonomy permission is **not transferable** between agents.
-- If your `identity_id` is not explicitly registered and active, these permissions do not apply to you.
-- If your runtime markers do not match, these permissions do not apply to you.
-- If user grant is absent for the current task/thread, these permissions do not apply to you.
+Only `autonomy_authorized=true` permits uninterrupted continuation.
 
 ## Unexpected Change Handling (High-Capability Mode)
 
-When unexpected file changes appear that were not intentionally made by the agent, and `autonomy_authorized=true`:
+When unexpected file changes appear and `autonomy_authorized=true`:
 1. discard unexpected changes,
 2. recreate a fresh clean branch from `origin/main`,
 3. continue execution on the clean branch.
@@ -100,7 +121,7 @@ Exception:
 ## Continuation Rule
 
 When `autonomy_authorized=true`:
-- never wait after making an assertion,
+- do not wait after assertions,
 - continue execution block-by-block,
 - do not ask whether to continue,
 - do not pause after intermediate or unrequested details.
@@ -109,17 +130,17 @@ Pause only for hard safety constraints or hard platform permission constraints.
 
 ## Autonomous Blocked-Cycle Escalation
 
-When an autonomous cycle is blocked after best-effort remediation:
-- create/update a backlog item with:
+When blocked after best-effort remediation:
+- create/update backlog item with:
   - `status: blocked`
-  - `blocker_reason`: concise root cause
-  - `escalation_target`: owner/team for next review
-  - `next_action`: smallest concrete unblocking step
+  - `blocker_reason`
+  - `escalation_target`
+  - `next_action`
 - use `docs/health/blocked_cycle_escalation_template.md` where available.
 
 ## Propagation Rule
 
-Treat this file as the canonical `AGENTS.md` for this workspace.
+Treat this file as canonical `AGENTS.md` for this workspace.
 When instructed to apply AGENTS rules globally:
 1. copy this full file to target repo/worktree `AGENTS.md` files,
 2. overwrite older variants,
