@@ -1,5 +1,6 @@
 import datetime as dt
 import importlib
+import json
 import os
 import pathlib
 import sys
@@ -213,6 +214,234 @@ class RuntimeSafeguardTests(unittest.TestCase):
             )
         self.assertTrue(ok)
         self.assertEqual(details, "ok")
+
+    def test_run_command_returns_nonzero_when_binary_missing(self):
+        result = runner.run_command(["definitely-not-a-real-binary"], cwd=pathlib.Path("/tmp"), timeout_sec=1)
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("No such file", result.stderr)
+
+
+class DeliveryContractTests(unittest.TestCase):
+    def _task(self, owner: str = "codex") -> runner.Task:
+        return runner.Task(
+            id="task-1",
+            owner=owner,
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a1"],
+        )
+
+    def test_extract_delivery_signals_parses_review_metadata(self):
+        outcome = {
+            "summary": "review_status=failed review_score=41 urgent_fix=yes",
+            "commit": "abc123",
+            "validations": ["make test", "make lint"],
+            "next_actions": [
+                "pr_url=https://github.com/Orxaq/orxaq-ops/pull/20",
+                "higher_level_review_todo=ops/backlog/distributed_todo.yaml#r20",
+                "merge_effective=pending",
+            ],
+        }
+        signals = runner.extract_delivery_signals(outcome)
+        self.assertTrue(signals["has_pr_url"])
+        self.assertTrue(signals["has_higher_level_review_todo"])
+        self.assertTrue(signals["has_unit_test_evidence"])
+        self.assertEqual(signals["review_status"], "failed")
+        self.assertEqual(signals["review_score"], 41)
+        self.assertTrue(signals["urgent_fix"])
+        self.assertEqual(signals["merge_effective"], "pending")
+
+    def test_evaluate_delivery_contract_rejects_missing_review_score(self):
+        outcome = {
+            "summary": "review_status=passed merge_effective=branch_gone",
+            "commit": "abc123",
+            "validations": ["pytest -q"],
+            "next_actions": [
+                "pr_url=https://github.com/Orxaq/orxaq-ops/pull/21",
+                "higher_level_review_todo=todo-21",
+            ],
+        }
+        ok, reason = runner.evaluate_delivery_contract(self._task("codex"), outcome)
+        self.assertFalse(ok)
+        self.assertIn("review_score", reason)
+
+    def test_evaluate_delivery_contract_rejects_failed_review_without_urgent_fix(self):
+        outcome = {
+            "summary": "review_status=failed review_score=23 merge_effective=pending",
+            "commit": "abc123",
+            "validations": ["make test"],
+            "next_actions": [
+                "pr_url=https://github.com/Orxaq/orxaq-ops/pull/22",
+                "higher_level_review_todo=todo-22",
+            ],
+        }
+        ok, reason = runner.evaluate_delivery_contract(self._task("codex"), outcome)
+        self.assertFalse(ok)
+        self.assertIn("urgent_fix", reason)
+
+    def test_evaluate_delivery_contract_accepts_passed_review_with_branch_gone(self):
+        outcome = {
+            "summary": "review_status=passed review_score=93 urgent_fix=no",
+            "commit": "abc123",
+            "validations": ["make lint", "make test"],
+            "next_actions": [
+                "pr_url=https://github.com/Orxaq/orxaq-ops/pull/23",
+                "higher_level_review_todo=todo-23",
+                "merge_effective=branch_gone",
+            ],
+        }
+        ok, reason = runner.evaluate_delivery_contract(self._task("codex"), outcome)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
+
+
+class DeliveryCycleProgressionTests(unittest.TestCase):
+    def test_main_retries_until_review_passes_and_branch_is_gone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            impl_repo = root / "impl"
+            test_repo = root / "test"
+            impl_repo.mkdir()
+            test_repo.mkdir()
+
+            tasks_file = root / "tasks.json"
+            state_file = root / "state.json"
+            objective_file = root / "objective.md"
+            schema_file = root / "schema.json"
+            skill_file = root / "skill.json"
+            artifacts_dir = root / "artifacts"
+            heartbeat_file = root / "heartbeat.json"
+            lock_file = root / "runner.lock"
+
+            tasks_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "task-a",
+                            "owner": "codex",
+                            "priority": 1,
+                            "title": "Task A",
+                            "description": "Task A desc",
+                            "depends_on": [],
+                            "acceptance": ["done"],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            objective_file.write_text("Objective", encoding="utf-8")
+            schema_file.write_text("{}", encoding="utf-8")
+            skill_file.write_text(
+                json.dumps({"name": "proto", "version": "1", "description": "d", "required_behaviors": ["x"]}),
+                encoding="utf-8",
+            )
+
+            outcomes = [
+                (
+                    True,
+                    {
+                        "status": "done",
+                        "summary": "review_status=failed review_score=35 urgent_fix=yes merge_effective=pending",
+                        "commit": "abc123",
+                        "validations": ["make test"],
+                        "next_actions": [
+                            "pr_url=https://github.com/Orxaq/orxaq-ops/pull/31",
+                            "higher_level_review_todo=todo-31",
+                        ],
+                        "blocker": "",
+                    },
+                ),
+                (
+                    True,
+                    {
+                        "status": "done",
+                        "summary": "review_status=passed review_score=88 urgent_fix=no merge_effective=pending",
+                        "commit": "def456",
+                        "validations": ["pytest -q"],
+                        "next_actions": [
+                            "pr_url=https://github.com/Orxaq/orxaq-ops/pull/31",
+                            "higher_level_review_todo=todo-31",
+                        ],
+                        "blocker": "",
+                    },
+                ),
+                (
+                    True,
+                    {
+                        "status": "done",
+                        "summary": "review_status=passed review_score=94 urgent_fix=no merge_effective=branch_gone",
+                        "commit": "fedcba",
+                        "validations": ["make lint", "make test"],
+                        "next_actions": [
+                            "pr_url=https://github.com/Orxaq/orxaq-ops/pull/31",
+                            "higher_level_review_todo=todo-31",
+                        ],
+                        "blocker": "",
+                    },
+                ),
+            ]
+
+            run_calls = {"count": 0}
+
+            def fake_run_codex_task(**_kwargs):
+                idx = run_calls["count"]
+                run_calls["count"] += 1
+                return outcomes[idx]
+
+            def immediate_retry(*, entry, summary, error, retryable, backoff_base_sec, backoff_max_sec):
+                del summary, error, backoff_base_sec, backoff_max_sec
+                entry["status"] = runner.STATUS_PENDING
+                entry["not_before"] = ""
+                if retryable:
+                    entry["retryable_failures"] = int(entry.get("retryable_failures", 0)) + 1
+                entry["last_update"] = runner._now_iso()
+                return 0
+
+            argv = [
+                "--impl-repo",
+                str(impl_repo),
+                "--test-repo",
+                str(test_repo),
+                "--tasks-file",
+                str(tasks_file),
+                "--state-file",
+                str(state_file),
+                "--objective-file",
+                str(objective_file),
+                "--codex-schema",
+                str(schema_file),
+                "--artifacts-dir",
+                str(artifacts_dir),
+                "--heartbeat-file",
+                str(heartbeat_file),
+                "--lock-file",
+                str(lock_file),
+                "--max-cycles",
+                "6",
+                "--max-attempts",
+                "6",
+                "--validate-command",
+                "make test",
+                "--skill-protocol-file",
+                str(skill_file),
+            ]
+
+            with (
+                mock.patch.object(runner, "ensure_cli_exists", return_value=None),
+                mock.patch.object(runner, "run_codex_task", side_effect=fake_run_codex_task),
+                mock.patch.object(runner, "run_validations", return_value=(True, "ok")),
+                mock.patch.object(runner, "summarize_run", return_value=None),
+                mock.patch.object(runner, "schedule_retry", side_effect=immediate_retry),
+                mock.patch.object(runner, "_print", return_value=None),
+            ):
+                rc = runner.main(argv)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(run_calls["count"], 3)
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(state["task-a"]["status"], runner.STATUS_DONE)
 
 
 if __name__ == "__main__":

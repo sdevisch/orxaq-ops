@@ -90,6 +90,20 @@ VALIDATION_FALLBACKS = {
 
 TEST_COMMAND_HINTS = ("pytest", "make test")
 GIT_LOCK_BASENAMES = ("index.lock", "HEAD.lock", "packed-refs.lock")
+PR_URL_PATTERN = re.compile(r"https://github\.com/[^\s]+/pull/\d+", re.IGNORECASE)
+REVIEW_STATUS_PATTERN = re.compile(r"\breview_status\s*[:=]\s*(pass|passed|fail|failed)\b", re.IGNORECASE)
+REVIEW_SCORE_PATTERN = re.compile(r"\breview_score\s*[:=]\s*([0-9]{1,3})\b", re.IGNORECASE)
+URGENT_FIX_PATTERN = re.compile(r"\burgent_fix\s*[:=]\s*(yes|no|true|false|1|0)\b", re.IGNORECASE)
+MERGE_EFFECTIVE_PATTERN = re.compile(
+    r"\bmerge_effective\s*[:=]\s*(branch_gone|merged_branch_deleted|pending|not_merged|failed)\b",
+    re.IGNORECASE,
+)
+BRANCH_DELETED_PATTERN = re.compile(r"\bbranch_deleted\s*[:=]\s*(yes|true|1)\b", re.IGNORECASE)
+HIGHER_LEVEL_REVIEW_TODO_PATTERN = re.compile(
+    r"\b(higher[_\-\s]?level[_\-\s]?review[_\-\s]?todo|review_todo)\b",
+    re.IGNORECASE,
+)
+UNIT_TEST_EVIDENCE_PATTERN = re.compile(r"\b(pytest|make test)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -512,15 +526,26 @@ def build_agent_prompt(
         f"{repo_hints_text}"
         f"{continuation_block}\n"
         "Execution requirements:\n"
+        "- Scope boundary: complete only the current autonomous task listed above.\n"
+        "- Do not start another task in this run; return final JSON immediately after this task is done/partial/blocked.\n"
         "- Work fully autonomously for this task.\n"
         "- Do not ask for user nudges unless blocked by credentials, destructive actions, or true tradeoff decisions.\n"
+        "- Always create/switch to an issue-linked branch (`codex/issue-<id>-<topic>`) before edits.\n"
+        "- Add or update unit tests and run tests before every commit.\n"
+        "- Commit every validated logical change and push contiguous blocks of related commits.\n"
+        "- Open or update a pull request for each pushed block and include the PR URL in your report.\n"
+        "- Add a higher-level review to-do so reviewer lanes can process the pull request.\n"
+        "- If review fails, record the review score, create an urgent fix to-do, and pick up the urgent fix in the next cycle.\n"
+        "- Continue review/fix cycles without stalling until review passes and merge effectiveness is confirmed (branch gone).\n"
         "- Run validation commands: `make lint` then `make test`.\n"
-        "- Commit and push contiguous changes.\n"
         "- If a command fails transiently (rate limits/network/timeouts), retry with resilient fallbacks before giving up.\n"
         "- Use non-interactive commands only (never wait for terminal prompts).\n"
         "- Handle new/unknown file types safely: preserve binary formats, avoid destructive rewrites, and add `.gitattributes` entries when needed.\n"
         "- If git locks or in-progress git states are detected, recover safely and continue.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
+        "- For implementation-owner output, include machine-readable markers in summary/next_actions:\n"
+        "  branch=<branch>, tests_pre_commit=<commands>, pr_url=<url>, higher_level_review_todo=<id>, "
+        "review_status=<passed|failed>, review_score=<0-100>, urgent_fix=<yes|no>, merge_effective=<branch_gone|pending>.\n"
         "- status must be one of: done, partial, blocked.\n"
     )
 
@@ -534,15 +559,18 @@ def run_command(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = build_subprocess_env(extra_env)
-    process = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        text=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+    except FileNotFoundError as err:
+        return subprocess.CompletedProcess(cmd, returncode=127, stdout="", stderr=str(err))
     start = time.monotonic()
     last_progress = start
 
@@ -672,6 +700,110 @@ def parse_json_text(raw: str) -> dict[str, Any] | None:
             return parsed
 
     return _extract_json_object_from_text(text)
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if value is None:
+        return []
+    return [str(value)]
+
+
+def _to_bool_token(raw: str | None) -> bool | None:
+    if raw is None:
+        return None
+    lowered = raw.strip().lower()
+    if lowered in {"yes", "true", "1"}:
+        return True
+    if lowered in {"no", "false", "0"}:
+        return False
+    return None
+
+
+def extract_delivery_signals(outcome: dict[str, Any]) -> dict[str, Any]:
+    summary = str(outcome.get("summary", ""))
+    next_actions = _as_text_list(outcome.get("next_actions", []))
+    validations = _as_text_list(outcome.get("validations", []))
+    text = "\n".join([summary, *next_actions])
+    review_status_match = REVIEW_STATUS_PATTERN.search(text)
+    review_score_match = REVIEW_SCORE_PATTERN.search(text)
+    urgent_fix_match = URGENT_FIX_PATTERN.search(text)
+    merge_effective_match = MERGE_EFFECTIVE_PATTERN.search(text)
+
+    review_status = ""
+    if review_status_match:
+        raw = review_status_match.group(1).lower()
+        review_status = "passed" if raw.startswith("pass") else "failed"
+
+    review_score: int | None = None
+    if review_score_match:
+        review_score = max(0, min(100, _safe_int(review_score_match.group(1), 0)))
+
+    urgent_fix = _to_bool_token(urgent_fix_match.group(1) if urgent_fix_match else None)
+    merge_effective = ""
+    if merge_effective_match:
+        raw = merge_effective_match.group(1).lower()
+        if raw in {"branch_gone", "merged_branch_deleted"}:
+            merge_effective = "branch_gone"
+        elif raw in {"pending", "not_merged"}:
+            merge_effective = "pending"
+        else:
+            merge_effective = "failed"
+    elif BRANCH_DELETED_PATTERN.search(text):
+        merge_effective = "branch_gone"
+
+    test_text = "\n".join(validations + [text])
+    return {
+        "has_pr_url": bool(PR_URL_PATTERN.search(text)),
+        "has_higher_level_review_todo": bool(HIGHER_LEVEL_REVIEW_TODO_PATTERN.search(text)),
+        "has_unit_test_evidence": bool(UNIT_TEST_EVIDENCE_PATTERN.search(test_text)),
+        "review_status": review_status,
+        "review_score": review_score,
+        "urgent_fix": urgent_fix,
+        "merge_effective": merge_effective,
+    }
+
+
+def evaluate_delivery_contract(task: Task, outcome: dict[str, Any]) -> tuple[bool, str]:
+    signals = extract_delivery_signals(outcome)
+
+    if task.owner == "gemini":
+        review_status = str(signals.get("review_status", ""))
+        if review_status and signals.get("review_score") is None:
+            return False, "review_score evidence missing for gemini review output."
+        if review_status == "failed" and signals.get("urgent_fix") is not True:
+            return False, "review failed but urgent_fix marker is missing."
+        return True, "ok"
+
+    if task.owner != "codex":
+        return True, "ok"
+
+    commit = str(outcome.get("commit", "")).strip()
+    if not commit:
+        return False, "missing commit hash in codex outcome."
+    if not signals.get("has_unit_test_evidence", False):
+        return False, "missing unit-test evidence (pytest/make test) before commit."
+    if not signals.get("has_pr_url", False):
+        return False, "missing pull request URL evidence."
+    if not signals.get("has_higher_level_review_todo", False):
+        return False, "missing higher-level review to-do handoff evidence."
+
+    review_status = str(signals.get("review_status", ""))
+    if review_status not in {"passed", "failed"}:
+        return False, "missing review_status marker (passed|failed)."
+    if signals.get("review_score") is None:
+        return False, "missing review_score marker for lower-level AI scoring."
+
+    if review_status == "failed":
+        if signals.get("urgent_fix") is not True:
+            return False, "review failed but urgent_fix marker is missing."
+        return False, "review failed; urgent fix cycle required before completion."
+
+    if str(signals.get("merge_effective", "")) != "branch_gone":
+        return False, "review passed but merge effectiveness evidence is missing (branch_gone)."
+
+    return True, "ok"
 
 
 def normalize_outcome(raw: dict[str, Any]) -> dict[str, Any]:
@@ -1208,6 +1340,36 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
             if valid:
+                contract_ok, contract_details = evaluate_delivery_contract(task, outcome)
+                if not contract_ok:
+                    attempts = _safe_int(task_state.get("attempts", 0), 0)
+                    if attempts < args.max_attempts:
+                        delay = schedule_retry(
+                            entry=task_state,
+                            summary="Delivery contract unmet; retrying autonomously.",
+                            error=contract_details,
+                            retryable=False,
+                            backoff_base_sec=max(5, min(60, args.retry_backoff_base_sec)),
+                            backoff_max_sec=max(60, min(600, args.retry_backoff_max_sec)),
+                        )
+                        _print(
+                            f"Task {task.id} unmet delivery contract; retry in {delay}s "
+                            f"(attempt {attempts}/{args.max_attempts})."
+                        )
+                    else:
+                        mark_blocked(task_state, "Delivery contract unmet after repeated retries.", contract_details)
+                        _print(f"Task {task.id} delivery contract unmet and is now blocked.")
+                    write_heartbeat(
+                        heartbeat_file,
+                        phase="task_contract_unmet",
+                        cycle=cycle,
+                        task_id=task.id,
+                        message="delivery contract evaluated",
+                        extra={"contract_ok": False},
+                    )
+                    save_state(state_file, state)
+                    continue
+
                 task_state["status"] = STATUS_DONE
                 task_state["last_error"] = ""
                 task_state["last_summary"] = summary_text
