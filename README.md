@@ -26,6 +26,7 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `config/mcp_context.routellm_npv.example.json` - RouteLLM + NPV context template.
 - `config/routellm_policy.local-fast.json` - local fast-routing policy template (RouteLLM).
 - `config/routellm_policy.local-strong.json` - local strong-routing policy template (RouteLLM).
+- `config/litellm_swarm_router.json` - LiteLLM-style router config for OpenAI/Gemini/Claude and LM Studio nodes.
 - `config/prompts/codex_impl_prompt.md` - baseline implementation prompt for Codex.
 - `config/prompts/codex_routellm_npv_prompt.md` - RouteLLM + NPV autonomy prompt.
 - `config/prompts/gemini_test_prompt.md` - baseline independent-test prompt for Gemini.
@@ -38,6 +39,7 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `docs/VSCODE_COLLAB_AUTONOMY_RUNBOOK.md` - end-to-end VS Code + multi-agent operating guide.
 - `docs/ROUTELLM_NPV_AUTONOMY_PLAN.md` - rollout plan for routing economics and capacity scaling.
 - `docs/release-pypi.md` - trusted-publishing release runbook.
+- `scripts/model_router_connectivity.py` - model endpoint connectivity report generator for swarm-health consumption.
 
 Legacy shell scripts remain for compatibility, but `make` now uses the package CLI.
 
@@ -79,6 +81,11 @@ Optional reusable context controls:
 - `ORXAQ_AUTONOMY_METRICS_SUMMARY_FILE` (default `artifacts/autonomy/response_metrics_summary.json`)
 - `ORXAQ_AUTONOMY_PRICING_FILE` (default `config/pricing.json`)
 - `ORXAQ_AUTONOMY_LANES_FILE` (default `config/lanes.json`)
+- `ORXAQ_AUTONOMY_PROCESS_RESTART_COOLDOWN_SEC` (default `30`)
+- `ORXAQ_AUTONOMY_PROCESS_STARTUP_GRACE_SEC` (default `8`)
+- `ORXAQ_AUTONOMY_PROCESS_WATCHDOG_STATE_FILE` (default `artifacts/autonomy/process_watchdog_state.json`)
+- `ORXAQ_AUTONOMY_PROCESS_WATCHDOG_HISTORY_FILE` (default `artifacts/autonomy/process_watchdog_history.ndjson`)
+- `ORXAQ_AUTONOMY_FULL_AUTONOMY_REPORT_FILE` (default `artifacts/autonomy/full_autonomy_report.json`)
 
 Lane specs in `config/lanes.json` can override command/model selection per lane:
 - `codex_cmd`, `gemini_cmd`, `claude_cmd`
@@ -91,6 +98,7 @@ Configure per-model rates in `/Users/sdevisch/dev/orxaq-ops/config/pricing.json`
 
 ```bash
 make preflight
+make preflight-autonomy
 make bootstrap
 make start
 make ensure
@@ -98,17 +106,35 @@ make status
 make monitor
 make metrics
 make health
+make process-watchdog
+make full-autonomy
 make logs
+make model-router-connectivity
 make dashboard
 make dashboard-status
 make dashboard-logs
 make dashboard-stop
+make provider-cost-ingest
+make provider-cost-health
+make provider-cost-ingest-check
+make swarm-todo-health-once
+make swarm-todo-health-start
+make swarm-todo-health-status
+make swarm-todo-health-stop
 make conversations
 make lanes-plan
 make lanes-status
 make lanes-start
 make lanes-ensure
 make lanes-stop
+make mesh-init
+make mesh-status
+make mesh-publish
+make mesh-dispatch
+make mesh-import
+make mesh-export
+make mesh-sync
+make mesh-autonomy-once
 make routellm-preflight
 make routellm-bootstrap
 make routellm-start
@@ -128,10 +154,23 @@ make version-check
 make repo-hygiene
 make hosted-controls-check
 make readiness-check
+make readiness-check-autonomy
 make bump-patch
 make bump-minor
 make bump-major
 make package
+```
+
+Generate the Phase 1 model-router connectivity report:
+
+```bash
+python3 scripts/model_router_connectivity.py --config ./config/litellm_swarm_router.json --output ./artifacts/model_connectivity.json
+```
+
+Use it from `orxaq` swarm-health:
+
+```bash
+python3 ../orxaq/orxaq_cli.py swarm-health --root ../orxaq --output ../orxaq/artifacts/health.json --strict --connectivity-report ./artifacts/model_connectivity.json
 ```
 
 Windows PowerShell wrappers:
@@ -147,6 +186,20 @@ Foreground debug:
 ```bash
 make run
 make supervise
+```
+
+Deterministic full-autonomy pass:
+
+```bash
+python3 -m orxaq_autonomy.cli --root . process-watchdog --strict
+python3 -m orxaq_autonomy.cli --root . full-autonomy --strict
+```
+
+Autonomy-mode preflight/readiness (allows dirty sibling repos):
+
+```bash
+make preflight-autonomy
+make readiness-check-autonomy
 ```
 
 ## VS Code Collaboration Quick Start
@@ -207,7 +260,31 @@ make dashboard
 
 `make dashboard` starts a resilient background dashboard service and returns immediately.
 Use `make dashboard-status` to confirm, `make dashboard-logs` for troubleshooting, `make dashboard-ensure` to auto-restart stale dashboard code after updates, and `make dashboard-stop` to stop it.
-The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, response cost/quality metrics, an auto-selected "most exciting stat" indicator (token flow when available), repo drift, and latest log signals.
+The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, response cost/quality metrics, cost windows (`1h/today/7d/30d`), a 24h cost trend sparkline, provider/model 30d cost splits, freshness/degradation signals, an auto-selected "most exciting stat" indicator (token flow when available), repo drift, and latest log signals.
+
+To ingest authoritative provider billing/usage snapshots (OpenAI/Anthropic/Gemini) into `artifacts/autonomy/provider_costs`, configure provider endpoint URLs and API keys in `.env.autonomy`, then run:
+
+```bash
+make provider-cost-ingest
+```
+
+Validate freshness/provider health for the latest summary:
+
+```bash
+make provider-cost-health
+```
+
+Run ingest plus health verification as one step:
+
+```bash
+make provider-cost-ingest-check
+```
+
+For unattended scheduling, run `make provider-cost-ingest-check` from cron/systemd and alert on non-zero exit. Example:
+
+```bash
+0 * * * * cd /Users/sdevisch/dev/orxaq-ops && make provider-cost-ingest-check >> artifacts/autonomy/provider_costs/cron.log 2>&1
+```
 
 Inspect conversation events directly:
 
@@ -231,6 +308,22 @@ make lanes-ensure
 
 Provider/model adaptive parallel-capacity telemetry:
 - `make lanes-status` now prints `parallel_capacity` (`running/effective_limit`) per provider:model bucket.
+
+## Event Mesh (Decentralized Nodes + GitHub Coordination)
+
+Use the event mesh commands to run decentralized event-driven coordination where each node can operate independently and synchronize through git/GitHub-ledger files:
+
+```bash
+python3 -m orxaq_autonomy.cli --root . mesh-init --capability monitoring --capability routing
+python3 -m orxaq_autonomy.cli --root . mesh-publish --topic scheduling --event-type task.enqueued --payload-json '{"task_id":"example"}'
+python3 -m orxaq_autonomy.cli --root . mesh-sync
+python3 -m orxaq_autonomy.cli --root . mesh-autonomy-once
+python3 -m orxaq_autonomy.cli --root . mesh-status
+```
+
+Design docs:
+- `docs/EVENT_DRIVEN_ROOT_CAUSE_ANALYSIS.md`
+- `docs/EVENT_DRIVEN_REDESIGN_PLAN.md`
 - State is persisted in `artifacts/autonomy/parallel_capacity_state.json`.
 - Every `lanes-start`/`lanes-ensure` decision is appended to `artifacts/autonomy/parallel_capacity.ndjson`.
 - Capacity limits start from `ORXAQ_AUTONOMY_PARALLEL_CAPACITY_DEFAULT_LIMIT` and auto-adjust down on capacity signals, then recover upward after stable cycles.
@@ -307,3 +400,7 @@ See `/Users/sdevisch/dev/orxaq-ops/docs/VERSIONING.md`.
 - Validation retries + fallback validation commands.
 - Prompt includes file-type profile + repo-state hints + protocol requirements.
 - Machine-readable health snapshot (`make health`) written to `artifacts/autonomy/health.json`.
+- Deterministic process watchdog state/history:
+  - `artifacts/autonomy/process_watchdog_state.json`
+  - `artifacts/autonomy/process_watchdog_history.ndjson`
+- Full-autonomy report: `artifacts/autonomy/full_autonomy_report.json`.

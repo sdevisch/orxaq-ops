@@ -1,0 +1,35 @@
+name: Model Router Connectivity
+
+on:
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "45 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  connectivity:
+    name: Router Connectivity Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate connectivity report
+        run: |
+          python scripts/model_router_connectivity.py \
+            --config config/litellm_swarm_router.json \
+            --output artifacts/model_connectivity.json
+
+      - name: Upload connectivity artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-router-connectivity
+          path: artifacts/**
+          if-no-files-found: warn
