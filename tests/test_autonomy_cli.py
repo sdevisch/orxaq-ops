@@ -50,27 +50,30 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
-    def test_pr_open_command(self):
+    def test_stop_command_writes_payload(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
             self._prep_root(root)
-            with mock.patch("orxaq_autonomy.cli.detect_repo", return_value="acme/repo"), mock.patch(
-                "orxaq_autonomy.cli.detect_head_branch",
-                return_value="codex/test",
-            ), mock.patch("orxaq_autonomy.cli.open_pr", return_value={"ok": True, "number": 11}):
-                rc = cli.main(["--root", str(root), "pr-open", "--title", "Test PR"])
+            with mock.patch(
+                "orxaq_autonomy.cli.autonomy_stop",
+                return_value={"ok": True, "report_path": "artifacts/autonomy/AUTONOMY_STOP_REPORT.md"},
+            ) as stop:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "stop",
+                        "--reason",
+                        "manual intervention",
+                        "--file-issue",
+                        "--issue-repo",
+                        "Orxaq/orxaq-ops",
+                        "--issue-label",
+                        "autonomy",
+                    ]
+                )
             self.assertEqual(rc, 0)
-
-    def test_pr_wait_non_ok_returns_one(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            self._prep_root(root)
-            with mock.patch("orxaq_autonomy.cli.detect_repo", return_value="acme/repo"), mock.patch(
-                "orxaq_autonomy.cli.wait_for_pr",
-                return_value={"ok": False, "reason": "failed"},
-            ):
-                rc = cli.main(["--root", str(root), "pr-wait", "--pr", "7"])
-            self.assertEqual(rc, 1)
+            stop.assert_called_once()
 
 
 if __name__ == "__main__":

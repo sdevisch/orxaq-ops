@@ -20,6 +20,7 @@ from .gitops import (
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
+    autonomy_stop,
     ensure_background,
     health_snapshot,
     install_keepalive,
@@ -29,7 +30,6 @@ from .manager import (
     run_foreground,
     start_background,
     status_snapshot,
-    stop_background,
     supervise_foreground,
     tail_logs,
     uninstall_keepalive,
@@ -51,7 +51,28 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run")
     sub.add_parser("supervise")
     sub.add_parser("start")
-    sub.add_parser("stop")
+    stop = sub.add_parser("stop")
+    stop.add_argument(
+        "--reason",
+        default="manual stop requested",
+        help="Reason included in AUTONOMY_STOP_REPORT.md and issue payload.",
+    )
+    stop.add_argument(
+        "--file-issue",
+        action="store_true",
+        help="Create a GitHub issue after writing the stop report.",
+    )
+    stop.add_argument(
+        "--issue-repo",
+        default="",
+        help="Optional owner/repo override for issue filing (default: current repo).",
+    )
+    stop.add_argument(
+        "--issue-label",
+        action="append",
+        default=[],
+        help="Issue label(s) to include when --file-issue is enabled.",
+    )
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
@@ -147,7 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         start_background(cfg)
         return 0
     if args.command == "stop":
-        stop_background(cfg)
+        payload = autonomy_stop(
+            cfg,
+            reason=args.reason,
+            file_issue=bool(args.file_issue),
+            issue_repo=args.issue_repo,
+            labels=list(args.issue_label or []),
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "ensure":
         ensure_background(cfg)
