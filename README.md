@@ -75,6 +75,9 @@ make workspace
 make open-vscode
 make open-cursor
 make open-pycharm
+orxaq-autonomy --root . pr-open --title "Autonomy update" --body "Objective + acceptance criteria"
+orxaq-autonomy --root . pr-wait --pr 123 --close-on-failure --open-issue-on-failure
+orxaq-autonomy --root . pr-merge --pr 123 --swarm-health-json ../orxaq/artifacts/health.json --min-swarm-health 85 --delete-branch
 make lint
 make test
 make version-check
@@ -99,6 +102,12 @@ Foreground debug:
 make run
 make supervise
 ```
+
+GitOps safety policy for `pr-merge`:
+
+- merge only when PR checks are green (override only with `--allow-ci-yellow`)
+- require swarm-health score from `--swarm-health-json` or `--swarm-health-score`
+- block merge when score is below `--min-swarm-health` threshold
 
 ## Reuse Model
 

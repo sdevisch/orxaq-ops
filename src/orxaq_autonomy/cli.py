@@ -8,6 +8,15 @@ import sys
 from pathlib import Path
 
 from .context import write_default_skill_protocol
+from .gitops import (
+    GitOpsError,
+    detect_head_branch,
+    detect_repo,
+    merge_pr,
+    open_pr,
+    read_swarm_health_score,
+    wait_for_pr,
+)
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
@@ -63,6 +72,69 @@ def main(argv: list[str] | None = None) -> int:
     open_ide = sub.add_parser("open-ide")
     open_ide.add_argument("--ide", choices=["vscode", "cursor", "pycharm"], default="vscode")
     open_ide.add_argument("--workspace", default="orxaq-dual-agent.code-workspace")
+
+    pr_open = sub.add_parser("pr-open")
+    pr_open.add_argument("--repo", default="", help="GitHub repo slug owner/name")
+    pr_open.add_argument("--base", default="main", help="Base branch")
+    pr_open.add_argument("--head", default="", help="Head branch (defaults to current branch)")
+    pr_open.add_argument("--title", required=True, help="Pull request title")
+    pr_open.add_argument("--body", default="", help="Pull request body")
+    pr_open.add_argument("--draft", action="store_true", help="Create pull request as draft")
+
+    pr_wait = sub.add_parser("pr-wait")
+    pr_wait.add_argument("--repo", default="", help="GitHub repo slug owner/name")
+    pr_wait.add_argument("--pr", type=int, required=True, help="Pull request number")
+    pr_wait.add_argument("--interval-sec", type=int, default=30, help="Polling interval in seconds")
+    pr_wait.add_argument("--max-attempts", type=int, default=120, help="Maximum polling attempts")
+    pr_wait.add_argument(
+        "--failure-threshold",
+        type=int,
+        default=3,
+        help="Consecutive failing attempts before stopping and optionally closing PR",
+    )
+    pr_wait.add_argument(
+        "--close-on-failure",
+        action="store_true",
+        help="Close pull request after repeated failures",
+    )
+    pr_wait.add_argument(
+        "--open-issue-on-failure",
+        action="store_true",
+        help="Open a GitHub issue after repeated failures",
+    )
+
+    pr_merge = sub.add_parser("pr-merge")
+    pr_merge.add_argument("--repo", default="", help="GitHub repo slug owner/name")
+    pr_merge.add_argument("--pr", type=int, required=True, help="Pull request number")
+    pr_merge.add_argument(
+        "--method",
+        choices=["merge", "squash", "rebase"],
+        default="squash",
+        help="Merge strategy",
+    )
+    pr_merge.add_argument("--delete-branch", action="store_true", help="Delete branch after merge")
+    pr_merge.add_argument(
+        "--swarm-health-json",
+        default="",
+        help="Path to swarm-health JSON for policy enforcement.",
+    )
+    pr_merge.add_argument(
+        "--swarm-health-score",
+        type=float,
+        default=-1.0,
+        help="Explicit swarm-health score override.",
+    )
+    pr_merge.add_argument(
+        "--min-swarm-health",
+        type=float,
+        default=85.0,
+        help="Minimum required swarm-health score for merge.",
+    )
+    pr_merge.add_argument(
+        "--allow-ci-yellow",
+        action="store_true",
+        help="Allow merge even when checks are not fully green.",
+    )
 
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
@@ -129,6 +201,64 @@ def main(argv: list[str] | None = None) -> int:
         if not ws.exists() and args.ide in {"vscode", "cursor"}:
             generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, ws)
         print(open_in_ide(ide=args.ide, root=cfg.root_dir, workspace_file=ws))
+        return 0
+    if args.command == "pr-open":
+        try:
+            repo = args.repo.strip() or detect_repo(cfg.root_dir)
+            head = args.head.strip() or detect_head_branch(cfg.root_dir)
+            payload = open_pr(
+                repo=repo,
+                base=args.base.strip(),
+                head=head,
+                title=args.title,
+                body=args.body,
+                draft=bool(args.draft),
+            )
+        except GitOpsError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+            return 1
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "pr-wait":
+        try:
+            repo = args.repo.strip() or detect_repo(cfg.root_dir)
+            payload = wait_for_pr(
+                repo=repo,
+                pr_number=int(args.pr),
+                interval_sec=max(1, int(args.interval_sec)),
+                max_attempts=max(1, int(args.max_attempts)),
+                failure_threshold=max(1, int(args.failure_threshold)),
+                close_on_failure=bool(args.close_on_failure),
+                open_issue_on_failure=bool(args.open_issue_on_failure),
+            )
+        except GitOpsError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+            return 1
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    if args.command == "pr-merge":
+        try:
+            repo = args.repo.strip() or detect_repo(cfg.root_dir)
+            swarm_health_score: float | None
+            if args.swarm_health_score >= 0:
+                swarm_health_score = float(args.swarm_health_score)
+            elif args.swarm_health_json.strip():
+                swarm_health_score = read_swarm_health_score(Path(args.swarm_health_json).resolve())
+            else:
+                swarm_health_score = None
+            payload = merge_pr(
+                repo=repo,
+                pr_number=int(args.pr),
+                method=args.method,
+                delete_branch=bool(args.delete_branch),
+                min_swarm_health=float(args.min_swarm_health),
+                swarm_health_score=swarm_health_score,
+                require_ci_green=not bool(args.allow_ci_yellow),
+            )
+        except GitOpsError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+            return 1
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
     return 2
