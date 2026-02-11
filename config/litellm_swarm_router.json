@@ -1,0 +1,75 @@
+{
+  "schema_version": "litellm-router.v1",
+  "router": "litellm",
+  "model_list": [
+    {
+      "model_name": "openai/gpt-4o-mini",
+      "litellm_params": {
+        "model": "openai/gpt-4o-mini",
+        "provider": "openai",
+        "api_base": "https://api.openai.com",
+        "api_key_env": "OPENAI_API_KEY",
+        "endpoint_id": "openai-primary",
+        "healthcheck_path": "/v1/models",
+        "healthcheck_auth": "bearer"
+      }
+    },
+    {
+      "model_name": "gemini/gemini-2.5-flash",
+      "litellm_params": {
+        "model": "gemini/gemini-2.5-flash",
+        "provider": "gemini",
+        "api_base": "https://generativelanguage.googleapis.com",
+        "api_key_env": "GEMINI_API_KEY",
+        "endpoint_id": "gemini-primary",
+        "healthcheck_path": "/v1beta/models",
+        "healthcheck_auth": "query-key"
+      }
+    },
+    {
+      "model_name": "anthropic/claude-3-7-sonnet-latest",
+      "litellm_params": {
+        "model": "anthropic/claude-3-7-sonnet-latest",
+        "provider": "claude",
+        "api_base": "https://api.anthropic.com",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "endpoint_id": "claude-primary",
+        "healthcheck_path": "/v1/models",
+        "healthcheck_auth": "x-api-key",
+        "healthcheck_headers": {
+          "anthropic-version": "2023-06-01"
+        }
+      }
+    },
+    {
+      "model_name": "local/lmstudio-node-1",
+      "litellm_params": {
+        "model": "openai/local-coder",
+        "provider": "openai_compatible",
+        "api_base": "http://127.0.0.1:1234",
+        "endpoint_id": "lmstudio-node-1",
+        "healthcheck_path": "/v1/models"
+      }
+    },
+    {
+      "model_name": "local/lmstudio-node-2",
+      "litellm_params": {
+        "model": "openai/local-coder",
+        "provider": "openai_compatible",
+        "api_base": "http://192.168.1.86:1234",
+        "endpoint_id": "lmstudio-node-2",
+        "healthcheck_path": "/v1/models"
+      }
+    },
+    {
+      "model_name": "local/lmstudio-node-3",
+      "litellm_params": {
+        "model": "openai/local-coder",
+        "provider": "openai_compatible",
+        "api_base": "http://192.168.1.91:1234",
+        "endpoint_id": "lmstudio-node-3",
+        "healthcheck_path": "/v1/models"
+      }
+    }
+  ]
+}
