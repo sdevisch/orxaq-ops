@@ -167,36 +167,36 @@ provider-autobootstrap:
 	bash scripts/provider_autobootstrap.sh
 
 cleanup-loop-once:
-	$(PYTHON) scripts/cleanup_loop.py --root $(ROOT)
+	$(PYTHON) scripts/health_green_loop.py --root $(ROOT) --interval-sec 3600 --low-codex-model gpt-5-mini
 
 cleanup-loop-start:
-	@mkdir -p $(ROOT)/artifacts/autonomy/cleanup_loop
-	@if [ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid) 2>/dev/null; then \
-		echo "cleanup loop already running pid=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid)"; \
+	@mkdir -p $(ROOT)/artifacts/autonomy/health_green_loop
+	@if [ -f $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid) 2>/dev/null; then \
+		echo "health-green loop already running pid=$$(cat $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid)"; \
 	else \
-		$(PYTHON) scripts/cleanup_loop.py --daemon --root $(ROOT) --interval-sec 30 --pid-file $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid --log-file $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log --output-file $(ROOT)/artifacts/autonomy/cleanup_loop/latest.json --history-file $(ROOT)/artifacts/autonomy/cleanup_loop/history.ndjson --lock-file $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.lock >/dev/null; \
-		echo "cleanup loop started pid=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid)"; \
+		$(PYTHON) scripts/health_green_loop.py --daemon --root $(ROOT) --interval-sec 3600 --low-codex-model gpt-5-mini --pid-file $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid --log-file $(ROOT)/artifacts/autonomy/health_green_loop/loop.log --output-file $(ROOT)/artifacts/autonomy/health_green_loop/latest.json --history-file $(ROOT)/artifacts/autonomy/health_green_loop/history.ndjson --lock-file $(ROOT)/artifacts/autonomy/health_green_loop/loop.lock >/dev/null; \
+		echo "health-green loop started pid=$$(cat $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid)"; \
 	fi
 
 cleanup-loop-start-fast: cleanup-loop-start
 
 cleanup-loop-stop:
-	@if [ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid ]; then \
-		PID=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid); \
+	@if [ -f $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid ]; then \
+		PID=$$(cat $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid); \
 		if kill -0 $$PID 2>/dev/null; then kill $$PID; fi; \
-		rm -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid; \
-		echo "cleanup loop stopped"; \
+		rm -f $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid; \
+		echo "health-green loop stopped"; \
 	else \
-		echo "cleanup loop not running"; \
+		echo "health-green loop not running"; \
 	fi
 
 cleanup-loop-status:
-	@if [ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid) 2>/dev/null; then \
-		echo "running pid=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid)"; \
-		tail -n 8 $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log; \
+	@if [ -f $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid) 2>/dev/null; then \
+		echo "running pid=$$(cat $(ROOT)/artifacts/autonomy/health_green_loop/loop.pid)"; \
+		tail -n 8 $(ROOT)/artifacts/autonomy/health_green_loop/loop.log; \
 	else \
 		echo "stopped"; \
-		[ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log ] && tail -n 8 $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log || true; \
+		[ -f $(ROOT)/artifacts/autonomy/health_green_loop/loop.log ] && tail -n 8 $(ROOT)/artifacts/autonomy/health_green_loop/loop.log || true; \
 	fi
 
 remote-heartbeat-start:
@@ -363,7 +363,7 @@ swarm-health-snapshot: model-router-connectivity
 swarm-ready-queue:
 	$(PYTHON) scripts/swarm_ready_queue.py --root $(ROOT) --output $(ROOT)/artifacts/autonomy/ready_queue_week.json --max-items 21
 
-swarm-cycle-report: swarm-health-snapshot t1-basic-model-policy-check privilege-policy-check git-delivery-policy-check git-hygiene-check backend-upgrade-policy-check api-interop-policy-check backlog-control-once
+swarm-cycle-report: swarm-health-snapshot t1-basic-model-policy-check privilege-policy-check pr-approval-remediate git-delivery-policy-check git-hygiene-check backend-upgrade-policy-check api-interop-policy-check backlog-control-once
 	-$(PYTHON) scripts/swarm_todo_health_current.py --root $(ROOT) --json
 	-$(PYTHON) scripts/cleanup_loop.py --root $(ROOT)
 	$(PYTHON) scripts/swarm_ready_queue.py --root $(ROOT) --output $(ROOT)/artifacts/autonomy/ready_queue_week.json --max-items 21
