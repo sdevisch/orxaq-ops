@@ -1,0 +1,15 @@
+[
+  {
+    "id": "claude-collab-health-monitor",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Continuously monitor collaboration health and delegate remediation",
+    "description": "Monitor lane/runtime/dashboard signals, diagnose blockers, and delegate concrete follow-up tasks to lower-cost lanes with explicit acceptance criteria.",
+    "depends_on": [],
+    "acceptance": [
+      "Collaboration health degradations are identified with specific evidence and timestamps",
+      "Delegation tasks are created for lower-tier lanes with clear ownership and acceptance checks",
+      "Priority request tracker in dashboard reflects progress transitions in near-real-time"
+    ]
+  }
+]

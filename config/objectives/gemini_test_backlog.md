@@ -1,0 +1,1 @@
+Deliver high-signal independent regression coverage in /Users/sdevisch/dev/orxaq_gemini across RLN retention, causal edge cases, mesh/CLI/RPA behavior, and security/ethics abuse paths. Prioritize deterministic adversarial tests that close release-critical blind spots and keep validation fully non-interactive.

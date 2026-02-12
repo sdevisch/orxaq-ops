@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-fill-form-regression-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA fill-form regression tests",
+    "description": "Add regression tests for selector collisions, empty inputs, pacing boundaries, and mixed field-shape inputs.",
+    "depends_on": [],
+    "acceptance": [
+      "Fill-form regression coverage increases",
+      "At least one new test guards a previously untested edge case",
+      "make lint and make test pass"
+    ]
+  }
+]

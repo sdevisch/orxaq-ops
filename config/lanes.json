@@ -2,50 +2,165 @@
   "version": 1,
   "lanes": [
     {
-      "id": "lane-a",
+      "id": "codex-governance",
       "enabled": true,
-      "name": "Autonomous Governance Lane",
+      "name": "Codex Governance Lane",
       "owner": "codex",
-      "description": "Governance and contract management",
+      "description": "Deterministic governance and pipeline-control delivery lane.",
       "impl_repo": ".",
       "test_repo": ".",
       "priority": 1,
-      "tasks_file": "config/lanes/innovation_governance_tasks.json",
-      "objective_file": "config/objectives/innovation_governance.md",
+      "tasks_file": "config/lanes/codex_governance_tasks.json",
+      "objective_file": "config/objectives/codex_governance.md",
       "handoff_dir": "artifacts/autonomy/handoffs",
       "dependency_state_file": "state/state.json",
       "validate_commands": [
         "make lint",
         "make test"
       ],
-      "exclusive_paths": [
-        "artifacts/autonomy/sota_testing_innovation/*",
-        "config/lanes.json"
-      ],
-      "env": {}
+      "routellm_enabled": true,
+      "routellm_policy_file": "config/routellm_policy.local-workhorse.json",
+      "codex_model": "liquid/lfm2.5-1.2b",
+      "execution_profile": "extra_high",
+      "continuous": true,
+      "max_cycles": 1000000000,
+      "env": {
+        "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+      }
     },
     {
-      "id": "lane-b",
+      "id": "codex-routellm-npv",
       "enabled": true,
-      "name": "Autonomous Testing Lane",
-      "owner": "gemini",
-      "description": "Expand and harden test suites",
+      "name": "Codex RouteLLM NPV Lane",
+      "owner": "codex",
+      "description": "RouteLLM economics and lane-scaling policy implementation lane.",
       "impl_repo": ".",
       "test_repo": ".",
       "priority": 2,
-      "tasks_file": "config/lanes/innovation_governance_tasks.json",
-      "objective_file": "config/objectives/testing_lane.md",
+      "tasks_file": "config/lanes/codex_routellm_npv_tasks.json",
+      "objective_file": "config/objectives/codex_routellm_npv.md",
       "handoff_dir": "artifacts/autonomy/handoffs",
       "dependency_state_file": "state/state.json",
       "validate_commands": [
         "make lint",
         "make test"
       ],
-      "exclusive_paths": [
-        "tests/",
-        "benchmarks/"
+      "routellm_enabled": true,
+      "routellm_policy_file": "config/routellm_policy.local-workhorse.json",
+      "codex_model": "liquid/lfm2.5-1.2b",
+      "execution_profile": "extra_high",
+      "continuous": true,
+      "max_cycles": 1000000000,
+      "env": {
+        "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+      }
+    },
+    {
+      "id": "codex-dashboard-todo-metrics-fix",
+      "enabled": true,
+      "name": "Codex Dashboard Todo Metrics Fix Lane",
+      "owner": "codex",
+      "description": "T1 lane for deterministic dashboard todo metric consistency fixes.",
+      "impl_repo": ".",
+      "test_repo": ".",
+      "priority": 3,
+      "tasks_file": "config/lanes/codex_dashboard_todo_metrics_fix_tasks.json",
+      "objective_file": "config/objectives/codex_dashboard_todo_metrics_fix.md",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "dependency_state_file": "state/state.json",
+      "validate_commands": [
+        "make lint",
+        "make test"
       ],
-      "env": {}
+      "routellm_enabled": true,
+      "routellm_policy_file": "config/routellm_policy.local-workhorse.json",
+      "codex_model": "liquid/lfm2.5-1.2b",
+      "execution_profile": "extra_high",
+      "continuous": true,
+      "max_cycles": 1000000000,
+      "env": {
+        "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+      }
+    },
+    {
+      "id": "codex-dashboard-ui-accessibility",
+      "enabled": true,
+      "name": "Codex Dashboard UI Accessibility Lane",
+      "owner": "codex",
+      "description": "T1 lane for dashboard accessibility and readability hardening.",
+      "impl_repo": ".",
+      "test_repo": ".",
+      "priority": 4,
+      "tasks_file": "config/lanes/codex_dashboard_ui_accessibility_tasks.json",
+      "objective_file": "config/objectives/codex_dashboard_ui_accessibility.md",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "dependency_state_file": "state/state.json",
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "routellm_enabled": true,
+      "routellm_policy_file": "config/routellm_policy.local-workhorse.json",
+      "codex_model": "liquid/lfm2.5-1.2b",
+      "execution_profile": "extra_high",
+      "continuous": true,
+      "max_cycles": 1000000000,
+      "env": {
+        "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+      }
+    },
+    {
+      "id": "codex-dashboard-api-resilience",
+      "enabled": true,
+      "name": "Codex Dashboard API Resilience Lane",
+      "owner": "codex",
+      "description": "T1 lane for dashboard API fallback and stale-data resilience.",
+      "impl_repo": ".",
+      "test_repo": ".",
+      "priority": 5,
+      "tasks_file": "config/lanes/codex_dashboard_api_resilience_tasks.json",
+      "objective_file": "config/objectives/codex_dashboard_api_resilience.md",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "dependency_state_file": "state/state.json",
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "routellm_enabled": true,
+      "routellm_policy_file": "config/routellm_policy.local-workhorse.json",
+      "codex_model": "liquid/lfm2.5-1.2b",
+      "execution_profile": "extra_high",
+      "continuous": true,
+      "max_cycles": 1000000000,
+      "env": {
+        "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+      }
+    },
+    {
+      "id": "gemini-test-backlog",
+      "enabled": false,
+      "name": "Gemini Test Backlog Lane",
+      "owner": "gemini",
+      "description": "Optional escalation lane for independent test sweeps.",
+      "impl_repo": ".",
+      "test_repo": ".",
+      "priority": 6,
+      "tasks_file": "config/lanes/gemini_test_backlog_tasks.json",
+      "objective_file": "config/objectives/gemini_test_backlog.md",
+      "handoff_dir": "artifacts/autonomy/handoffs",
+      "dependency_state_file": "state/state.json",
+      "validate_commands": [
+        "make lint",
+        "make test"
+      ],
+      "routellm_enabled": true,
+      "routellm_policy_file": "config/routellm_policy.local-workhorse.json",
+      "gemini_model": "gemini-2.5-pro"
     }
   ]
 }

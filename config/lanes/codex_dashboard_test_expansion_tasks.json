@@ -1,0 +1,15 @@
+[
+  {
+    "id": "task-dashboard-test-expansion",
+    "owner": "codex",
+    "priority": 5,
+    "title": "Low-level agent: expand dashboard unit coverage for distributed todo and activity rendering paths.",
+    "description": "Execute lane objective in config/objectives/codex_dashboard_test_expansion.md and deliver a minimal tested patch.",
+    "depends_on": [],
+    "acceptance": [
+      "Implements requested improvement with clear before/after behavior",
+      "Includes focused automated coverage or assertions",
+      "Lane validation commands pass"
+    ]
+  }
+]

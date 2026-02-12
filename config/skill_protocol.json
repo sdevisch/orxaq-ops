@@ -1,7 +1,7 @@
 {
   "name": "orxaq-autonomy",
   "version": "2",
-  "description": "Reusable protocol for resilient autonomous software delivery.",
+  "description": "Portable autonomy protocol for resilient multi-agent execution.",
   "required_behaviors": [
     "work-non-interactively",
     "issue-first-workflow",

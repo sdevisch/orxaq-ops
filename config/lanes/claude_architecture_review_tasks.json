@@ -1,7 +1,7 @@
 [
   {
     "id": "architecture-security-ethics-review",
-    "owner": "claude",
+    "owner": "codex",
     "priority": 1,
     "title": "Perform architecture, security, and ethics hardening review",
     "description": "Review governance, CI controls, security docs, and operational safety boundaries for autonomous collaboration and produce actionable improvements.",

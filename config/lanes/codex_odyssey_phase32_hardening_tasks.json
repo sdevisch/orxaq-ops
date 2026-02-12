@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-odyssey-phase32-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Harden Odyssey Phase32 runtime and cockpit flow",
+    "description": "Fix Phase32 runtime/dashboard generation issues and keep skin switching deterministic in Odyssey.",
+    "depends_on": [],
+    "acceptance": [
+      "Phase32 run pipeline is stable and non-interactive",
+      "Dashboard generation remains parity-safe across skins",
+      "Core Odyssey validation commands pass"
+    ]
+  }
+]

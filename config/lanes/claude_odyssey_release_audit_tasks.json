@@ -1,0 +1,15 @@
+[
+  {
+    "id": "claude-odyssey-release-audit",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Run Odyssey release/governance audit",
+    "description": "Audit Odyssey docs, release evidence, and governance/risk posture for autonomous release readiness.",
+    "depends_on": [],
+    "acceptance": [
+      "Release/governance gaps are documented with concrete remediation",
+      "Audit output maps to autonomy runbook expectations",
+      "Validation commands pass or blockers are explicitly evidenced"
+    ]
+  }
+]

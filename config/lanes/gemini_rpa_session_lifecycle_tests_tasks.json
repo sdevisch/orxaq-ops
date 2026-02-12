@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-session-lifecycle-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA session lifecycle and cleanup tests",
+    "description": "Add tests around session open/close lifecycle, partial failures, and cleanup guarantees after exceptions.",
+    "depends_on": [],
+    "acceptance": [
+      "Session lifecycle tests cover both success and failure cleanup paths",
+      "Assertions prove deterministic close/cleanup behavior",
+      "make lint and make test pass"
+    ]
+  }
+]

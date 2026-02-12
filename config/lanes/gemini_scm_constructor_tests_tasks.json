@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-scm-constructor-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand SCM constructor/intervention tests",
+    "description": "Add independent tests for SCM constructor/equation contracts and intervention robustness.",
+    "depends_on": [],
+    "acceptance": [
+      "SCM constructor/intervention coverage increases",
+      "Edge-case failure modes are explicitly asserted",
+      "Validation commands pass"
+    ]
+  }
+]

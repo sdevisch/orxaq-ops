@@ -103,6 +103,56 @@ class HostedControlsTests(unittest.TestCase):
             self.assertFalse(private)
             self.assertIn("owner/repo", err)
 
+    def test_parse_specs_and_invalid_spec(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            readme = root / "README.md"
+            readme.write_text("x", encoding="utf-8")
+            specs = check_hosted_controls.parse_specs(root, [f"owner/repo|main|{readme}"])
+            self.assertEqual(len(specs), 1)
+            self.assertEqual(specs[0].repo, "owner/repo")
+            with self.assertRaises(ValueError):
+                check_hosted_controls.parse_specs(root, ["broken"])
+
+    def test_badge_errors_missing_readme_and_no_badges(self):
+        with tempfile.TemporaryDirectory() as td:
+            readme = pathlib.Path(td) / "README.md"
+            errs = check_hosted_controls.badge_errors(readme)
+            self.assertTrue(any("Missing README" in e for e in errs))
+            readme.write_text("No badges here\n", encoding="utf-8")
+            errs2 = check_hosted_controls.badge_errors(readme)
+            self.assertTrue(any("No badges found" in e for e in errs2))
+
+    def test_main_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            readme = root / "README.md"
+            readme.write_text("[![CI](https://example.com/badge.svg)](https://example.com)\n", encoding="utf-8")
+            spec_value = f"owner/repo|main|{readme}"
+            with mock.patch.object(
+                check_hosted_controls,
+                "branch_protection_errors",
+                return_value=[],
+            ), mock.patch.object(
+                check_hosted_controls,
+                "is_repo_private",
+                return_value=(True, True, ""),
+            ), mock.patch("sys.argv", ["prog", "--root", str(root), "--spec", spec_value]):
+                rc_ok = check_hosted_controls.main()
+            self.assertEqual(rc_ok, 0)
+
+            with mock.patch.object(
+                check_hosted_controls,
+                "branch_protection_errors",
+                return_value=["broken"],
+            ), mock.patch.object(
+                check_hosted_controls,
+                "is_repo_private",
+                return_value=(True, True, ""),
+            ), mock.patch("sys.argv", ["prog", "--root", str(root), "--spec", spec_value]):
+                rc_fail = check_hosted_controls.main()
+            self.assertEqual(rc_fail, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

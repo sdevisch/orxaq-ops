@@ -1,7 +1,9 @@
 import datetime as dt
 import importlib
+import json
 import os
 import pathlib
+import time
 import sys
 import tempfile
 import unittest
@@ -58,6 +60,162 @@ class RetryClassificationTests(unittest.TestCase):
 
     def test_codex_model_selection_error_false(self):
         self.assertFalse(runner.is_codex_model_selection_error("network timeout while calling model"))
+
+
+class ExecutionProfilePolicyTests(unittest.TestCase):
+    def test_normalize_execution_profile_aliases(self):
+        self.assertEqual(runner.normalize_execution_profile("extra-high"), "extra_high")
+        self.assertEqual(runner.normalize_execution_profile("xhigh"), "extra_high")
+        self.assertEqual(runner.normalize_execution_profile("high"), "high")
+        self.assertEqual(runner.normalize_execution_profile(None), "standard")
+        self.assertEqual(runner.normalize_execution_profile("unknown"), "standard")
+
+    def test_resolve_execution_policy_keeps_requested_flags_for_high(self):
+        policy = runner.resolve_execution_policy(
+            execution_profile="high",
+            continuous_requested=False,
+            queue_persistent_mode_requested=True,
+            max_cycles_requested=33,
+        )
+        self.assertEqual(policy["execution_profile"], "high")
+        self.assertFalse(policy["continuous"])
+        self.assertTrue(policy["queue_persistent_mode"])
+        self.assertEqual(policy["effective_max_cycles"], 33)
+        self.assertFalse(policy["force_continuation"])
+        self.assertFalse(policy["assume_true_full_autonomy"])
+
+    def test_resolve_execution_policy_forces_extra_high_continuation(self):
+        policy = runner.resolve_execution_policy(
+            execution_profile="extra-high",
+            continuous_requested=False,
+            queue_persistent_mode_requested=False,
+            max_cycles_requested=5,
+        )
+        self.assertEqual(policy["execution_profile"], "extra_high")
+        self.assertTrue(policy["continuous"])
+        self.assertTrue(policy["queue_persistent_mode"])
+        self.assertTrue(policy["force_continuation"])
+        self.assertTrue(policy["assume_true_full_autonomy"])
+        self.assertEqual(policy["effective_max_cycles"], runner.EXTRA_HIGH_MIN_MAX_CYCLES)
+
+
+class RoutedModelEdgeCaseTests(unittest.TestCase):
+    def _policy(self):
+        return {
+            "enabled": True,
+            "router": {"url": "http://router.invalid", "timeout_sec": 2},
+            "providers": {"codex": {"enabled": True, "fallback_model": "gpt-4o-mini"}},
+        }
+
+    def test_resolve_routed_model_router_non_object_payload_falls_back(self):
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"[]"
+
+            def getcode(self):
+                return 200
+
+        with mock.patch.object(runner.urllib.request, "urlopen", return_value=_FakeResponse()):
+            selected, decision = runner.resolve_routed_model(
+                provider="codex",
+                requested_model=None,
+                prompt="Implement helper.",
+                routellm_enabled=True,
+                routellm_policy=self._policy(),
+            )
+        self.assertEqual(selected, "gpt-4o-mini")
+        self.assertEqual(decision["reason"], "router_unavailable")
+        self.assertIn("router_response_not_object", decision["router_error"])
+
+    def test_resolve_routed_model_router_missing_model_falls_back(self):
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"status":"ok"}'
+
+            def getcode(self):
+                return 200
+
+        with mock.patch.object(runner.urllib.request, "urlopen", return_value=_FakeResponse()):
+            selected, decision = runner.resolve_routed_model(
+                provider="codex",
+                requested_model=None,
+                prompt="Implement helper.",
+                routellm_enabled=True,
+                routellm_policy=self._policy(),
+            )
+        self.assertEqual(selected, "gpt-4o-mini")
+        self.assertEqual(decision["reason"], "router_unavailable")
+        self.assertIn("router_response_missing_model", decision["router_error"])
+
+    def test_resolve_routed_model_router_http_error_falls_back(self):
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"selected_model":"gpt-5-mini"}'
+
+            def getcode(self):
+                return 503
+
+        with mock.patch.object(runner.urllib.request, "urlopen", return_value=_FakeResponse()):
+            selected, decision = runner.resolve_routed_model(
+                provider="codex",
+                requested_model=None,
+                prompt="Implement helper.",
+                routellm_enabled=True,
+                routellm_policy=self._policy(),
+            )
+        self.assertEqual(selected, "gpt-4o-mini")
+        self.assertEqual(decision["reason"], "router_unavailable")
+        self.assertIn("router_http_503", decision["router_error"])
+
+
+class LocalOpenAIEndpointStateTests(unittest.TestCase):
+    def setUp(self):
+        self._old_failure_state = dict(runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE)
+        self._old_inflight = dict(runner._LOCAL_OPENAI_ENDPOINT_INFLIGHT)
+        runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.clear()
+        runner._LOCAL_OPENAI_ENDPOINT_INFLIGHT.clear()
+
+    def tearDown(self):
+        runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.clear()
+        runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.update(self._old_failure_state)
+        runner._LOCAL_OPENAI_ENDPOINT_INFLIGHT.clear()
+        runner._LOCAL_OPENAI_ENDPOINT_INFLIGHT.update(self._old_inflight)
+
+    def test_local_openai_endpoint_is_cooled_down_true(self):
+        endpoint = "http://127.0.0.1:1234/v1"
+        key = runner._local_openai_endpoint_key(endpoint)
+        runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE[key] = {"cooldown_until": 101.0}
+        with mock.patch.object(runner.time, "monotonic", return_value=100.0):
+            self.assertTrue(runner._local_openai_endpoint_is_cooled_down(endpoint))
+
+    def test_local_openai_inflight_enter_exit_cycle(self):
+        endpoint = "http://127.0.0.1:1234/v1"
+        runner._local_openai_endpoint_inflight_enter(endpoint)
+        self.assertEqual(runner._local_openai_endpoint_inflight_count(endpoint), 1)
+        runner._local_openai_endpoint_inflight_enter(endpoint)
+        self.assertEqual(runner._local_openai_endpoint_inflight_count(endpoint), 2)
+        runner._local_openai_endpoint_inflight_exit(endpoint)
+        self.assertEqual(runner._local_openai_endpoint_inflight_count(endpoint), 1)
+        runner._local_openai_endpoint_inflight_exit(endpoint)
+        self.assertEqual(runner._local_openai_endpoint_inflight_count(endpoint), 0)
 
 
 class SchedulingTests(unittest.TestCase):
@@ -136,6 +294,54 @@ class SchedulingTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected.id, "task-b")
 
+    def test_select_next_task_prefers_non_backlog_when_ready(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        backlog = runner.Task(
+            id="codex-backlog-sweep",
+            owner="codex",
+            priority=1,
+            title="Backlog Sweep",
+            description="housekeeping backlog work",
+            depends_on=[],
+            acceptance=[],
+            backlog=True,
+        )
+        live = runner.Task(
+            id="codex-live-fix",
+            owner="codex",
+            priority=2,
+            title="Live Fix",
+            description="user requested issue",
+            depends_on=[],
+            acceptance=[],
+            backlog=False,
+        )
+        state = {
+            backlog.id: {
+                "status": runner.STATUS_PENDING,
+                "attempts": 0,
+                "retryable_failures": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "",
+                "owner": "codex",
+            },
+            live.id: {
+                "status": runner.STATUS_PENDING,
+                "attempts": 0,
+                "retryable_failures": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "",
+                "owner": "codex",
+            },
+        }
+        selected = runner.select_next_task([backlog, live], state, now=now)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.id, live.id)
+
     def test_schedule_retry_sets_not_before_and_pending(self):
         entry = {
             "status": runner.STATUS_IN_PROGRESS,
@@ -160,6 +366,35 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(entry["status"], runner.STATUS_PENDING)
         self.assertGreater(entry["retryable_failures"], 0)
         self.assertTrue(entry["not_before"])
+
+    def test_schedule_retry_sanitizes_large_error_payload(self):
+        entry = {
+            "status": runner.STATUS_IN_PROGRESS,
+            "attempts": 1,
+            "retryable_failures": 0,
+            "not_before": "",
+            "last_update": "",
+            "last_summary": "",
+            "last_error": "",
+            "owner": "codex",
+        }
+        noisy_error = (
+            "ERROR start\n"
+            + ("line\n" * 100)
+            + "Current autonomous task:\n"
+            + ("very long echoed prompt\n" * 200)
+        )
+        delay = runner.schedule_retry(
+            entry=entry,
+            summary="temporary failure",
+            error=noisy_error,
+            retryable=True,
+            backoff_base_sec=5,
+            backoff_max_sec=60,
+        )
+        self.assertEqual(delay, 5)
+        self.assertIn("omitted echoed prompt", entry["last_error"])
+        self.assertLessEqual(len(entry["last_error"]), runner.MAX_STORED_ERROR_CHARS + 32)
 
     def test_recover_deadlocked_tasks_reopens_dependency_and_unblocks_blocked(self):
         impl = runner.Task(
@@ -324,6 +559,27 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 127)
         self.assertIn("command not found", result.stderr)
 
+    def test_run_command_timeout_kills_process_tree(self):
+        cmd = [
+            sys.executable,
+            "-c",
+            (
+                "import subprocess,sys,time;"
+                "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']);"
+                "time.sleep(30)"
+            ),
+        ]
+        started = time.monotonic()
+        result = runner.run_command(
+            cmd,
+            cwd=pathlib.Path("/tmp"),
+            timeout_sec=1,
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 124)
+        self.assertLess(elapsed, 10)
+        self.assertIn("[TIMEOUT] command exceeded 1s", result.stderr)
+
     def test_validation_fallback_commands_for_make_targets(self):
         self.assertGreater(len(runner.validation_fallback_commands("make test")), 0)
         self.assertGreater(len(runner.validation_fallback_commands("make lint")), 0)
@@ -371,7 +627,11 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertIn("MCP context", prompt)
         self.assertIn("Scope boundary: complete only the current autonomous task listed above.", prompt)
         self.assertIn("Do not start another task in this run", prompt)
+        self.assertIn("Issue-first workflow", prompt)
+        self.assertIn("issue-linked branch (`codex/issue-<id>-<topic>`)", prompt)
+        self.assertIn("only mention again if the file set changes or conflicts appear", prompt)
         self.assertIn("Merge/rebase operations are allowed when there are no unresolved conflicts", prompt)
+        self.assertIn("review-owner (Codex preferred)", prompt)
 
     def test_prompt_includes_startup_instructions(self):
         task = runner.Task(
@@ -397,6 +657,32 @@ class RuntimeSafeguardTests(unittest.TestCase):
         )
         self.assertIn("Role startup instructions", prompt)
         self.assertIn("adversarial tests", prompt)
+
+    def test_prompt_uses_filesystem_baseline_when_repo_is_not_worktree(self):
+        task = runner.Task(
+            id="task-non-worktree",
+            owner="codex",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a1"],
+        )
+        prompt = runner.build_agent_prompt(
+            task=task,
+            objective_text="Objective",
+            role="implementation-owner",
+            repo_path=pathlib.Path("/tmp/repo"),
+            retry_context={},
+            repo_context="Top file types: py:10.",
+            repo_hints=[],
+            skill_protocol=SkillProtocolSpec(name="proto", version="2", description="d"),
+            mcp_context=None,
+            repo_is_worktree=False,
+        )
+        self.assertIn("non-worktree mode", prompt)
+        self.assertIn("Record one filesystem baseline before edits", prompt)
+        self.assertNotIn("Record one baseline before edits: `git status -sb`", prompt)
 
     def test_record_handoff_event_and_render_context(self):
         with tempfile.TemporaryDirectory() as td:
@@ -513,6 +799,27 @@ class RuntimeSafeguardTests(unittest.TestCase):
             )
         self.assertTrue(ok)
         self.assertEqual(details, "ok")
+
+    def test_run_validations_parses_env_prefixed_command(self):
+        calls = []
+
+        def fake_run_command(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("extra_env")))
+            return runner.subprocess.CompletedProcess(cmd, returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+            ok, details = runner.run_validations(
+                repo=pathlib.Path("/tmp"),
+                validate_commands=["PYTHONPATH=packages FOO=bar python3 -m pytest tests -q"],
+                timeout_sec=1,
+                retries_per_command=0,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(details, "ok")
+        self.assertEqual(len(calls), 1)
+        cmd, extra_env = calls[0]
+        self.assertEqual(cmd, ["python3", "-m", "pytest", "tests", "-q"])
+        self.assertEqual(extra_env, {"PYTHONPATH": "packages", "FOO": "bar"})
 
     def test_ensure_repo_pushed_returns_synced_when_not_ahead(self):
         with mock.patch.object(
@@ -781,8 +1088,77 @@ class RuntimeSafeguardTests(unittest.TestCase):
         self.assertEqual(selected, "gpt-5-mini")
         self.assertEqual(decision["strategy"], "static_fallback")
         self.assertTrue(decision["fallback_used"])
-        self.assertEqual(decision["reason"], "router_unavailable")
-        self.assertIn("router_model_not_allowed:rogue-model", decision["router_error"])
+        self.assertEqual(decision["reason"], "router_model_disallowed_fallback")
+        self.assertEqual(decision["router_error"], "")
+        self.assertIn("router_model_not_allowed:rogue-model", decision["router_notice"])
+
+    def test_codex_model_candidates_local_only_prefers_explicit_requested_model(self):
+        route_decision = {
+            "requested_model": "qwen/qwen2.5-coder-32b",
+            "requested_model_allowed": True,
+            "selected_model": "deepseek-coder-v2-lite-instruct",
+            "fallback_model": "deepseek-coder-v2-lite-instruct",
+            "allowed_models": [
+                "deepseek-coder-v2-lite-instruct",
+                "qwen/qwen2.5-coder-32b",
+            ],
+        }
+        with mock.patch.dict(runner.os.environ, {}, clear=False):
+            models = runner.codex_model_candidates(
+                "deepseek-coder-v2-lite-instruct",
+                route_decision,
+                local_only_mode=True,
+            )
+        self.assertEqual(models, ["qwen/qwen2.5-coder-32b"])
+
+    def test_codex_model_candidates_local_only_can_disable_requested_model_strictness(self):
+        route_decision = {
+            "requested_model": "qwen/qwen2.5-coder-32b",
+            "requested_model_allowed": True,
+            "fallback_model": "deepseek-coder-v2-lite-instruct",
+            "policy_fallback_model": "google/gemma-3-4b",
+            "allowed_models": [
+                "deepseek-coder-v2-lite-instruct",
+                "qwen/qwen2.5-coder-32b",
+            ],
+        }
+        with mock.patch.dict(runner.os.environ, {"ORXAQ_LOCAL_OPENAI_STRICT_REQUESTED_MODEL": "0"}, clear=False):
+            models = runner.codex_model_candidates(
+                "deepseek-coder-v2-lite-instruct",
+                route_decision,
+                local_only_mode=True,
+            )
+        self.assertEqual(
+            models,
+            [
+                "deepseek-coder-v2-lite-instruct",
+                "google/gemma-3-4b",
+                "qwen/qwen2.5-coder-32b",
+            ],
+        )
+
+    def test_codex_model_candidates_filters_incompatible_hosted_models(self):
+        route_decision = {
+            "requested_model": "",
+            "requested_model_allowed": False,
+            "fallback_model": "qwen/qwen2.5-coder-32b",
+            "policy_fallback_model": "deepseek-coder-v2-lite-instruct",
+            "allowed_models": [
+                "qwen/qwen2.5-coder-32b",
+                "deepseek-coder-v2-lite-instruct",
+                "gpt-5-codex",
+            ],
+        }
+        with mock.patch.dict(runner.os.environ, {"ORXAQ_AUTONOMY_CODEX_FILTER_INCOMPAT_MODELS": "1"}, clear=False):
+            models = runner.codex_model_candidates(
+                "qwen/qwen2.5-coder-32b",
+                route_decision,
+                local_only_mode=False,
+            )
+        self.assertIn("gpt-5-codex", models)
+        self.assertIn("gpt-5.3-codex", models)
+        self.assertNotIn("qwen/qwen2.5-coder-32b", models)
+        self.assertNotIn("deepseek-coder-v2-lite-instruct", models)
 
     def test_update_response_metrics_summary_tracks_prompt_difficulty_and_recommendations(self):
         with tempfile.TemporaryDirectory() as td:
@@ -982,6 +1358,65 @@ class RuntimeSafeguardTests(unittest.TestCase):
 
 
 class AgentExecutionHardeningTests(unittest.TestCase):
+    def test_run_codex_task_places_global_privilege_args_before_exec(self):
+        task = runner.Task(
+            id="task-codex-argv-order",
+            owner="codex",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        calls: list[list[str]] = []
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            calls.append(list(cmd))
+            output_path: pathlib.Path | None = None
+            if "--output-last-message" in cmd:
+                output_path = pathlib.Path(cmd[cmd.index("--output-last-message") + 1])
+            if output_path is not None:
+                output_path.write_text(
+                    '{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                    encoding="utf-8",
+                )
+            return runner.subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            schema_path = repo / "schema.json"
+            schema_path.write_text("{}", encoding="utf-8")
+            output_dir = repo / "artifacts"
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_codex_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    schema_path=schema_path,
+                    output_dir=output_dir,
+                    codex_cmd="codex",
+                    codex_model="gpt-5.3-codex",
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertIn("exec", argv)
+        self.assertIn("--ask-for-approval", argv)
+        self.assertLess(argv.index("--ask-for-approval"), argv.index("exec"))
+
     def test_run_codex_task_retries_with_fallback_model_after_unsupported_model(self):
         task = runner.Task(
             id="task-codex-fallback",
@@ -1065,6 +1500,84 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         routing = telemetry.get("routing", {})
         self.assertTrue(routing.get("fallback_used"))
         self.assertEqual(routing.get("reason"), "unsupported_model_fallback")
+
+    def test_run_codex_task_retries_with_fallback_model_after_timeout(self):
+        task = runner.Task(
+            id="task-codex-timeout-fallback",
+            owner="codex",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        calls: list[list[str]] = []
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            calls.append(list(cmd))
+            output_path: pathlib.Path | None = None
+            if "--output-last-message" in cmd:
+                output_path = pathlib.Path(cmd[cmd.index("--output-last-message") + 1])
+            if len(calls) == 1:
+                return runner.subprocess.CompletedProcess(
+                    cmd,
+                    returncode=124,
+                    stdout="",
+                    stderr="[TIMEOUT] command exceeded 30s",
+                )
+            if output_path is not None:
+                output_path.write_text(
+                    '{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                    encoding="utf-8",
+                )
+            return runner.subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            schema_path = repo / "schema.json"
+            schema_path.write_text("{}", encoding="utf-8")
+            output_dir = repo / "artifacts"
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_codex_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    schema_path=schema_path,
+                    output_dir=output_dir,
+                    codex_cmd="codex",
+                    codex_model="gpt-5.3-codex",
+                    routellm_enabled=False,
+                    routellm_policy={
+                        "enabled": True,
+                        "providers": {
+                            "codex": {
+                                "enabled": True,
+                                "fallback_model": "gpt-5-codex",
+                                "allowed_models": ["gpt-5.3-codex", "gpt-5-codex"],
+                            }
+                        },
+                    },
+                    timeout_sec=30,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("gpt-5.3-codex", calls[0])
+        self.assertIn("gpt-5-codex", calls[1])
+        telemetry = outcome.get("_telemetry", {})
+        routing = telemetry.get("routing", {})
+        self.assertTrue(routing.get("fallback_used"))
+        self.assertEqual(routing.get("reason"), "timeout_fallback")
 
     def test_run_gemini_task_uses_fallback_model_after_capacity_error(self):
         task = runner.Task(
@@ -1175,7 +1688,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         run_claude_task.assert_called_once()
         run_codex_task.assert_not_called()
 
-    def test_run_gemini_task_falls_back_to_openai_after_claude_failure(self):
+    def test_run_gemini_task_prefers_codex_fallback_before_claude(self):
         task = runner.Task(
             id="task-gf-codex",
             owner="gemini",
@@ -1247,8 +1760,8 @@ class AgentExecutionHardeningTests(unittest.TestCase):
                     codex_output_dir=output_dir,
                 )
         self.assertTrue(ok)
-        self.assertIn("OpenAI fallback succeeded after Gemini failure.", outcome["summary"])
-        run_claude_task.assert_called_once()
+        self.assertIn("Codex fallback succeeded after Gemini failure.", outcome["summary"])
+        run_claude_task.assert_not_called()
         run_codex_task.assert_called_once()
 
     def test_run_gemini_task_falls_back_after_capacity_partial_output(self):
@@ -1313,7 +1826,7 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         run_claude_task.assert_called_once()
         run_codex_task.assert_not_called()
 
-    def test_run_claude_task_uses_bypass_permissions_flags(self):
+    def test_run_claude_task_uses_least_privilege_flags_by_default(self):
         task = runner.Task(
             id="task-c",
             owner="claude",
@@ -1362,11 +1875,108 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertNotIn("-p", cmd)
         self.assertIn("--print", cmd)
         self.assertIn("--permission-mode", cmd)
-        self.assertIn("bypassPermissions", cmd)
-        self.assertIn("--dangerously-skip-permissions", cmd)
+        self.assertIn("acceptEdits", cmd)
+        self.assertNotIn("bypassPermissions", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
         self.assertIn("--add-dir", cmd)
         self.assertIsInstance(kwargs.get("stdin_text"), str)
         self.assertIn("Current autonomous task:", str(kwargs.get("stdin_text", "")))
+
+    def test_run_claude_task_uses_breakglass_flags_when_grant_is_active(self):
+        task = runner.Task(
+            id="task-c-breakglass",
+            owner="claude",
+            priority=1,
+            title="Title",
+            description="Desc",
+            depends_on=[],
+            acceptance=["a"],
+        )
+        captured: list[list[str]] = []
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        grant = {
+            "grant_id": "bg-test-001",
+            "reason": "provider outage mitigation",
+            "scope": "claude-only",
+            "requested_by": "codex",
+            "approved_by": "operator",
+            "issued_at": now.isoformat().replace("+00:00", "Z"),
+            "expires_at": (now + dt.timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+            "rollback_proof": "rollback-plan-001",
+            "providers": ["claude"],
+        }
+        privilege_policy = {
+            "providers": {
+                "claude": {
+                    "least_privilege_args": ["--permission-mode", "acceptEdits"],
+                    "elevated_args": ["--permission-mode", "bypassPermissions", "--dangerously-skip-permissions"],
+                }
+            },
+            "breakglass": {
+                "enabled": True,
+                "required_fields": [
+                    "grant_id",
+                    "reason",
+                    "scope",
+                    "requested_by",
+                    "approved_by",
+                    "issued_at",
+                    "expires_at",
+                    "rollback_proof",
+                    "providers",
+                ],
+                "max_ttl_minutes": 120,
+            },
+        }
+
+        def fake_run_command(cmd, **kwargs):  # noqa: ANN001
+            captured.append(list(cmd))
+            return runner.subprocess.CompletedProcess(
+                cmd,
+                returncode=0,
+                stdout='{"status":"done","summary":"ok","commit":"","validations":[],"next_actions":[],"blocker":""}',
+                stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = pathlib.Path(td)
+            grant_file = repo / "active_grant.json"
+            audit_file = repo / "privilege.ndjson"
+            grant_file.write_text(json.dumps(grant) + "\n", encoding="utf-8")
+            with mock.patch.object(runner, "run_command", side_effect=fake_run_command):
+                ok, outcome = runner.run_claude_task(
+                    task=task,
+                    repo=repo,
+                    objective_text="obj",
+                    claude_cmd="claude",
+                    claude_model=None,
+                    timeout_sec=5,
+                    retry_context={},
+                    progress_callback=None,
+                    repo_context="Top file types: py:1.",
+                    repo_hints=[],
+                    skill_protocol=SkillProtocolSpec(name="proto", version="1", description="d"),
+                    mcp_context=None,
+                    startup_instructions="",
+                    handoff_context="",
+                    conversation_log_file=None,
+                    cycle=1,
+                    privilege_policy=privilege_policy,
+                    privilege_breakglass_file=grant_file,
+                    privilege_audit_log=audit_file,
+                )
+            audit_rows = [
+                json.loads(line)
+                for line in audit_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        self.assertTrue(ok)
+        self.assertEqual(outcome["status"], "done")
+        self.assertEqual(len(captured), 1)
+        self.assertIn("bypassPermissions", captured[0])
+        self.assertIn("--dangerously-skip-permissions", captured[0])
+        self.assertEqual(len(audit_rows), 1)
+        self.assertEqual(audit_rows[0]["mode"], "breakglass_elevated")
 
     def test_run_claude_task_retries_with_prompt_argument_when_stdin_not_detected(self):
         task = runner.Task(
@@ -1545,6 +2155,195 @@ class AgentExecutionHardeningTests(unittest.TestCase):
             ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="gemini")
         self.assertTrue(ok)
         self.assertIn("protected-branch switch", details)
+
+class LocalOpenAITuningTests(unittest.TestCase):
+    def setUp(self):
+        runner._LOCAL_OPENAI_ENDPOINT_CONTEXT_CACHE = None
+        runner._LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE = None
+        runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE = {}
+        runner._LOCAL_OPENAI_ENDPOINT_INFLIGHT = {}
+        runner._LOCAL_OPENAI_MODEL_CURSOR = {}
+
+    def test_local_openai_dynamic_max_tokens_prefers_endpoint_override(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORXAQ_LOCAL_OPENAI_MAX_TOKENS_BY_ENDPOINT": "192.168.50.86:1234=3072",
+                "ORXAQ_LOCAL_OPENAI_DYNAMIC_MAX_TOKENS": "1",
+            },
+            clear=False,
+        ):
+            tokens = runner._local_openai_dynamic_max_tokens("http://192.168.50.86:1234/v1", 1024)
+        self.assertEqual(tokens, 3072)
+
+    def test_local_openai_dynamic_max_tokens_uses_fleet_status_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            status_file = pathlib.Path(td) / "fleet_status.json"
+            status_file.write_text(
+                json.dumps(
+                    {
+                        "capability_scan": {
+                            "summary": {
+                                "by_endpoint": {
+                                    "lan-86": {
+                                        "base_url": "http://192.168.50.86:1234/v1",
+                                        "max_context_tokens_success": 4096,
+                                    }
+                                }
+                            }
+                        },
+                        "probe": {
+                            "endpoints": [
+                                {"id": "lan-86", "base_url": "http://192.168.50.86:1234/v1"}
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORXAQ_LOCAL_OPENAI_DYNAMIC_MAX_TOKENS": "1",
+                    "ORXAQ_LOCAL_OPENAI_CONTEXT_FRACTION": "0.5",
+                    "ORXAQ_LOCAL_MODEL_FLEET_STATUS_FILE": str(status_file),
+                },
+                clear=False,
+            ):
+                tokens = runner._local_openai_dynamic_max_tokens("http://192.168.50.86:1234/v1", 512)
+        self.assertEqual(tokens, 2048)
+
+    def test_select_local_openai_base_url_prefers_healthy_endpoint(self):
+        with tempfile.TemporaryDirectory() as td:
+            status_file = pathlib.Path(td) / "fleet_status.json"
+            status_file.write_text(
+                json.dumps(
+                    {
+                        "probe": {
+                            "endpoints": [
+                                {"id": "a", "base_url": "http://192.168.50.86:1234/v1", "ok": False},
+                                {"id": "b", "base_url": "http://192.168.50.91:1234/v1", "ok": True},
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                runner,
+                "_local_openai_models_for_endpoint",
+                return_value={"qwen/qwen2.5-coder-32b"},
+            ), mock.patch.dict(
+                os.environ,
+                {
+                    "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://192.168.50.86:1234/v1,http://192.168.50.91:1234/v1",
+                    "ORXAQ_LOCAL_MODEL_FLEET_STATUS_FILE": str(status_file),
+                },
+                clear=False,
+            ):
+                selected, slot, total = runner._select_local_openai_base_url("qwen/qwen2.5-coder-32b", 0)
+        self.assertEqual(selected, "http://192.168.50.91:1234/v1")
+        self.assertEqual(slot, 1)
+        self.assertGreaterEqual(total, 2)
+
+    def test_select_local_openai_base_url_avoids_cooled_down_endpoint(self):
+        runner._LOCAL_OPENAI_MODEL_CURSOR.clear()
+        runner._LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE = None
+        runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.clear()
+        with mock.patch.object(
+            runner,
+            "_local_openai_models_for_endpoint",
+            return_value={"qwen/qwen2.5-coder-32b"},
+        ), mock.patch.dict(
+            os.environ,
+            {
+                "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://192.168.50.86:1234/v1,http://192.168.50.91:1234/v1",
+                "ORXAQ_LOCAL_OPENAI_INCLUDE_FLEET_ENDPOINTS": "0",
+            },
+            clear=False,
+        ):
+            endpoint_key = runner._local_openai_endpoint_key("http://192.168.50.86:1234/v1")
+            runner._LOCAL_OPENAI_ENDPOINT_FAILURE_STATE[endpoint_key] = {
+                "failures": 1,
+                "cooldown_until": runner.time.monotonic() + 120.0,
+                "last_error": "timeout",
+            }
+            selected, slot, total = runner._select_local_openai_base_url("qwen/qwen2.5-coder-32b", 0)
+        self.assertNotEqual(selected, "http://192.168.50.86:1234/v1")
+        self.assertIn(selected, {"http://192.168.50.91:1234/v1", "http://127.0.0.1:1234/v1"})
+        self.assertGreaterEqual(slot, 0)
+        self.assertGreaterEqual(total, 2)
+
+
+class TaskQueueIngestionTests(unittest.TestCase):
+    def test_ingest_task_queue_imports_new_unclaimed_tasks(self):
+        existing = runner.Task(
+            id="codex-existing",
+            owner="codex",
+            priority=1,
+            title="existing",
+            description="existing",
+            depends_on=[],
+            acceptance=[],
+        )
+        tasks = [existing]
+        state = {existing.id: runner._default_task_state_entry(existing)}
+
+        with tempfile.TemporaryDirectory() as td:
+            queue_file = pathlib.Path(td) / "queue.ndjson"
+            queue_state_file = pathlib.Path(td) / "queue_state.json"
+            queue_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": "codex-queued-1",
+                                "owner": "codex",
+                                "priority": 2,
+                                "title": "queued",
+                                "description": "queued work",
+                                "acceptance": ["a"],
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": "gemini-queued-1",
+                                "owner": "gemini",
+                                "priority": 2,
+                                "title": "queued-g",
+                                "description": "queued work gemini",
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            payload = runner.ingest_task_queue(
+                queue_file=queue_file,
+                queue_state_file=queue_state_file,
+                tasks=tasks,
+                state=state,
+                owner_filter={"codex"},
+            )
+
+            self.assertEqual(payload["imported"], ["codex-queued-1"])
+            self.assertEqual(payload["skipped"], 1)
+            self.assertIn("codex-queued-1", state)
+            self.assertEqual(state["codex-queued-1"]["status"], runner.STATUS_PENDING)
+
+            claimed = runner.load_task_queue_state(queue_state_file)
+            self.assertIn("codex-queued-1", claimed)
+            self.assertNotIn("gemini-queued-1", claimed)
+
+            second = runner.ingest_task_queue(
+                queue_file=queue_file,
+                queue_state_file=queue_state_file,
+                tasks=tasks,
+                state=state,
+                owner_filter={"codex"},
+            )
+            self.assertEqual(second["imported"], [])
 
 
 if __name__ == "__main__":

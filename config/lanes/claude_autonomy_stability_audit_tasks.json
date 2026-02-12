@@ -1,26 +1,15 @@
-{
-    "task": "claude-autonomy-stability-audit",
-    "version": "1.0.0",
-    "description": "Comprehensive audit of autonomy stability runbooks and resilience protocols",
-    "objectives": [
-        "Enhance resilience and recovery mechanisms",
-        "Improve logging and telemetry frameworks",
-        "Strengthen operational boundary respect",
-        "Develop advanced error classification strategies"
-    ],
-    "validation_steps": [
-        "Verify enhanced resilience runbook",
-        "Test retry and recovery mechanisms",
-        "Validate logging configurations",
-        "Review file handling policies"
-    ],
-    "completed_actions": [
-        "Created resilience_runbook.py",
-        "Enhanced .gitattributes file handling policy"
-    ],
-    "next_actions": [
-        "Implement comprehensive logging strategies",
-        "Add machine learning error classification module",
-        "Create advanced circuit breaker mechanism"
+[
+  {
+    "id": "claude-autonomy-stability-audit",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Audit autonomy stability runbooks and resilience controls",
+    "description": "Review and improve autonomy runbook guidance for resilient non-interactive operation and safe recovery behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "Recovery and retry guidance is explicit, actionable, and safe for unattended execution",
+      "Runbook recommendations preserve validation and hosted control checks",
+      "Findings are translated into concrete implementation or documentation updates"
     ]
-}
+  }
+]

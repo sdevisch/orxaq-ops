@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rln-semantic-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RLN semantic compaction tests",
+    "description": "Add high-risk semantic-compaction and extraction edge-case tests for RLN.",
+    "depends_on": [],
+    "acceptance": [
+      "Semantic-compaction adversarial coverage increases",
+      "Includes baseline vs RLN assertions",
+      "Validation commands pass"
+    ]
+  }
+]

@@ -47,6 +47,13 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _age_sec(path: Path) -> int:
     if not path.exists() or not path.is_file():
         return -1
@@ -148,10 +155,12 @@ def build_report(root: Path) -> dict[str, Any]:
         "ready_queue": ops_root / "artifacts" / "autonomy" / "ready_queue_week.json",
         "provider_summary": ops_root / "artifacts" / "autonomy" / "provider_costs" / "summary.json",
         "provider_cost_health": ops_root / "artifacts" / "autonomy" / "provider_cost_health.json",
+        "pr_tier_policy": ops_root / "artifacts" / "autonomy" / "pr_tier_policy_health.json",
         "dashboard_meta": ops_root / "artifacts" / "autonomy" / "dashboard.json",
         "conversations": ops_root / "artifacts" / "autonomy" / "conversations.ndjson",
         "events": ops_root / "artifacts" / "autonomy" / "event_mesh" / "events.ndjson",
         "routing_policy": ops_root / "config" / "routellm_policy.local-workhorse.json",
+        "lanes_config": ops_root / "config" / "lanes.json",
         "heartbeat": ops_root / "artifacts" / "autonomy" / "heartbeat.json",
         "supervisor_pid": ops_root / "artifacts" / "autonomy" / "supervisor.pid",
         "runner_pid": ops_root / "artifacts" / "autonomy" / "runner.pid",
@@ -175,8 +184,10 @@ def build_report(root: Path) -> dict[str, Any]:
     ready_queue = _load_json(paths["ready_queue"])
     provider_summary = _load_json(paths["provider_summary"])
     provider_cost_health = _load_json(paths["provider_cost_health"])
+    pr_tier_policy = _load_json(paths["pr_tier_policy"])
     dashboard_meta = _load_json(paths["dashboard_meta"])
     routing_policy = _load_json(paths["routing_policy"])
+    lanes_config = _load_json(paths["lanes_config"])
     heartbeat = _load_json(paths["heartbeat"])
 
     supervisor_running, supervisor_pid = _pid_status(paths["supervisor_pid"])
@@ -233,6 +244,53 @@ def build_report(root: Path) -> dict[str, Any]:
     budget_daily_spend_usd = float(budget_payload.get("daily_spend_usd", 0.0) or 0.0)
     budget_daily_cap_usd = float(budget_payload.get("daily_budget_usd", 0.0) or 0.0)
     budget_daily_remaining_usd = float(budget_payload.get("daily_remaining_usd", 0.0) or 0.0)
+
+    lane_items_payload = lanes_config.get("lanes", []) if isinstance(lanes_config, dict) else lanes_config
+    lanes_total_count = 0
+    lanes_enabled_count = 0
+    lanes_enabled_runnable_count = 0
+    lanes_owner_counts: dict[str, int] = {}
+    lane_command_by_owner = {
+        "codex": str(os.getenv("ORXAQ_AUTONOMY_CODEX_CMD", "codex")).strip() or "codex",
+        "gemini": str(os.getenv("ORXAQ_AUTONOMY_GEMINI_CMD", "gemini")).strip() or "gemini",
+        "claude": str(os.getenv("ORXAQ_AUTONOMY_CLAUDE_CMD", "claude")).strip() or "claude",
+    }
+    lane_command_missing_owners: list[str] = []
+    lane_command_missing_values: list[str] = []
+    if isinstance(lane_items_payload, list):
+        for item in lane_items_payload:
+            if not isinstance(item, dict):
+                continue
+            lanes_total_count += 1
+            owner = str(item.get("owner", "")).strip().lower() or "unknown"
+            lanes_owner_counts[owner] = lanes_owner_counts.get(owner, 0) + 1
+            enabled = _as_bool(item.get("enabled", True), True)
+            if not enabled:
+                continue
+            lanes_enabled_count += 1
+            command = lane_command_by_owner.get(owner, owner).strip()
+            if command:
+                lanes_enabled_runnable_count += 1
+            else:
+                lane_command_missing_owners.append(owner)
+                lane_command_missing_values.append(command)
+    lane_command_missing_owners = sorted(set(lane_command_missing_owners))
+    lane_command_missing_values = sorted(set(lane_command_missing_values))
+
+    pr_tier_summary = pr_tier_policy.get("summary", {}) if isinstance(pr_tier_policy.get("summary"), dict) else {}
+    pr_tier_policy_meta = pr_tier_policy.get("policy", {}) if isinstance(pr_tier_policy.get("policy"), dict) else {}
+    pr_tier_ok = _as_bool(pr_tier_policy.get("ok", False), False)
+    pr_tier_reviewed_prs = _as_int(pr_tier_summary.get("reviewed_prs", 0), 0)
+    pr_tier_ratio_base_prs = _as_int(pr_tier_summary.get("ratio_base_prs", 0), 0)
+    pr_tier_t1_count = _as_int(pr_tier_summary.get("t1_count", 0), 0)
+    pr_tier_escalated_count = _as_int(pr_tier_summary.get("escalated_count", 0), 0)
+    pr_tier_unlabeled_count = _as_int(pr_tier_summary.get("unlabeled_count", 0), 0)
+    pr_tier_conflict_count = _as_int(pr_tier_summary.get("conflict_count", 0), 0)
+    pr_tier_violation_count = _as_int(pr_tier_summary.get("violation_count", 0), 0)
+    pr_tier_t1_ratio = _as_float(pr_tier_summary.get("t1_ratio", 0.0), 0.0)
+    pr_tier_escalated_ratio = _as_float(pr_tier_summary.get("escalated_ratio", 0.0), 0.0)
+    pr_tier_unlabeled_ratio = _as_float(pr_tier_summary.get("unlabeled_ratio", 0.0), 0.0)
+    pr_tier_min_t1_ratio = _as_float(pr_tier_policy_meta.get("min_t1_ratio", 0.0), 0.0)
 
     t1_policy_summary = t1_model_policy.get("summary", {}) if isinstance(t1_model_policy.get("summary"), dict) else {}
     t1_policy_observability = (
@@ -317,6 +375,19 @@ def build_report(root: Path) -> dict[str, Any]:
         ),
         0,
     )
+    git_hygiene_remediation_dirty_worktree_blocker_count = _as_int(
+        git_hygiene_remediation_summary.get("dirty_worktree_blocker_count", 0), 0
+    )
+    git_hygiene_remediation_dirty_blockers_payload = (
+        git_hygiene_remediation.get("dirty_worktree_blockers", [])
+        if isinstance(git_hygiene_remediation.get("dirty_worktree_blockers"), list)
+        else []
+    )
+    git_hygiene_remediation_dirty_blocker_branches = [
+        str(row.get("branch", "")).strip()
+        for row in git_hygiene_remediation_dirty_blockers_payload
+        if isinstance(row, dict) and str(row.get("branch", "")).strip()
+    ][:5]
     git_hygiene_remediation_local_force_deleted_count = _as_int(
         git_hygiene_remediation_summary.get("local_force_deleted_count", 0), 0
     )
@@ -532,6 +603,26 @@ def build_report(root: Path) -> dict[str, Any]:
     )
 
     add_criterion(
+        criterion_id="swarm_lanes_configured",
+        description="Swarm lane control-plane remains configured with at least one enabled runnable lane.",
+        ok=lanes_total_count > 0 and lanes_enabled_count > 0 and lanes_enabled_runnable_count > 0,
+        evidence=[
+            f"lanes_file={paths['lanes_config']}",
+            f"lanes_total_count={lanes_total_count}",
+            f"lanes_enabled_count={lanes_enabled_count}",
+            f"lanes_enabled_runnable_count={lanes_enabled_runnable_count}",
+            f"lanes_owner_counts={json.dumps(lanes_owner_counts, sort_keys=True)}",
+            f"lane_command_missing_owners={','.join(lane_command_missing_owners)}",
+            f"lane_command_missing_values={','.join(lane_command_missing_values)}",
+        ],
+        blocker_reason="swarm_lanes_not_configured_or_unrunnable",
+        next_action=(
+            "restore non-empty lanes.json, keep at least one enabled lane with an available owner runtime, "
+            "and re-run lanes-status before cycle reporting."
+        ),
+    )
+
+    add_criterion(
         criterion_id="swarm_budget_guardrails",
         description="Swarm daily budget guardrails and cost health detection are active.",
         ok=provider_health_effective_ok and (not budget_enabled or budget_state in {"ok", "warning"}),
@@ -568,6 +659,31 @@ def build_report(root: Path) -> dict[str, Any]:
         ],
         blocker_reason="t1_basic_model_policy_violation",
         next_action="route basic coding tasks to T1 models, document escalation evidence, and restore T1 telemetry observability health.",
+    )
+
+    add_criterion(
+        criterion_id="t1_pr_ratio_policy",
+        description="PR mix enforces T1-majority delivery and explicit tier labels for escalations.",
+        ok=pr_tier_ok and pr_tier_violation_count == 0 and pr_tier_t1_ratio >= pr_tier_min_t1_ratio,
+        evidence=[
+            f"pr_tier_policy_ok={pr_tier_ok}",
+            f"pr_tier_violation_count={pr_tier_violation_count}",
+            f"pr_tier_reviewed_prs={pr_tier_reviewed_prs}",
+            f"pr_tier_ratio_base_prs={pr_tier_ratio_base_prs}",
+            f"pr_tier_t1_count={pr_tier_t1_count}",
+            f"pr_tier_escalated_count={pr_tier_escalated_count}",
+            f"pr_tier_unlabeled_count={pr_tier_unlabeled_count}",
+            f"pr_tier_conflict_count={pr_tier_conflict_count}",
+            f"pr_tier_t1_ratio={pr_tier_t1_ratio}",
+            f"pr_tier_escalated_ratio={pr_tier_escalated_ratio}",
+            f"pr_tier_unlabeled_ratio={pr_tier_unlabeled_ratio}",
+            f"pr_tier_min_t1_ratio={pr_tier_min_t1_ratio}",
+        ],
+        blocker_reason="t1_pr_ratio_policy_violation",
+        next_action=(
+            "label PRs deterministically by tier, keep the majority of PRs T1-scoped, "
+            "and reserve escalated labels for explicitly justified exceptions."
+        ),
     )
 
     add_criterion(
@@ -642,6 +758,8 @@ def build_report(root: Path) -> dict[str, Any]:
             f"git_hygiene_remediation_local_blocked_unmerged_count={git_hygiene_remediation_local_blocked_unmerged_count}",
             f"git_hygiene_remediation_local_blocked_worktree_count={git_hygiene_remediation_local_blocked_worktree_count}",
             f"git_hygiene_remediation_local_blocked_worktree_dirty_count={git_hygiene_remediation_local_blocked_worktree_dirty_count}",
+            f"git_hygiene_remediation_dirty_worktree_blocker_count={git_hygiene_remediation_dirty_worktree_blocker_count}",
+            f"git_hygiene_remediation_dirty_blocker_branches={','.join(git_hygiene_remediation_dirty_blocker_branches)}",
             f"git_hygiene_remediation_local_force_deleted_count={git_hygiene_remediation_local_force_deleted_count}",
             f"git_hygiene_remediation_worktree_prune_removed_count={git_hygiene_remediation_worktree_prune_removed_count}",
             f"git_hygiene_remediation_worktree_remove_attempted_count={git_hygiene_remediation_worktree_remove_attempted_count}",
@@ -802,6 +920,11 @@ def build_report(root: Path) -> dict[str, Any]:
             "todo_unassigned_active_task_total": todo_unassigned,
             "todo_warning_count": todo_warning_count,
             "ready_queue_task_count": ready_task_count,
+            "lanes_total_count": lanes_total_count,
+            "lanes_enabled_count": lanes_enabled_count,
+            "lanes_enabled_runnable_count": lanes_enabled_runnable_count,
+            "lane_command_missing_owners": lane_command_missing_owners,
+            "lane_command_missing_values": lane_command_missing_values,
             "provider_summary_ok": provider_ok,
             "provider_cost_health_ok": provider_health_ok,
             "provider_telemetry_mode": provider_telemetry_mode,
@@ -815,6 +938,18 @@ def build_report(root: Path) -> dict[str, Any]:
             "t1_policy_ok": t1_policy_ok,
             "t1_policy_violation_count": t1_policy_violations,
             "t1_policy_observability_ok": t1_policy_observability_ok,
+            "pr_tier_policy_ok": pr_tier_ok,
+            "pr_tier_policy_violation_count": pr_tier_violation_count,
+            "pr_tier_reviewed_prs": pr_tier_reviewed_prs,
+            "pr_tier_ratio_base_prs": pr_tier_ratio_base_prs,
+            "pr_tier_t1_count": pr_tier_t1_count,
+            "pr_tier_escalated_count": pr_tier_escalated_count,
+            "pr_tier_unlabeled_count": pr_tier_unlabeled_count,
+            "pr_tier_conflict_count": pr_tier_conflict_count,
+            "pr_tier_t1_ratio": pr_tier_t1_ratio,
+            "pr_tier_escalated_ratio": pr_tier_escalated_ratio,
+            "pr_tier_unlabeled_ratio": pr_tier_unlabeled_ratio,
+            "pr_tier_min_t1_ratio": pr_tier_min_t1_ratio,
             "privilege_policy_ok": privilege_ok,
             "privilege_policy_violation_count": privilege_violations,
             "git_delivery_policy_ok": git_delivery_ok,
@@ -840,6 +975,8 @@ def build_report(root: Path) -> dict[str, Any]:
             "git_hygiene_remediation_local_blocked_unmerged_count": git_hygiene_remediation_local_blocked_unmerged_count,
             "git_hygiene_remediation_local_blocked_worktree_count": git_hygiene_remediation_local_blocked_worktree_count,
             "git_hygiene_remediation_local_blocked_worktree_dirty_count": git_hygiene_remediation_local_blocked_worktree_dirty_count,
+            "git_hygiene_remediation_dirty_worktree_blocker_count": git_hygiene_remediation_dirty_worktree_blocker_count,
+            "git_hygiene_remediation_dirty_blocker_branches": git_hygiene_remediation_dirty_blocker_branches,
             "git_hygiene_remediation_local_force_deleted_count": git_hygiene_remediation_local_force_deleted_count,
             "git_hygiene_remediation_worktree_prune_removed_count": git_hygiene_remediation_worktree_prune_removed_count,
             "git_hygiene_remediation_worktree_remove_attempted_count": git_hygiene_remediation_worktree_remove_attempted_count,

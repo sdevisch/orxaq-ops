@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-orchestrator-guard-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand orchestrator adversarial guard tests",
+    "description": "Deepen independent tests for orchestrator guard behavior and argument validation.",
+    "depends_on": [],
+    "acceptance": [
+      "Orchestrator adversarial test coverage increases",
+      "Failure signals include root-cause hints",
+      "Validation commands pass"
+    ]
+  }
+]

@@ -16,6 +16,7 @@ from typing import Any
 DEFAULT_POLICY = Path("config/git_hygiene_policy.json")
 DEFAULT_OUTPUT = Path("artifacts/autonomy/git_hygiene_health.json")
 DEFAULT_BASELINE = Path("artifacts/autonomy/git_hygiene_baseline.json")
+DEFAULT_HISTORY = Path("artifacts/autonomy/git_hygiene_history.ndjson")
 
 
 def _utc_now_iso() -> str:
@@ -59,6 +60,32 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _read_ndjson(path: Path, *, max_records: int = 1024) -> list[dict[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    if max_records > 0 and len(rows) > max_records:
+        return rows[-max_records:]
+    return rows
+
+
+def _append_ndjson(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True))
+        handle.write("\n")
 
 
 def _run(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -174,7 +201,25 @@ def _load_baseline(path: Path) -> dict[str, Any]:
     return payload
 
 
-def evaluate(*, policy: dict[str, Any], inventory: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+def _history_summary_payload(record: dict[str, Any]) -> dict[str, Any]:
+    summary = record.get("summary", {})
+    if isinstance(summary, dict):
+        return summary
+    return {}
+
+
+def _history_summary_int(record: dict[str, Any], key: str, default: int = 0) -> int:
+    summary = _history_summary_payload(record)
+    return _as_int(summary.get(key, record.get(key, default)), default)
+
+
+def evaluate(
+    *,
+    policy: dict[str, Any],
+    inventory: dict[str, Any],
+    baseline: dict[str, Any],
+    history_records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     branch_cfg = (
         policy.get("branch_inventory", {})
         if isinstance(policy.get("branch_inventory"), dict)
@@ -201,6 +246,37 @@ def evaluate(*, policy: dict[str, Any], inventory: dict[str, Any], baseline: dic
     max_delta_local = max(0, _as_int(monitoring_cfg.get("max_delta_local_branches", 0), 0))
     max_delta_remote = max(0, _as_int(monitoring_cfg.get("max_delta_remote_branches", 0), 0))
     max_delta_total = max(0, _as_int(monitoring_cfg.get("max_delta_total_branches", 0), 0))
+    legacy_stagnation_cfg = (
+        monitoring_cfg.get("legacy_suppression_stagnation", {})
+        if isinstance(monitoring_cfg.get("legacy_suppression_stagnation"), dict)
+        else {}
+    )
+    legacy_stagnation_enabled = _as_bool(legacy_stagnation_cfg.get("enabled", True), True)
+    legacy_stagnation_window_runs = max(1, _as_int(legacy_stagnation_cfg.get("window_runs", 24), 24))
+    legacy_stagnation_min_reduce_local = max(
+        0,
+        _as_int(legacy_stagnation_cfg.get("min_reduction_local_branches", 5), 5),
+    )
+    legacy_stagnation_min_reduce_remote = max(
+        0,
+        _as_int(legacy_stagnation_cfg.get("min_reduction_remote_branches", 5), 5),
+    )
+    legacy_stagnation_min_reduce_total = max(
+        0,
+        _as_int(legacy_stagnation_cfg.get("min_reduction_total_branches", 10), 10),
+    )
+    legacy_suppression_cap_local = max(
+        1,
+        _as_int(legacy_stagnation_cfg.get("max_allowed_local_branches_while_suppressed", 320), 320),
+    )
+    legacy_suppression_cap_remote = max(
+        1,
+        _as_int(legacy_stagnation_cfg.get("max_allowed_remote_branches_while_suppressed", 320), 320),
+    )
+    legacy_suppression_cap_total = max(
+        1,
+        _as_int(legacy_stagnation_cfg.get("max_allowed_total_branches_while_suppressed", 560), 560),
+    )
 
     refs_raw = inventory.get("refs", [])
     refs = [item for item in refs_raw if isinstance(item, dict)]
@@ -319,6 +395,77 @@ def evaluate(*, policy: dict[str, Any], inventory: dict[str, Any], baseline: dic
             }
         )
 
+    history_rows = [item for item in (history_records or []) if isinstance(item, dict)]
+    suppression_active = len(suppressed_legacy_violations) > 0
+    legacy_window_observed = 0
+    legacy_reduction_local = 0
+    legacy_reduction_remote = 0
+    legacy_reduction_total = 0
+    legacy_stagnation_detected = False
+    if legacy_stagnation_enabled and suppression_active:
+        if (
+            len(local_refs) > legacy_suppression_cap_local
+            or len(remote_refs) > legacy_suppression_cap_remote
+            or total_refs > legacy_suppression_cap_total
+        ):
+            violations.append(
+                {
+                    "type": "legacy_suppression_absolute_cap_exceeded",
+                    "message": (
+                        "legacy branch suppression active while absolute cap exceeded "
+                        f"(local={len(local_refs)}/{legacy_suppression_cap_local}, "
+                        f"remote={len(remote_refs)}/{legacy_suppression_cap_remote}, "
+                        f"total={total_refs}/{legacy_suppression_cap_total})"
+                    ),
+                }
+            )
+        suppression_history = [
+            row
+            for row in history_rows
+            if _as_int(row.get("suppressed_legacy_violation_count", _history_summary_int(row, "suppressed_legacy_violation_count", 0)), 0) > 0
+        ]
+        suppression_history.append(
+            {
+                "summary": {
+                    "local_branch_count": len(local_refs),
+                    "remote_branch_count": len(remote_refs),
+                    "total_branch_count": total_refs,
+                },
+                "suppressed_legacy_violation_count": len(suppressed_legacy_violations),
+            }
+        )
+        if suppression_history:
+            window = suppression_history[-legacy_stagnation_window_runs:]
+            legacy_window_observed = len(window)
+            oldest = window[0]
+            legacy_reduction_local = _history_summary_int(oldest, "local_branch_count", len(local_refs)) - len(local_refs)
+            legacy_reduction_remote = _history_summary_int(oldest, "remote_branch_count", len(remote_refs)) - len(remote_refs)
+            legacy_reduction_total = _history_summary_int(oldest, "total_branch_count", total_refs) - total_refs
+            if legacy_window_observed >= legacy_stagnation_window_runs:
+                legacy_stagnation_detected = (
+                    legacy_reduction_local < legacy_stagnation_min_reduce_local
+                    and legacy_reduction_remote < legacy_stagnation_min_reduce_remote
+                    and legacy_reduction_total < legacy_stagnation_min_reduce_total
+                )
+                if legacy_stagnation_detected:
+                    violations.append(
+                        {
+                            "type": "legacy_suppression_stagnation",
+                            "message": (
+                                "legacy branch suppression stagnated over window "
+                                f"(runs={legacy_window_observed}, "
+                                f"local_reduction={legacy_reduction_local}<{legacy_stagnation_min_reduce_local}, "
+                                f"remote_reduction={legacy_reduction_remote}<{legacy_stagnation_min_reduce_remote}, "
+                                f"total_reduction={legacy_reduction_total}<{legacy_stagnation_min_reduce_total})"
+                            ),
+                        }
+                    )
+            else:
+                warnings.append(
+                    "legacy_suppression_stagnation_warmup:"
+                    f"observed_runs={legacy_window_observed},required_runs={legacy_stagnation_window_runs}"
+                )
+
     return {
         "ok": len(violations) == 0,
         "summary": {
@@ -340,6 +487,17 @@ def evaluate(*, policy: dict[str, Any], inventory: dict[str, Any], baseline: dic
             "baseline_delta_remote_branches": baseline_delta_remote,
             "baseline_delta_total_branches": baseline_delta_total,
             "suppressed_legacy_violation_count": len(suppressed_legacy_violations),
+            "legacy_suppression_active": suppression_active,
+            "legacy_suppression_stagnation_enabled": legacy_stagnation_enabled,
+            "legacy_suppression_window_runs": legacy_stagnation_window_runs,
+            "legacy_suppression_window_observed": legacy_window_observed,
+            "legacy_suppression_reduction_local": legacy_reduction_local,
+            "legacy_suppression_reduction_remote": legacy_reduction_remote,
+            "legacy_suppression_reduction_total": legacy_reduction_total,
+            "legacy_suppression_stagnation_detected": legacy_stagnation_detected,
+            "legacy_suppression_cap_local": legacy_suppression_cap_local,
+            "legacy_suppression_cap_remote": legacy_suppression_cap_remote,
+            "legacy_suppression_cap_total": legacy_suppression_cap_total,
         },
         "violations": violations,
         "warnings": warnings,
@@ -355,6 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-file", default=str(DEFAULT_POLICY), help="Path to git hygiene policy JSON.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Path to output JSON artifact.")
     parser.add_argument("--baseline-file", default="", help="Baseline JSON file path for non-regression guard.")
+    parser.add_argument("--history-file", default="", help="NDJSON history file path for persistence checks.")
     parser.add_argument("--capture-baseline", action="store_true", help="Capture current branch counts as baseline.")
     parser.add_argument("--json", action="store_true", help="Print JSON payload.")
     return parser
@@ -384,6 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             "monitoring": {
                 "baseline_file": str(DEFAULT_BASELINE),
+                "history_file": str(DEFAULT_HISTORY),
                 "use_baseline_guard": True,
                 "allow_missing_baseline": True,
                 "allow_legacy_above_threshold_when_nonincreasing": True,
@@ -391,6 +551,16 @@ def main(argv: list[str] | None = None) -> int:
                 "max_delta_local_branches": 0,
                 "max_delta_remote_branches": 0,
                 "max_delta_total_branches": 0,
+                "legacy_suppression_stagnation": {
+                    "enabled": True,
+                    "window_runs": 24,
+                    "min_reduction_local_branches": 5,
+                    "min_reduction_remote_branches": 5,
+                    "min_reduction_total_branches": 10,
+                    "max_allowed_local_branches_while_suppressed": 320,
+                    "max_allowed_remote_branches_while_suppressed": 320,
+                    "max_allowed_total_branches_while_suppressed": 560,
+                },
             },
         }
 
@@ -403,11 +573,16 @@ def main(argv: list[str] | None = None) -> int:
     baseline_file = Path(baseline_raw).expanduser() if baseline_raw else DEFAULT_BASELINE
     if not baseline_file.is_absolute():
         baseline_file = (root / baseline_file).resolve()
+    history_raw = _as_text(args.history_file) or _as_text(monitoring_cfg.get("history_file", ""))
+    history_file = Path(history_raw).expanduser() if history_raw else DEFAULT_HISTORY
+    if not history_file.is_absolute():
+        history_file = (root / history_file).resolve()
 
     try:
         inventory = load_branch_inventory(repo_root)
         baseline = _load_baseline(baseline_file)
-        evaluated = evaluate(policy=policy, inventory=inventory, baseline=baseline)
+        history_records = _read_ndjson(history_file)
+        evaluated = evaluate(policy=policy, inventory=inventory, baseline=baseline, history_records=history_records)
         if args.capture_baseline:
             baseline_payload = _baseline_payload(
                 evaluated.get("summary", {}) if isinstance(evaluated.get("summary"), dict) else {},
@@ -422,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
             "repo_root": str(repo_root),
             "policy_file": str(policy_file),
             "baseline_file": str(baseline_file),
+            "history_file": str(history_file),
             "baseline_capture_used": bool(args.capture_baseline),
             **evaluated,
         }
@@ -433,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
             "repo_root": str(repo_root),
             "policy_file": str(policy_file),
             "baseline_file": str(baseline_file),
+            "history_file": str(history_file),
             "baseline_capture_used": bool(args.capture_baseline),
             "ok": False,
             "summary": {
@@ -456,6 +633,23 @@ def main(argv: list[str] | None = None) -> int:
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        summary_payload = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+        history_entry = {
+            "generated_at_utc": _as_text(payload.get("generated_at_utc", "")) or _utc_now_iso(),
+            "ok": _as_bool(payload.get("ok", False), False),
+            "suppressed_legacy_violation_count": _as_int(summary_payload.get("suppressed_legacy_violation_count", 0), 0),
+            "summary": {
+                "local_branch_count": _as_int(summary_payload.get("local_branch_count", 0), 0),
+                "remote_branch_count": _as_int(summary_payload.get("remote_branch_count", 0), 0),
+                "total_branch_count": _as_int(summary_payload.get("total_branch_count", 0), 0),
+                "stale_local_branch_count": _as_int(summary_payload.get("stale_local_branch_count", 0), 0),
+                "violation_count": _as_int(summary_payload.get("violation_count", 0), 0),
+            },
+        }
+        _append_ndjson(history_file, history_entry)
+    except Exception:  # noqa: BLE001
+        pass
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

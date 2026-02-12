@@ -7,7 +7,7 @@
       "priority": 1,
       "status": "completed",
       "artifacts": [
-        "artifacts/autonomy/sota_testing_innovation/innovation_governance_contract.md"
+        "docs/governance/innovation_governance_contract.md"
       ]
     }
   ]

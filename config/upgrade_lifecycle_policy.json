@@ -1,0 +1,71 @@
+{
+  "schema_version": "upgrade-lifecycle-policy.v1",
+  "activation": {
+    "routing_mechanism_required": true,
+    "ab_testing_required": true,
+    "requires_backlog_tasks": [
+      "B9-T2",
+      "B10-T7",
+      "B10-T8"
+    ]
+  },
+  "state_machine": {
+    "ordered_states": [
+      "preflight",
+      "shadow",
+      "canary",
+      "ramp",
+      "steady",
+      "deprecate",
+      "retire"
+    ],
+    "invalid_transition_action": "block"
+  },
+  "rollout": {
+    "strategies": [
+      "shadow",
+      "canary",
+      "weighted_ramp"
+    ],
+    "weight_steps_percent": [
+      1,
+      5,
+      10,
+      25,
+      50,
+      100
+    ],
+    "min_observation_minutes": 20,
+    "max_parallel_versions": 2
+  },
+  "scale": {
+    "old_new_coexistence_required": true,
+    "graceful_scale_down_required": true,
+    "rollback_headroom_percent_min": 25
+  },
+  "migration": {
+    "schema_contract_required": true,
+    "forward_backward_compat_required": true,
+    "reversible_when_feasible": true
+  },
+  "safety": {
+    "automatic_pause_on_warning": true,
+    "automatic_rollback_on_hard_fail": true,
+    "breakglass_required_fields": [
+      "reason",
+      "scope",
+      "ttl",
+      "rollback_proof",
+      "audit_trail"
+    ]
+  },
+  "environment": {
+    "required_targets": [
+      "macos",
+      "windows",
+      "local",
+      "cloud"
+    ],
+    "cloud_requires_explicit_trigger": true
+  }
+}

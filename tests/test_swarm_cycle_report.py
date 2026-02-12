@@ -203,7 +203,36 @@ class SwarmCycleReportTests(unittest.TestCase):
         )
         self._write_json(root / "artifacts" / "autonomy" / "ready_queue_week.json", {"summary": {"task_count": 5}})
         self._write_json(root / "artifacts" / "autonomy" / "provider_costs" / "summary.json", {"ok": True})
+        self._write_json(
+            root / "artifacts" / "autonomy" / "pr_tier_policy_health.json",
+            {
+                "ok": True,
+                "summary": {
+                    "violation_count": 0,
+                    "reviewed_prs": 14,
+                    "ratio_base_prs": 14,
+                    "t1_count": 11,
+                    "escalated_count": 3,
+                    "unlabeled_count": 0,
+                    "conflict_count": 0,
+                    "t1_ratio": 0.7857,
+                    "escalated_ratio": 0.2143,
+                    "unlabeled_ratio": 0.0,
+                },
+                "policy": {
+                    "min_t1_ratio": 0.7,
+                },
+            },
+        )
         self._write_json(root / "config" / "routellm_policy.local-workhorse.json", {"routing": {"local_first": True, "local_saturation_policy": "saturate_before_hosted"}})
+        self._write_json(
+            root / "config" / "lanes.json",
+            {
+                "lanes": [
+                    {"id": "lane-codex", "owner": "codex", "enabled": True},
+                ]
+            },
+        )
         self._write_json(root / "artifacts" / "autonomy" / "heartbeat.json", {"phase": "completed"})
 
         (root / "artifacts" / "autonomy" / "conversations.ndjson").parent.mkdir(parents=True, exist_ok=True)
@@ -251,6 +280,10 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertTrue(criteria["git_hygiene_instrumented"].get("ok"))
         self.assertIn("git_hygiene_remediation", criteria)
         self.assertTrue(criteria["git_hygiene_remediation"].get("ok"))
+        self.assertIn("swarm_lanes_configured", criteria)
+        self.assertTrue(criteria["swarm_lanes_configured"].get("ok"))
+        self.assertIn("t1_pr_ratio_policy", criteria)
+        self.assertTrue(criteria["t1_pr_ratio_policy"].get("ok"))
         self.assertIn("deterministic_backlog_control", criteria)
         self.assertTrue(criteria["deterministic_backlog_control"].get("ok"))
         self.assertIn("pr_approval_remediation", criteria)
@@ -259,6 +292,8 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertTrue(report["summary"]["backend_upgrade_policy_ok"])
         self.assertTrue(report["summary"]["api_interop_policy_ok"])
         self.assertTrue(report["summary"]["git_delivery_policy_ok"])
+        self.assertTrue(report["summary"]["pr_tier_policy_ok"])
+        self.assertGreater(report["summary"]["lanes_total_count"], 0)
         self.assertTrue(report["summary"]["git_hygiene_remediation_ok"])
         self.assertEqual(report["summary"]["git_hygiene_remediation_remote_blocked_open_pr_count"], 0)
         self.assertEqual(report["summary"]["git_hygiene_remediation_worktree_removed_count"], 0)
@@ -428,6 +463,49 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertFalse(criteria["pr_approval_remediation"].get("ok"))
         self.assertEqual(report["summary"]["pr_remediation_other_blocked_count"], 3)
         self.assertGreater(report["summary"]["criteria_failed"], 0)
+
+    def test_build_report_fails_when_pr_tier_policy_unhealthy(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(
+                root / "artifacts" / "autonomy" / "pr_tier_policy_health.json",
+                {
+                    "ok": False,
+                    "summary": {
+                        "violation_count": 2,
+                        "reviewed_prs": 10,
+                        "ratio_base_prs": 10,
+                        "t1_count": 3,
+                        "escalated_count": 1,
+                        "unlabeled_count": 6,
+                        "conflict_count": 0,
+                        "t1_ratio": 0.3,
+                        "escalated_ratio": 0.1,
+                        "unlabeled_ratio": 0.6,
+                    },
+                    "policy": {
+                        "min_t1_ratio": 0.7,
+                    },
+                },
+            )
+            report = swarm_cycle_report.build_report(root)
+
+        criteria = {row.get("id"): row for row in report.get("criteria", []) if isinstance(row, dict)}
+        self.assertIn("t1_pr_ratio_policy", criteria)
+        self.assertFalse(criteria["t1_pr_ratio_policy"].get("ok"))
+        self.assertFalse(report["summary"]["pr_tier_policy_ok"])
+        self.assertEqual(report["summary"]["pr_tier_policy_violation_count"], 2)
+
+    def test_build_report_fails_when_lanes_unconfigured(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(root / "config" / "lanes.json", {"lanes": []})
+            report = swarm_cycle_report.build_report(root)
+
+        criteria = {row.get("id"): row for row in report.get("criteria", []) if isinstance(row, dict)}
+        self.assertIn("swarm_lanes_configured", criteria)
+        self.assertFalse(criteria["swarm_lanes_configured"].get("ok"))
+        self.assertEqual(report["summary"]["lanes_total_count"], 0)
 
 
 if __name__ == "__main__":

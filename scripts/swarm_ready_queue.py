@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -99,6 +100,8 @@ def build_queue(
     api_interop_policy_summary = auto_artifacts / "api_interop_policy_health.json"
     backlog_control_summary = auto_artifacts / "deterministic_backlog_health.json"
     pr_approval_remediation_summary = auto_artifacts / "pr_approval_remediation.json"
+    pr_tier_policy_summary = auto_artifacts / "pr_tier_policy_health.json"
+    lanes_config_file = root / "config" / "lanes.json"
 
     provider = _load_json(provider_summary)
     provider_cost_health = _load_json(provider_cost_health_summary)
@@ -122,6 +125,8 @@ def build_queue(
     api_interop_policy = _load_json(api_interop_policy_summary)
     backlog_control = _load_json(backlog_control_summary)
     pr_approval_remediation = _load_json(pr_approval_remediation_summary)
+    pr_tier_policy = _load_json(pr_tier_policy_summary)
+    lanes_config = _load_json(lanes_config_file)
 
     tasks: list[dict[str, Any]] = []
 
@@ -223,6 +228,56 @@ def build_queue(
             )
         )
 
+    lane_items_payload = lanes_config.get("lanes", []) if isinstance(lanes_config, dict) else lanes_config
+    lanes_total_count = 0
+    lanes_enabled_count = 0
+    lanes_enabled_runnable_count = 0
+    lanes_owner_counts: dict[str, int] = {}
+    lane_command_by_owner = {
+        "codex": str(os.getenv("ORXAQ_AUTONOMY_CODEX_CMD", "codex")).strip() or "codex",
+        "gemini": str(os.getenv("ORXAQ_AUTONOMY_GEMINI_CMD", "gemini")).strip() or "gemini",
+        "claude": str(os.getenv("ORXAQ_AUTONOMY_CLAUDE_CMD", "claude")).strip() or "claude",
+    }
+    lane_command_missing_owners: list[str] = []
+    lane_command_missing_values: list[str] = []
+    if isinstance(lane_items_payload, list):
+        for item in lane_items_payload:
+            if not isinstance(item, dict):
+                continue
+            lanes_total_count += 1
+            owner = str(item.get("owner", "")).strip().lower() or "unknown"
+            lanes_owner_counts[owner] = lanes_owner_counts.get(owner, 0) + 1
+            if not bool(item.get("enabled", True)):
+                continue
+            lanes_enabled_count += 1
+            command = lane_command_by_owner.get(owner, owner).strip()
+            if command:
+                lanes_enabled_runnable_count += 1
+            else:
+                lane_command_missing_owners.append(owner)
+                lane_command_missing_values.append(command)
+    lane_command_missing_owners = sorted(set(lane_command_missing_owners))
+    lane_command_missing_values = sorted(set(lane_command_missing_values))
+    if lanes_total_count == 0 or lanes_enabled_count == 0 or lanes_enabled_runnable_count == 0:
+        tasks.append(
+            _task(
+                task_id="T1-SWARM-LANES-BOOTSTRAP",
+                title="Restore non-zero runnable swarm lanes",
+                priority="P0",
+                rationale=(
+                    "lane control-plane unhealthy "
+                    f"(total={lanes_total_count}, enabled={lanes_enabled_count}, "
+                    f"enabled_runnable={lanes_enabled_runnable_count}, "
+                    f"missing_owner_cmds={','.join(lane_command_missing_owners) or 'none'})."
+                ),
+                acceptance=[
+                    "config/lanes.json defines at least one enabled lane.",
+                    "At least one enabled lane owner command is available on PATH.",
+                    "lanes-status reports total_count > 0 and no owner-runtime blockers.",
+                ],
+            )
+        )
+
     budget_payload = (
         provider_cost_health.get("budget", {})
         if isinstance(provider_cost_health.get("budget"), dict)
@@ -305,6 +360,39 @@ def build_queue(
                     "Basic coding tasks route only to configured T1 models unless escalated.",
                     "Escalation rationale is present for every non-T1 exception.",
                     "Observability checks remain healthy (fresh metrics, required routing fields present).",
+                ],
+            )
+        )
+
+    pr_tier_ok = bool(pr_tier_policy.get("ok", False))
+    pr_tier_summary_payload = pr_tier_policy.get("summary", {}) if isinstance(pr_tier_policy.get("summary"), dict) else {}
+    pr_tier_policy_meta = pr_tier_policy.get("policy", {}) if isinstance(pr_tier_policy.get("policy"), dict) else {}
+    pr_tier_violations = int(pr_tier_summary_payload.get("violation_count", 0) or 0)
+    pr_tier_reviewed_prs = int(pr_tier_summary_payload.get("reviewed_prs", 0) or 0)
+    pr_tier_ratio_base_prs = int(pr_tier_summary_payload.get("ratio_base_prs", 0) or 0)
+    pr_tier_t1_count = int(pr_tier_summary_payload.get("t1_count", 0) or 0)
+    pr_tier_escalated_count = int(pr_tier_summary_payload.get("escalated_count", 0) or 0)
+    pr_tier_unlabeled_count = int(pr_tier_summary_payload.get("unlabeled_count", 0) or 0)
+    pr_tier_t1_ratio = float(pr_tier_summary_payload.get("t1_ratio", 0.0) or 0.0)
+    pr_tier_min_t1_ratio = float(pr_tier_policy_meta.get("min_t1_ratio", 0.0) or 0.0)
+    if (not pr_tier_ok) or pr_tier_violations > 0 or pr_tier_t1_ratio < pr_tier_min_t1_ratio:
+        tasks.append(
+            _task(
+                task_id="T1-PR-TIER-RATIO-ENFORCEMENT",
+                title="Enforce T1-majority PR mix and tier labels",
+                priority="P0",
+                rationale=(
+                    "PR tier policy unhealthy "
+                    f"(ok={pr_tier_ok}, violations={pr_tier_violations}, "
+                    f"reviewed={pr_tier_reviewed_prs}, ratio_base={pr_tier_ratio_base_prs}, "
+                    f"t1={pr_tier_t1_count}, escalated={pr_tier_escalated_count}, "
+                    f"unlabeled={pr_tier_unlabeled_count}, "
+                    f"t1_ratio={pr_tier_t1_ratio:.3f}/{pr_tier_min_t1_ratio:.3f})."
+                ),
+                acceptance=[
+                    "pr_tier_policy_health report shows ok=true and violation_count=0.",
+                    "Most PRs are labeled T1 and escalated labels are reserved for explicit exceptions.",
+                    "All PRs carry deterministic tier labels to support policy auditing.",
                 ],
             )
         )
@@ -431,6 +519,17 @@ def build_queue(
         remediation_summary.get("local_blocked_worktree_dirty_count", remediation_summary.get("local_blocked_worktree_count", 0))
         or 0
     )
+    remediation_dirty_worktree_blocker_count = int(remediation_summary.get("dirty_worktree_blocker_count", 0) or 0)
+    remediation_dirty_blockers_payload = (
+        git_hygiene_remediation.get("dirty_worktree_blockers", [])
+        if isinstance(git_hygiene_remediation.get("dirty_worktree_blockers"), list)
+        else []
+    )
+    remediation_dirty_blocker_branches = [
+        str(row.get("branch", "")).strip()
+        for row in remediation_dirty_blockers_payload
+        if isinstance(row, dict) and str(row.get("branch", "")).strip()
+    ][:5]
     remediation_local_force_deleted = int(remediation_summary.get("local_force_deleted_count", 0) or 0)
     remediation_worktree_prune_removed = int(remediation_summary.get("worktree_prune_removed_count", 0) or 0)
     remediation_worktree_remove_attempted = int(remediation_summary.get("worktree_remove_attempted_count", 0) or 0)
@@ -494,6 +593,7 @@ def build_queue(
                     "Git hygiene remediation could not delete some local branches because they are "
                     f"still bound to worktrees (blocked_worktree={remediation_local_blocked_worktree}, "
                     f"blocked_worktree_dirty={remediation_local_blocked_worktree_dirty}, "
+                    f"dirty_blocker_count={remediation_dirty_worktree_blocker_count}, "
                     f"local_force_deleted={remediation_local_force_deleted}, "
                     f"worktree_prune_removed={remediation_worktree_prune_removed}, "
                     f"worktree_remove_attempted={remediation_worktree_remove_attempted}, "
@@ -505,6 +605,24 @@ def build_queue(
                     "Clean stale worktrees are removed and branch deletion retried automatically.",
                     "Worktree-bound deletion failures are reduced with deterministic evidence.",
                     "Active lane worktrees remain intact and documented.",
+                ],
+            )
+        )
+    if remediation_dirty_worktree_blocker_count > 0:
+        tasks.append(
+            _task(
+                task_id="T1-GIT-HYGIENE-DIRTY-WORKTREE-TRIAGE",
+                title="Triage dirty worktree blockers",
+                priority="P2",
+                rationale=(
+                    "Git hygiene remediation reports dirty worktrees that block automatic branch cleanup "
+                    f"(count={remediation_dirty_worktree_blocker_count}, "
+                    f"branches={','.join(remediation_dirty_blocker_branches) or 'n/a'})."
+                ),
+                acceptance=[
+                    "Each dirty blocker has deterministic disposition (commit, stash, or explicit keep-open rationale).",
+                    "dirty_worktree_blocker_count trends down over remediation cycles.",
+                    "No dirty worktree is force-removed without preserved change evidence.",
                 ],
             )
         )
@@ -725,11 +843,26 @@ def build_queue(
             "swarm_budget_daily_spend_usd": budget_daily_spend,
             "swarm_budget_daily_cap_usd": budget_daily_cap,
             "swarm_budget_daily_remaining_usd": budget_remaining,
+            "lanes_total_count": lanes_total_count,
+            "lanes_enabled_count": lanes_enabled_count,
+            "lanes_enabled_runnable_count": lanes_enabled_runnable_count,
+            "lane_command_missing_owners": lane_command_missing_owners,
+            "lane_command_missing_values": lane_command_missing_values,
+            "lane_owner_counts": lanes_owner_counts,
             "stale_file_count": stale_files,
             "unassigned_active_task_total": unassigned_active,
             "t1_policy_ok": t1_policy_ok,
             "t1_policy_violation_count": t1_violations,
             "t1_policy_observability_ok": t1_observability_ok,
+            "pr_tier_policy_ok": pr_tier_ok,
+            "pr_tier_policy_violation_count": pr_tier_violations,
+            "pr_tier_reviewed_prs": pr_tier_reviewed_prs,
+            "pr_tier_ratio_base_prs": pr_tier_ratio_base_prs,
+            "pr_tier_t1_count": pr_tier_t1_count,
+            "pr_tier_escalated_count": pr_tier_escalated_count,
+            "pr_tier_unlabeled_count": pr_tier_unlabeled_count,
+            "pr_tier_t1_ratio": pr_tier_t1_ratio,
+            "pr_tier_min_t1_ratio": pr_tier_min_t1_ratio,
             "privilege_policy_ok": privilege_ok,
             "privilege_policy_violation_count": privilege_violations,
             "privilege_policy_scanned_events": privilege_scanned_events,
@@ -756,6 +889,8 @@ def build_queue(
             "git_hygiene_remediation_local_blocked_unmerged_count": remediation_local_blocked_unmerged,
             "git_hygiene_remediation_local_blocked_worktree_count": remediation_local_blocked_worktree,
             "git_hygiene_remediation_local_blocked_worktree_dirty_count": remediation_local_blocked_worktree_dirty,
+            "git_hygiene_remediation_dirty_worktree_blocker_count": remediation_dirty_worktree_blocker_count,
+            "git_hygiene_remediation_dirty_blocker_branches": remediation_dirty_blocker_branches,
             "git_hygiene_remediation_local_force_deleted_count": remediation_local_force_deleted,
             "git_hygiene_remediation_worktree_prune_removed_count": remediation_worktree_prune_removed,
             "git_hygiene_remediation_worktree_remove_attempted_count": remediation_worktree_remove_attempted,

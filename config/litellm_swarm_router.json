@@ -9,6 +9,7 @@
         "provider": "openai",
         "api_base": "https://api.openai.com",
         "api_key_env": "OPENAI_API_KEY",
+        "required": false,
         "endpoint_id": "openai-primary",
         "healthcheck_path": "/v1/models",
         "healthcheck_auth": "bearer"
@@ -21,6 +22,7 @@
         "provider": "gemini",
         "api_base": "https://generativelanguage.googleapis.com",
         "api_key_env": "GEMINI_API_KEY",
+        "required": false,
         "endpoint_id": "gemini-primary",
         "healthcheck_path": "/v1beta/models",
         "healthcheck_auth": "query-key"
@@ -33,6 +35,7 @@
         "provider": "claude",
         "api_base": "https://api.anthropic.com",
         "api_key_env": "ANTHROPIC_API_KEY",
+        "required": false,
         "endpoint_id": "claude-primary",
         "healthcheck_path": "/v1/models",
         "healthcheck_auth": "x-api-key",
@@ -47,6 +50,7 @@
         "model": "openai/local-coder",
         "provider": "openai_compatible",
         "api_base": "http://127.0.0.1:1234",
+        "required": true,
         "endpoint_id": "lmstudio-node-1",
         "healthcheck_path": "/v1/models"
       }
@@ -56,7 +60,8 @@
       "litellm_params": {
         "model": "openai/local-coder",
         "provider": "openai_compatible",
-        "api_base": "http://192.168.1.86:1234",
+        "api_base": "http://192.168.50.86:1234",
+        "required": false,
         "endpoint_id": "lmstudio-node-2",
         "healthcheck_path": "/v1/models"
       }
@@ -66,7 +71,8 @@
       "litellm_params": {
         "model": "openai/local-coder",
         "provider": "openai_compatible",
-        "api_base": "http://192.168.1.91:1234",
+        "api_base": "http://192.168.50.91:1234",
+        "required": false,
         "endpoint_id": "lmstudio-node-3",
         "healthcheck_path": "/v1/models"
       }

@@ -1,0 +1,31 @@
+{
+  "schema_version": "deterministic-backlog-control.v1",
+  "backlog_file": "../orxaq/ops/backlog/distributed_todo.yaml",
+  "ready_statuses": [
+    "todo",
+    "doing",
+    "review"
+  ],
+  "completion": {
+    "enabled": true,
+    "eligible_statuses": [
+      "todo",
+      "doing",
+      "review",
+      "blocked"
+    ],
+    "markers_dir": "artifacts/autonomy/task_markers",
+    "max_complete_per_cycle": 8,
+    "require_task_id_match": true
+  },
+  "bounds": {
+    "min_ready": 10,
+    "target_ready": 16,
+    "max_ready": 24,
+    "max_activate_per_cycle": 6,
+    "max_deactivate_per_cycle": 6
+  },
+  "throttle": {
+    "blocked_reason": "deterministic_backlog_throttle"
+  }
+}

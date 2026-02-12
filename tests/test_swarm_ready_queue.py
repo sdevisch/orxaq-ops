@@ -137,6 +137,36 @@ class SwarmReadyQueueTests(unittest.TestCase):
                 },
             },
         )
+        self._write_json(
+            root / "artifacts" / "autonomy" / "pr_tier_policy_health.json",
+            {
+                "ok": True,
+                "summary": {
+                    "violation_count": 0,
+                    "reviewed_prs": 12,
+                    "ratio_base_prs": 12,
+                    "t1_count": 10,
+                    "escalated_count": 2,
+                    "unlabeled_count": 0,
+                    "t1_ratio": 0.8333,
+                },
+                "policy": {
+                    "min_t1_ratio": 0.7,
+                },
+            },
+        )
+        self._write_json(
+            root / "config" / "lanes.json",
+            {
+                "lanes": [
+                    {
+                        "id": "lane-codex",
+                        "owner": "codex",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
         return root
 
     def test_build_queue_adds_api_interop_task_when_policy_unhealthy(self):
@@ -169,6 +199,10 @@ class SwarmReadyQueueTests(unittest.TestCase):
         self.assertEqual(queue["summary"]["api_interop_policy_violation_count"], 0)
         self.assertTrue(queue["summary"]["git_delivery_policy_ok"])
         self.assertEqual(queue["summary"]["git_delivery_policy_violation_count"], 0)
+        self.assertTrue(queue["summary"]["pr_tier_policy_ok"])
+        self.assertEqual(queue["summary"]["pr_tier_policy_violation_count"], 0)
+        self.assertGreater(queue["summary"]["lanes_total_count"], 0)
+        self.assertGreater(queue["summary"]["lanes_enabled_runnable_count"], 0)
 
     def test_build_queue_adds_git_delivery_task_when_policy_unhealthy(self):
         with tempfile.TemporaryDirectory() as td:
@@ -349,6 +383,44 @@ class SwarmReadyQueueTests(unittest.TestCase):
         task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
         self.assertIn("T1-PR-REVIEWER-CAPACITY", task_ids)
         self.assertEqual(queue["summary"]["pr_approval_self_blocked_count"], 3)
+
+    def test_build_queue_adds_pr_tier_ratio_task_when_policy_unhealthy(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(
+                root / "artifacts" / "autonomy" / "pr_tier_policy_health.json",
+                {
+                    "ok": False,
+                    "summary": {
+                        "violation_count": 3,
+                        "reviewed_prs": 20,
+                        "ratio_base_prs": 20,
+                        "t1_count": 2,
+                        "escalated_count": 2,
+                        "unlabeled_count": 16,
+                        "t1_ratio": 0.1,
+                    },
+                    "policy": {
+                        "min_t1_ratio": 0.7,
+                    },
+                },
+            )
+            queue = swarm_ready_queue.build_queue(root, max_items=50)
+
+        task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
+        self.assertIn("T1-PR-TIER-RATIO-ENFORCEMENT", task_ids)
+        self.assertFalse(queue["summary"]["pr_tier_policy_ok"])
+        self.assertEqual(queue["summary"]["pr_tier_policy_violation_count"], 3)
+
+    def test_build_queue_adds_lane_bootstrap_task_when_no_lanes_configured(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(root / "config" / "lanes.json", {"lanes": []})
+            queue = swarm_ready_queue.build_queue(root, max_items=50)
+
+        task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
+        self.assertIn("T1-SWARM-LANES-BOOTSTRAP", task_ids)
+        self.assertEqual(queue["summary"]["lanes_total_count"], 0)
 
     def test_build_queue_can_refresh_todo_summary(self):
         with tempfile.TemporaryDirectory() as td:

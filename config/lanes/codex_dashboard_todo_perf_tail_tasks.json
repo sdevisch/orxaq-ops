@@ -1,0 +1,15 @@
+[
+  {
+    "id": "task-dashboard-todo-perf-tail",
+    "owner": "codex",
+    "priority": 2,
+    "title": "Low-level agent: optimize distributed todo activity ingestion for large routing logs.",
+    "description": "Execute lane objective in config/objectives/codex_dashboard_todo_perf_tail.md and deliver a minimal tested patch.",
+    "depends_on": [],
+    "acceptance": [
+      "Implements requested improvement with clear before/after behavior",
+      "Includes focused automated coverage or assertions",
+      "Lane validation commands pass"
+    ]
+  }
+]

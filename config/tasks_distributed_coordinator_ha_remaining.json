@@ -1,0 +1,18 @@
+[
+  {
+    "id": "distributed-coordinator-ha-remaining",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Complete distributed coordinator HA remaining work",
+    "description": "Implement the remaining lease backend, leader fencing, DMN extraction, DAG scheduling scaffolding, and causal intervention guardrails for resilient autonomy control-plane behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "Leader lease behavior supports production-ready backend abstraction with fallback",
+      "Mutating commands are consistently leader/epoch fenced",
+      "Decision logic is versioned and traceable through DMN-style policy evaluation",
+      "DAG scheduler foundations and replay-safe state transitions are implemented",
+      "Causal intervention metadata gates exist for disruptive controls",
+      "Targeted autonomy tests pass"
+    ]
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "model": "claude-3-7-sonnet-latest",
+      "period_start": "2026-02-09T11:00:00+00:00",
+      "period_end": "2026-02-09T11:10:00+00:00",
+      "usage": {
+        "input_tokens": 950,
+        "output_tokens": 410
+      },
+      "billing": {
+        "cost_usd": 0.0845,
+        "currency": "USD"
+      }
+    }
+  ],
+  "pagination": {
+    "next_cursor": ""
+  }
+}

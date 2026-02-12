@@ -53,6 +53,23 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "health"])
             self.assertEqual(rc, 0)
 
+    def test_process_watchdog_command_strict(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.process_watchdog_pass", return_value={"ok": True}):
+                rc = cli.main(["--root", str(root), "process-watchdog", "--strict"])
+            self.assertEqual(rc, 0)
+
+    def test_full_autonomy_command_strict_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.full_autonomy_snapshot", return_value={"ok": False}) as snapshot:
+                rc = cli.main(["--root", str(root), "full-autonomy", "--allow-dirty", "--strict"])
+            self.assertEqual(rc, 1)
+            self.assertFalse(snapshot.call_args.kwargs["require_clean"])
+
     def test_monitor_command(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -2116,6 +2133,80 @@ class CliTests(unittest.TestCase):
                 rc = cli.main(["--root", str(root), "lane-ensure", "--lane", "codex-governance", "--json"])
             self.assertEqual(rc, 0)
             self.assertEqual(ensure.call_args.kwargs["lane_id"], "codex-governance")
+
+    def test_mesh_init_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                rc = cli.main(["--root", str(root), "mesh-init", "--capability", "monitoring"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertIn("manifest", payload)
+
+    def test_mesh_publish_and_status_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            publish_buffer = io.StringIO()
+            with redirect_stdout(publish_buffer):
+                rc_publish = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "mesh-publish",
+                        "--topic",
+                        "monitoring",
+                        "--event-type",
+                        "heartbeat.changed",
+                        "--payload-json",
+                        '{"state":"ok"}',
+                    ]
+                )
+            self.assertEqual(rc_publish, 0)
+            status_buffer = io.StringIO()
+            with redirect_stdout(status_buffer):
+                rc_status = cli.main(["--root", str(root), "mesh-status"])
+            self.assertEqual(rc_status, 0)
+            payload = json.loads(status_buffer.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertGreaterEqual(payload["event_count"], 1)
+
+    def test_mesh_autonomy_once_without_lane_ensure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                rc = cli.main(["--root", str(root), "mesh-autonomy-once", "--no-ensure-lanes"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["lane_actions"]["reason"], "no_ensure_lanes")
+
+    def test_mesh_autonomy_once_invokes_lane_ensure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.ensure_lanes_background",
+                return_value={
+                    "ok": True,
+                    "requested_lane": "lane-a",
+                    "ensured_count": 1,
+                    "started_count": 0,
+                    "restarted_count": 0,
+                    "failed_count": 0,
+                },
+            ) as ensure:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    rc = cli.main(["--root", str(root), "mesh-autonomy-once", "--lane", "lane-a"])
+            self.assertEqual(rc, 0)
+            ensure.assert_called_once()
+            self.assertEqual(ensure.call_args.kwargs["lane_id"], "lane-a")
 
 
 if __name__ == "__main__":

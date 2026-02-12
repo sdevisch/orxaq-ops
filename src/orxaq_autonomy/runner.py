@@ -14,15 +14,18 @@ from __future__ import annotations
 import argparse
 import atexit
 import datetime as dt
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass
@@ -115,6 +118,29 @@ NON_INTERACTIVE_ENV_OVERRIDES = {
     "NO_COLOR": "1",
 }
 
+_LOCAL_OPENAI_MODEL_CACHE: dict[str, tuple[float, set[str]]] = {}
+_LOCAL_OPENAI_MODEL_CURSOR: dict[str, int] = {}
+_LOCAL_OPENAI_ENDPOINT_CONTEXT_CACHE: tuple[float, dict[str, int]] | None = None
+_LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE: tuple[float, dict[str, bool]] | None = None
+_LOCAL_OPENAI_ENDPOINT_FAILURE_STATE: dict[str, dict[str, Any]] = {}
+_LOCAL_OPENAI_ENDPOINT_INFLIGHT: dict[str, int] = {}
+
+BACKLOG_SIGNAL_TERMS = (
+    "backlog",
+    "queue",
+    "hygiene",
+    "maintenance",
+    "sweep",
+    "housekeeping",
+)
+REVIEW_TASK_SIGNAL_TERMS = (
+    "review",
+    "audit",
+    "governance",
+    "security",
+    "ethics",
+)
+
 VALIDATION_FALLBACKS = {
     "make lint": ["python3 -m ruff check .", ".venv/bin/ruff check ."],
     "make test": [
@@ -131,6 +157,8 @@ OWNER_PRIORITY = {"codex": 0, "gemini": 1, "claude": 2}
 MAX_CONVERSATION_SNIPPET_CHARS = 8000
 MAX_HANDOFF_SNIPPET_CHARS = 5000
 HANDOFF_RECENT_LIMIT = 5
+MAX_STORED_SUMMARY_CHARS = 800
+MAX_STORED_ERROR_CHARS = 2400
 AMBIGUOUS_PROMPT_TERMS = (
     "maybe",
     "somehow",
@@ -185,6 +213,59 @@ DEFAULT_ROUTELLM_POLICY_PAYLOAD = {
         },
     },
 }
+VALID_EXECUTION_PROFILES = {"standard", "high", "extra_high"}
+EXECUTION_PROFILE_ALIASES = {
+    "standard": "standard",
+    "default": "standard",
+    "normal": "standard",
+    "high": "high",
+    "extra-high": "extra_high",
+    "extrahigh": "extra_high",
+    "extra_high": "extra_high",
+    "xhigh": "extra_high",
+}
+EXTRA_HIGH_MIN_MAX_CYCLES = 1_000_000_000
+DEFAULT_PRIVILEGE_POLICY_PAYLOAD = {
+    "schema_version": "privilege-policy.v1",
+    "default_mode": "least_privilege",
+    "providers": {
+        "codex": {
+            "least_privilege_args": ["--sandbox", "workspace-write", "--ask-for-approval", "never"],
+            "elevated_args": ["--dangerously-bypass-approvals-and-sandbox"],
+        },
+        "gemini": {
+            "least_privilege_args": [],
+            "elevated_args": ["--approval-mode", "yolo"],
+        },
+        "claude": {
+            "least_privilege_args": ["--permission-mode", "acceptEdits"],
+            "elevated_args": ["--permission-mode", "bypassPermissions", "--dangerously-skip-permissions"],
+        },
+    },
+    "breakglass": {
+        "enabled": True,
+        "active_grant_file": "artifacts/autonomy/breakglass/active_grant.json",
+        "audit_log_file": "artifacts/autonomy/privilege_escalations.ndjson",
+        "max_ttl_minutes": 120,
+        "required_fields": [
+            "grant_id",
+            "reason",
+            "scope",
+            "requested_by",
+            "approved_by",
+            "issued_at",
+            "expires_at",
+            "rollback_proof",
+            "providers",
+        ],
+    },
+}
+ELEVATED_PERMISSION_FLAG_TOKENS = {
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--dangerously-skip-permissions",
+    "bypassPermissions",
+    "yolo",
+}
 
 
 @dataclass(frozen=True)
@@ -196,6 +277,45 @@ class Task:
     description: str
     depends_on: list[str]
     acceptance: list[str]
+    backlog: bool = False
+
+
+def normalize_execution_profile(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return "standard"
+    return EXECUTION_PROFILE_ALIASES.get(text, "standard")
+
+
+def resolve_execution_policy(
+    *,
+    execution_profile: str,
+    continuous_requested: bool,
+    queue_persistent_mode_requested: bool,
+    max_cycles_requested: int,
+) -> dict[str, Any]:
+    normalized = normalize_execution_profile(execution_profile)
+    max_cycles = max(1, int(max_cycles_requested or 1))
+    continuous = bool(continuous_requested)
+    queue_persistent = bool(queue_persistent_mode_requested)
+    force_continuation = False
+    assume_true_full_autonomy = False
+
+    if normalized == "extra_high":
+        force_continuation = True
+        assume_true_full_autonomy = True
+        continuous = True
+        queue_persistent = True
+        max_cycles = max(max_cycles, EXTRA_HIGH_MIN_MAX_CYCLES)
+
+    return {
+        "execution_profile": normalized,
+        "continuous": continuous,
+        "queue_persistent_mode": queue_persistent,
+        "effective_max_cycles": max_cycles,
+        "force_continuation": force_continuation,
+        "assume_true_full_autonomy": assume_true_full_autonomy,
+    }
 
 
 class RunnerLock:
@@ -421,6 +541,10 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _local_only_mode_enabled() -> bool:
+    return _safe_bool(os.getenv("ORXAQ_AUTONOMY_LOCAL_ONLY"), False)
+
+
 def _normalize_model_candidates(raw: Any) -> list[str]:
     if isinstance(raw, list):
         values = [str(item).strip() for item in raw]
@@ -455,6 +579,206 @@ def load_routellm_policy(path: Path | None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(DEFAULT_ROUTELLM_POLICY_PAYLOAD)
     return raw
+
+
+def _normalize_cli_args(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        value = str(item).strip()
+        if value:
+            out.append(value)
+    return out
+
+
+def load_privilege_policy(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return dict(DEFAULT_PRIVILEGE_POLICY_PAYLOAD)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(path, DEFAULT_PRIVILEGE_POLICY_PAYLOAD)
+        return dict(DEFAULT_PRIVILEGE_POLICY_PAYLOAD)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return dict(DEFAULT_PRIVILEGE_POLICY_PAYLOAD)
+    if not isinstance(raw, dict):
+        return dict(DEFAULT_PRIVILEGE_POLICY_PAYLOAD)
+    return raw
+
+
+def _resolve_policy_path(raw: Any, *, runtime_root: Path, default: Path) -> Path:
+    text = str(raw or "").strip()
+    path = Path(text) if text else default
+    if not path.is_absolute():
+        path = (runtime_root / path).resolve()
+    return path
+
+
+def resolve_privilege_artifact_paths(
+    *,
+    policy: dict[str, Any],
+    runtime_root: Path,
+    artifacts_dir: Path,
+) -> tuple[Path, Path]:
+    breakglass = policy.get("breakglass", {}) if isinstance(policy.get("breakglass"), dict) else {}
+    active_grant = _resolve_policy_path(
+        breakglass.get("active_grant_file"),
+        runtime_root=runtime_root,
+        default=(artifacts_dir / "breakglass" / "active_grant.json"),
+    )
+    audit_log = _resolve_policy_path(
+        breakglass.get("audit_log_file"),
+        runtime_root=runtime_root,
+        default=(artifacts_dir / "privilege_escalations.ndjson"),
+    )
+    return active_grant, audit_log
+
+
+def _parse_utc_iso(value: Any) -> dt.datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _provider_privilege_policy(privilege_policy: dict[str, Any], provider: str) -> dict[str, Any]:
+    providers = privilege_policy.get("providers", {}) if isinstance(privilege_policy.get("providers"), dict) else {}
+    key = provider.strip().lower()
+    raw = providers.get(key, {}) if isinstance(providers.get(key, {}), dict) else {}
+    return {
+        "least_privilege_args": _normalize_cli_args(raw.get("least_privilege_args", [])),
+        "elevated_args": _normalize_cli_args(raw.get("elevated_args", [])),
+    }
+
+
+def _load_breakglass_grant(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists() or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _validate_breakglass_grant(
+    *,
+    grant: dict[str, Any],
+    provider: str,
+    task_id: str,
+    required_fields: list[str],
+    max_ttl_minutes: int,
+) -> tuple[bool, str]:
+    if not grant:
+        return False, "grant_missing"
+    missing_fields = [name for name in required_fields if not str(grant.get(name, "")).strip()]
+    if missing_fields:
+        return False, f"missing_required_fields:{','.join(sorted(missing_fields))}"
+
+    provider_key = provider.strip().lower()
+    providers = [str(item).strip().lower() for item in grant.get("providers", []) if str(item).strip()]
+    if providers and "*" not in providers and provider_key not in providers:
+        return False, "provider_not_allowed"
+
+    task_allowlist = {str(item).strip() for item in grant.get("task_allowlist", []) if str(item).strip()}
+    if task_allowlist and task_id not in task_allowlist:
+        return False, "task_not_allowed"
+
+    issued_at = _parse_utc_iso(grant.get("issued_at"))
+    expires_at = _parse_utc_iso(grant.get("expires_at"))
+    if issued_at is None or expires_at is None:
+        return False, "invalid_timestamps"
+    if expires_at <= issued_at:
+        return False, "non_positive_ttl"
+    ttl_minutes = int(max(0, (expires_at - issued_at).total_seconds() // 60))
+    if ttl_minutes > max(1, max_ttl_minutes):
+        return False, "ttl_exceeds_policy"
+    if _now_utc() > expires_at:
+        return False, "grant_expired"
+    return True, "ok"
+
+
+def _resolve_provider_permission(
+    *,
+    provider: str,
+    task: Task,
+    cycle: int,
+    privilege_policy: dict[str, Any] | None,
+    breakglass_file: Path | None,
+    audit_log_file: Path | None,
+) -> tuple[list[str], dict[str, Any]]:
+    policy = privilege_policy if isinstance(privilege_policy, dict) else DEFAULT_PRIVILEGE_POLICY_PAYLOAD
+    provider_policy = _provider_privilege_policy(policy, provider)
+    least_args = provider_policy.get("least_privilege_args", [])
+    elevated_args = provider_policy.get("elevated_args", [])
+    mode = "least_privilege"
+    reason = "default_non_admin"
+    grant_id = ""
+    grant_summary: dict[str, Any] = {}
+
+    breakglass = policy.get("breakglass", {}) if isinstance(policy.get("breakglass"), dict) else {}
+    breakglass_enabled = _safe_bool(breakglass.get("enabled", True), True)
+    required_fields = [str(item).strip() for item in breakglass.get("required_fields", []) if str(item).strip()]
+    if not required_fields:
+        required_fields = list(DEFAULT_PRIVILEGE_POLICY_PAYLOAD["breakglass"]["required_fields"])
+    max_ttl_minutes = int(breakglass.get("max_ttl_minutes", 120) or 120)
+
+    chosen_args: list[str] = list(least_args)
+    if breakglass_enabled and elevated_args:
+        grant = _load_breakglass_grant(breakglass_file)
+        if grant:
+            grant_ok, grant_reason = _validate_breakglass_grant(
+                grant=grant,
+                provider=provider,
+                task_id=task.id,
+                required_fields=required_fields,
+                max_ttl_minutes=max_ttl_minutes,
+            )
+            if grant_ok:
+                mode = "breakglass_elevated"
+                reason = "approved_temporary_elevation"
+                chosen_args = list(elevated_args)
+                grant_id = str(grant.get("grant_id", "")).strip()
+                grant_summary = {
+                    "grant_id": grant_id,
+                    "requested_by": str(grant.get("requested_by", "")).strip(),
+                    "approved_by": str(grant.get("approved_by", "")).strip(),
+                    "scope": str(grant.get("scope", "")).strip(),
+                    "reason": str(grant.get("reason", "")).strip(),
+                    "issued_at": str(grant.get("issued_at", "")).strip(),
+                    "expires_at": str(grant.get("expires_at", "")).strip(),
+                    "rollback_proof": str(grant.get("rollback_proof", "")).strip(),
+                }
+            else:
+                reason = f"breakglass_denied:{grant_reason}"
+    event_payload: dict[str, Any] = {
+        "timestamp": _now_iso(),
+        "event_type": "privilege_decision",
+        "cycle": int(cycle),
+        "task_id": task.id,
+        "owner": task.owner,
+        "provider": provider,
+        "mode": mode,
+        "reason": reason,
+        "command_args": chosen_args,
+        "contains_elevated_flags": any(token in ELEVATED_PERMISSION_FLAG_TOKENS for token in chosen_args),
+        "breakglass_file": str(breakglass_file) if breakglass_file else "",
+        "grant_id": grant_id,
+    }
+    if grant_summary:
+        event_payload["grant"] = grant_summary
+    if audit_log_file is not None:
+        _append_ndjson(audit_log_file, event_payload)
+    return chosen_args, event_payload
 
 
 def _provider_routellm_policy(routellm_policy: dict[str, Any], provider: str) -> dict[str, Any]:
@@ -502,8 +826,20 @@ def resolve_routed_model(
 ) -> tuple[str | None, dict[str, Any]]:
     provider_key = provider.strip().lower() or "unknown"
     requested = (requested_model or "").strip() or None
+    local_only_mode = _local_only_mode_enabled()
     provider_policy = _provider_routellm_policy(routellm_policy, provider_key)
     allowed_models = _normalize_model_candidates(provider_policy.get("allowed_models", []))
+    original_allowed_count = len(allowed_models)
+    local_available_models: list[str] = []
+    allowed_models_were_filtered = False
+    if local_only_mode and provider_key == "codex" and allowed_models:
+        available = _local_openai_available_models()
+        if available:
+            local_available_models = sorted(available)
+            filtered = [model for model in allowed_models if _model_supported_by_endpoint(model, available)]
+            if filtered:
+                allowed_models = filtered
+                allowed_models_were_filtered = len(filtered) < original_allowed_count
     policy_fallback_model = str(provider_policy.get("fallback_model") or "").strip() or None
     requested_allowed = _canonical_allowed_model(requested, allowed_models)
     policy_fallback_allowed = _canonical_allowed_model(policy_fallback_model, allowed_models)
@@ -538,7 +874,11 @@ def resolve_routed_model(
         "fallback_used": False,
         "reason": "router_disabled",
         "router_error": "",
+        "router_notice": "",
         "router_latency_sec": 0.0,
+        "local_only_mode": local_only_mode,
+        "local_available_models_count": len(local_available_models),
+        "allowed_models_filtered_by_availability": allowed_models_were_filtered,
     }
     if not bool(routellm_enabled):
         return fallback_model, decision
@@ -588,7 +928,12 @@ def resolve_routed_model(
             raise RuntimeError("router_response_missing_model")
         selected_allowed = _canonical_allowed_model(selected, allowed_models)
         if allowed_models and selected_allowed is None:
-            raise RuntimeError(f"router_model_not_allowed:{selected}")
+            decision["selected_model"] = fallback_model or ""
+            decision["strategy"] = "static_fallback"
+            decision["reason"] = "router_model_disallowed_fallback"
+            decision["fallback_used"] = True
+            decision["router_notice"] = f"router_model_not_allowed:{selected}"
+            return fallback_model, decision
         if selected_allowed is not None:
             selected = selected_allowed
         decision["selected_model"] = selected
@@ -604,6 +949,576 @@ def resolve_routed_model(
         decision["router_error"] = str(err).strip()
         decision["selected_model"] = fallback_model or ""
         return fallback_model, decision
+
+
+def _local_openai_include_fleet_endpoints() -> bool:
+    default = "1" if _local_only_mode_enabled() else "0"
+    return str(os.getenv("ORXAQ_LOCAL_OPENAI_INCLUDE_FLEET_ENDPOINTS", default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _local_openai_available_models() -> set[str]:
+    models: set[str] = set()
+    for base_url in _local_openai_base_urls():
+        models.update(_local_openai_models_for_endpoint(base_url))
+    return models
+
+
+def _local_openai_fleet_base_urls() -> list[str]:
+    status_path = _local_openai_fleet_status_file()
+    if not status_path.exists():
+        return []
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return []
+    probe = payload.get("probe", {}) if isinstance(payload.get("probe", {}), dict) else {}
+    capability = payload.get("capability_scan", {}) if isinstance(payload.get("capability_scan", {}), dict) else {}
+    by_endpoint = (
+        capability.get("summary", {}).get("by_endpoint", {})
+        if isinstance(capability.get("summary", {}), dict)
+        else {}
+    )
+    out: list[str] = []
+    for row in probe.get("endpoints", []):
+        if not isinstance(row, dict):
+            continue
+        base_url = str(row.get("base_url", "")).strip().rstrip("/")
+        if base_url:
+            out.append(base_url)
+    if isinstance(by_endpoint, dict):
+        for row in by_endpoint.values():
+            if not isinstance(row, dict):
+                continue
+            base_url = str(row.get("base_url", "")).strip().rstrip("/")
+            if base_url:
+                out.append(base_url)
+    for row in capability.get("endpoints", []):
+        if not isinstance(row, dict):
+            continue
+        base_url = str(row.get("base_url", "")).strip().rstrip("/")
+        if base_url:
+            out.append(base_url)
+    return out
+
+
+def _local_openai_base_urls() -> list[str]:
+    raw_multi = str(os.getenv("ORXAQ_LOCAL_OPENAI_BASE_URLS", "")).strip()
+    single = str(os.getenv("ORXAQ_LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")).strip()
+    candidates: list[str] = []
+    explicit_configured = "ORXAQ_LOCAL_OPENAI_BASE_URLS" in os.environ or "ORXAQ_LOCAL_OPENAI_BASE_URL" in os.environ
+    if raw_multi:
+        candidates.extend(part.strip() for part in raw_multi.split(","))
+    if single:
+        candidates.append(single)
+    if not explicit_configured or _local_openai_include_fleet_endpoints():
+        candidates.extend(_local_openai_fleet_base_urls())
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for url in candidates:
+        cleaned = url.strip().rstrip("/")
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        normalized.append(cleaned)
+    if not normalized:
+        normalized.append("http://127.0.0.1:1234/v1")
+    return normalized
+
+
+def _select_local_openai_base_url(model: str, candidate_index: int) -> tuple[str, int, int]:
+    base_urls = _local_openai_base_urls()
+    total = len(base_urls)
+    if total <= 1:
+        return base_urls[0], 0, total
+    preferred: list[int] = []
+    for idx, url in enumerate(base_urls):
+        models = _local_openai_models_for_endpoint(url)
+        if _model_supported_by_endpoint(model, models):
+            preferred.append(idx)
+    candidates = preferred if preferred else list(range(total))
+
+    health_map = _local_openai_endpoint_health_map()
+    unhealthy_keys = {key for key, healthy in health_map.items() if not healthy}
+    if unhealthy_keys:
+        healthy_candidates = []
+        for idx in candidates:
+            endpoint_key = _local_openai_endpoint_key(base_urls[idx])
+            if endpoint_key and endpoint_key in unhealthy_keys:
+                continue
+            healthy_candidates.append(idx)
+        if healthy_candidates:
+            candidates = healthy_candidates
+
+    cooled_down_candidates = [idx for idx in candidates if not _local_openai_endpoint_is_cooled_down(base_urls[idx])]
+    if cooled_down_candidates:
+        candidates = cooled_down_candidates
+
+    if candidates:
+        inflight_map = {idx: _local_openai_endpoint_inflight_count(base_urls[idx]) for idx in candidates}
+        min_inflight = min(inflight_map.values())
+        least_loaded = [idx for idx, value in inflight_map.items() if value == min_inflight]
+        model_key = model.strip().lower() or "__default__"
+        cursor = _LOCAL_OPENAI_MODEL_CURSOR.get(model_key, 0)
+        _LOCAL_OPENAI_MODEL_CURSOR[model_key] = cursor + 1
+        slot_pos = cursor % len(least_loaded)
+        slot = least_loaded[slot_pos]
+        return base_urls[slot], slot, total
+
+    strategy = str(os.getenv("ORXAQ_LOCAL_OPENAI_ENDPOINT_STRATEGY", "round_robin")).strip().lower()
+    if strategy == "hash_model":
+        material = model.strip() or "default"
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        slot = int(digest[:8], 16) % total
+    else:
+        slot = max(0, int(candidate_index)) % total
+    return base_urls[slot], slot, total
+
+
+def _local_openai_models_ttl_sec() -> int:
+    try:
+        return max(10, int(str(os.getenv("ORXAQ_LOCAL_OPENAI_MODELS_TTL_SEC", "60")).strip()))
+    except (TypeError, ValueError):
+        return 60
+
+
+def _model_name_variants(model_name: str) -> set[str]:
+    raw = model_name.strip()
+    variants = {raw, raw.lower()}
+    if "/" in raw:
+        tail = raw.split("/", 1)[1]
+        variants.add(tail)
+        variants.add(tail.lower())
+    return {item.strip() for item in variants if item.strip()}
+
+
+def _model_supported_by_endpoint(model_name: str, endpoint_models: set[str]) -> bool:
+    if not model_name.strip() or not endpoint_models:
+        return False
+    variants = _model_name_variants(model_name)
+    for candidate in endpoint_models:
+        candidate_variants = _model_name_variants(candidate)
+        if variants.intersection(candidate_variants):
+            return True
+    return False
+
+
+def _local_openai_models_for_endpoint(base_url: str) -> set[str]:
+    now = time.monotonic()
+    ttl_sec = _local_openai_models_ttl_sec()
+    cached = _LOCAL_OPENAI_MODEL_CACHE.get(base_url)
+    if cached is not None:
+        fetched_at, model_set = cached
+        if now - fetched_at <= ttl_sec:
+            return set(model_set)
+    model_set: set[str] = set()
+    url = f"{base_url.rstrip('/')}/models"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            data = parsed.get("data", [])
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        model_id = str(item.get("id", "")).strip()
+                        if model_id:
+                            model_set.add(model_id)
+    except Exception:
+        model_set = set()
+    _LOCAL_OPENAI_MODEL_CACHE[base_url] = (now, set(model_set))
+    return model_set
+
+
+def _local_openai_context_cache_ttl_sec() -> int:
+    try:
+        return max(10, int(str(os.getenv("ORXAQ_LOCAL_OPENAI_CONTEXT_TTL_SEC", "60")).strip()))
+    except (TypeError, ValueError):
+        return 60
+
+
+def _local_openai_endpoint_key(raw_base_url: str) -> str:
+    value = str(raw_base_url).strip()
+    if not value:
+        return ""
+    parsed = urllib.parse.urlparse(value if "://" in value else f"http://{value}")
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return ""
+    port = parsed.port
+    if port is None:
+        port = 443 if str(parsed.scheme or "").strip().lower() == "https" else 80
+    return f"{host}:{port}"
+
+
+def _local_openai_fleet_status_file() -> Path:
+    raw = str(os.getenv("ORXAQ_LOCAL_MODEL_FLEET_STATUS_FILE", "artifacts/autonomy/local_models/fleet_status.json")).strip()
+    return Path(raw).resolve()
+
+
+def _local_openai_health_cache_ttl_sec() -> int:
+    try:
+        return max(5, int(str(os.getenv("ORXAQ_LOCAL_OPENAI_HEALTH_TTL_SEC", "20")).strip()))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _local_openai_endpoint_health_map() -> dict[str, bool]:
+    global _LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE
+    ttl_sec = _local_openai_health_cache_ttl_sec()
+    now = time.monotonic()
+    if _LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE is not None:
+        fetched_at, cached = _LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE
+        if now - fetched_at <= ttl_sec:
+            return dict(cached)
+
+    health_map: dict[str, bool] = {}
+    status_path = _local_openai_fleet_status_file()
+    if status_path.exists():
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            probe = payload.get("probe", {}) if isinstance(payload.get("probe", {}), dict) else {}
+            endpoints = probe.get("endpoints", []) if isinstance(probe.get("endpoints", []), list) else []
+            for row in endpoints:
+                if not isinstance(row, dict):
+                    continue
+                endpoint_key = _local_openai_endpoint_key(str(row.get("base_url", "")).strip())
+                if not endpoint_key:
+                    continue
+                healthy = bool(row.get("ok", False))
+                if endpoint_key in health_map:
+                    health_map[endpoint_key] = bool(health_map[endpoint_key] or healthy)
+                else:
+                    health_map[endpoint_key] = healthy
+
+    _LOCAL_OPENAI_ENDPOINT_HEALTH_CACHE = (now, dict(health_map))
+    return health_map
+
+
+def _local_openai_endpoint_failure_cooldown_sec() -> int:
+    try:
+        return max(1, int(str(os.getenv("ORXAQ_LOCAL_OPENAI_ENDPOINT_FAILURE_COOLDOWN_SEC", "30")).strip()))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _local_openai_endpoint_failure_cooldown_max_sec() -> int:
+    try:
+        return max(
+            _local_openai_endpoint_failure_cooldown_sec(),
+            int(str(os.getenv("ORXAQ_LOCAL_OPENAI_ENDPOINT_FAILURE_COOLDOWN_MAX_SEC", "300")).strip()),
+        )
+    except (TypeError, ValueError):
+        return 300
+
+
+def _local_openai_endpoint_is_cooled_down(base_url: str) -> bool:
+    endpoint_key = _local_openai_endpoint_key(base_url)
+    if not endpoint_key:
+        return False
+    payload = _LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.get(endpoint_key, {})
+    if not isinstance(payload, dict):
+        return False
+    cooldown_until = float(payload.get("cooldown_until", 0.0) or 0.0)
+    if cooldown_until <= 0:
+        return False
+    return time.monotonic() < cooldown_until
+
+
+def _local_openai_endpoint_inflight_count(base_url: str) -> int:
+    endpoint_key = _local_openai_endpoint_key(base_url)
+    if not endpoint_key:
+        return 0
+    return max(0, _safe_int(_LOCAL_OPENAI_ENDPOINT_INFLIGHT.get(endpoint_key, 0), 0))
+
+
+def _local_openai_endpoint_inflight_enter(base_url: str) -> None:
+    endpoint_key = _local_openai_endpoint_key(base_url)
+    if not endpoint_key:
+        return
+    _LOCAL_OPENAI_ENDPOINT_INFLIGHT[endpoint_key] = _local_openai_endpoint_inflight_count(base_url) + 1
+
+
+def _local_openai_endpoint_inflight_exit(base_url: str) -> None:
+    endpoint_key = _local_openai_endpoint_key(base_url)
+    if not endpoint_key:
+        return
+    remaining = _local_openai_endpoint_inflight_count(base_url) - 1
+    if remaining <= 0:
+        _LOCAL_OPENAI_ENDPOINT_INFLIGHT.pop(endpoint_key, None)
+    else:
+        _LOCAL_OPENAI_ENDPOINT_INFLIGHT[endpoint_key] = remaining
+
+
+def _record_local_openai_endpoint_result(base_url: str, *, ok: bool, error: str = "") -> None:
+    endpoint_key = _local_openai_endpoint_key(base_url)
+    if not endpoint_key:
+        return
+    if ok:
+        _LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.pop(endpoint_key, None)
+        return
+
+    previous = _LOCAL_OPENAI_ENDPOINT_FAILURE_STATE.get(endpoint_key, {})
+    previous_failures = _safe_int(previous.get("failures", 0), 0)
+    failures = max(1, previous_failures + 1)
+    cooldown_base = _local_openai_endpoint_failure_cooldown_sec()
+    cooldown_max = _local_openai_endpoint_failure_cooldown_max_sec()
+    cooldown_sec = min(cooldown_max, cooldown_base * (2 ** max(0, failures - 1)))
+    _LOCAL_OPENAI_ENDPOINT_FAILURE_STATE[endpoint_key] = {
+        "failures": failures,
+        "cooldown_until": time.monotonic() + float(cooldown_sec),
+        "last_failure_at": _now_iso(),
+        "last_error": str(error).strip()[:400],
+    }
+
+
+def _local_openai_endpoint_context_map() -> dict[str, int]:
+    global _LOCAL_OPENAI_ENDPOINT_CONTEXT_CACHE
+    ttl_sec = _local_openai_context_cache_ttl_sec()
+    now = time.monotonic()
+    if _LOCAL_OPENAI_ENDPOINT_CONTEXT_CACHE is not None:
+        fetched_at, cached = _LOCAL_OPENAI_ENDPOINT_CONTEXT_CACHE
+        if now - fetched_at <= ttl_sec:
+            return dict(cached)
+
+    context_map: dict[str, int] = {}
+    status_path = _local_openai_fleet_status_file()
+    if status_path.exists():
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            capability = payload.get("capability_scan", {}) if isinstance(payload.get("capability_scan", {}), dict) else {}
+            probe = payload.get("probe", {}) if isinstance(payload.get("probe", {}), dict) else {}
+            by_endpoint = (
+                capability.get("summary", {}).get("by_endpoint", {})
+                if isinstance(capability.get("summary", {}), dict)
+                else {}
+            )
+            endpoint_context_by_id: dict[str, int] = {}
+            if isinstance(by_endpoint, dict):
+                for endpoint_id, row in by_endpoint.items():
+                    if not isinstance(row, dict):
+                        continue
+                    context_tokens = _safe_int(row.get("max_context_tokens_success", 0), 0)
+                    endpoint_key = _local_openai_endpoint_key(str(row.get("base_url", "")).strip())
+                    if context_tokens > 0 and endpoint_key:
+                        context_map[endpoint_key] = max(context_tokens, context_map.get(endpoint_key, 0))
+                    endpoint_context_by_id[str(endpoint_id).strip()] = max(0, context_tokens)
+
+            endpoints = probe.get("endpoints", []) if isinstance(probe.get("endpoints", []), list) else []
+            for row in endpoints:
+                if not isinstance(row, dict):
+                    continue
+                endpoint_key = _local_openai_endpoint_key(str(row.get("base_url", "")).strip())
+                endpoint_id = str(row.get("id", "")).strip()
+                if not endpoint_key:
+                    continue
+                context_tokens = endpoint_context_by_id.get(endpoint_id, 0)
+                if context_tokens > 0:
+                    context_map[endpoint_key] = max(context_tokens, context_map.get(endpoint_key, 0))
+
+            capability_rows = capability.get("endpoints", []) if isinstance(capability.get("endpoints", []), list) else []
+            for row in capability_rows:
+                if not isinstance(row, dict):
+                    continue
+                endpoint_key = _local_openai_endpoint_key(str(row.get("base_url", "")).strip())
+                context_tokens = _safe_int(row.get("max_context_tokens_success", 0), 0)
+                if endpoint_key and context_tokens > 0:
+                    context_map[endpoint_key] = max(context_tokens, context_map.get(endpoint_key, 0))
+
+    _LOCAL_OPENAI_ENDPOINT_CONTEXT_CACHE = (now, dict(context_map))
+    return context_map
+
+
+def _local_openai_endpoint_override_tokens() -> dict[str, int]:
+    raw = str(os.getenv("ORXAQ_LOCAL_OPENAI_MAX_TOKENS_BY_ENDPOINT", "")).strip()
+    if not raw:
+        return {}
+    parsed_map: dict[str, int] = {}
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                endpoint_key = _local_openai_endpoint_key(str(key))
+                tokens = _safe_int(value, 0)
+                if endpoint_key and tokens > 0:
+                    parsed_map[endpoint_key] = tokens
+        return parsed_map
+
+    parts = [item.strip() for item in re.split(r"[,\s;]+", raw) if item.strip()]
+    for part in parts:
+        if "=" not in part:
+            continue
+        endpoint_raw, tokens_raw = part.split("=", 1)
+        endpoint_key = _local_openai_endpoint_key(endpoint_raw)
+        tokens = _safe_int(tokens_raw, 0)
+        if endpoint_key and tokens > 0:
+            parsed_map[endpoint_key] = tokens
+    return parsed_map
+
+
+def _local_openai_dynamic_max_tokens(base_url: str, configured_tokens: int) -> int:
+    endpoint_key = _local_openai_endpoint_key(base_url)
+    effective_tokens = max(64, int(configured_tokens))
+    if not endpoint_key:
+        return effective_tokens
+
+    override_tokens = _local_openai_endpoint_override_tokens().get(endpoint_key, 0)
+    if override_tokens > 0:
+        return max(64, override_tokens)
+
+    dynamic_enabled = str(os.getenv("ORXAQ_LOCAL_OPENAI_DYNAMIC_MAX_TOKENS", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    if not dynamic_enabled:
+        return effective_tokens
+
+    discovered_context = _local_openai_endpoint_context_map().get(endpoint_key, 0)
+    if discovered_context <= 0:
+        return effective_tokens
+
+    try:
+        fraction = float(str(os.getenv("ORXAQ_LOCAL_OPENAI_CONTEXT_FRACTION", "0.95")).strip())
+    except (TypeError, ValueError):
+        fraction = 0.95
+    fraction = min(max(fraction, 0.10), 1.0)
+    derived_tokens = max(64, int(discovered_context * fraction))
+    return max(effective_tokens, derived_tokens)
+
+
+def _local_openai_context_overflow_error(text: str) -> bool:
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    patterns = (
+        "n_ctx",
+        "context length",
+        "maximum context",
+        "maximum prompt length",
+        "too many tokens",
+        "cannot truncate prompt",
+        "prompt is too long",
+    )
+    return any(token in normalized for token in patterns)
+
+
+def run_local_openai_chat_completion(
+    *,
+    prompt: str,
+    model: str,
+    timeout_sec: int,
+    base_url: str | None = None,
+) -> tuple[bool, str, dict[str, Any], str, str]:
+    resolved_base_url = str(base_url or "").strip().rstrip("/")
+    if not resolved_base_url:
+        resolved_base_url = _local_openai_base_urls()[0]
+    _local_openai_endpoint_inflight_enter(resolved_base_url)
+    api_key = str(os.getenv("ORXAQ_LOCAL_OPENAI_API_KEY", "lm-studio")).strip() or "lm-studio"
+    try:
+        configured_max_tokens = max(64, int(str(os.getenv("ORXAQ_LOCAL_OPENAI_MAX_TOKENS", "4096")).strip()))
+    except (TypeError, ValueError):
+        configured_max_tokens = 4096
+    max_tokens = _local_openai_dynamic_max_tokens(resolved_base_url, configured_max_tokens)
+    try:
+        temperature = float(str(os.getenv("ORXAQ_LOCAL_OPENAI_TEMPERATURE", "0.1")).strip())
+    except (TypeError, ValueError):
+        temperature = 0.1
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    url = f"{resolved_base_url}/chat/completions"
+
+    try:
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=max(1, timeout_sec)) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as err:
+            raw = err.read().decode("utf-8", errors="replace")
+            if err.code == 400 and _local_openai_context_overflow_error(raw) and max_tokens > 96:
+                reduced_max_tokens = max(64, max_tokens // 2)
+                payload["max_tokens"] = reduced_max_tokens
+                retry_body = json.dumps(payload).encode("utf-8")
+                retry_request = urllib.request.Request(url, data=retry_body, headers=headers, method="POST")
+                try:
+                    with urllib.request.urlopen(retry_request, timeout=max(1, timeout_sec)) as response:
+                        raw = response.read().decode("utf-8", errors="replace")
+                except urllib.error.HTTPError as retry_err:
+                    retry_raw = retry_err.read().decode("utf-8", errors="replace")
+                    error_text = f"local_openai_http_{retry_err.code}: {retry_raw.strip()}"
+                    _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+                    return False, "", {}, error_text, resolved_base_url
+                except Exception as retry_err:  # pragma: no cover - network/runtime dependent
+                    error_text = str(retry_err).strip()
+                    _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+                    return False, "", {}, error_text, resolved_base_url
+            else:
+                error_text = f"local_openai_http_{err.code}: {raw.strip()}"
+                _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+                return False, "", {}, error_text, resolved_base_url
+        except Exception as err:  # pragma: no cover - network/runtime dependent
+            error_text = str(err).strip()
+            _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+            return False, "", {}, error_text, resolved_base_url
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            error_text = "local_openai_response_not_json"
+            _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+            return False, raw, {}, error_text, resolved_base_url
+        if not isinstance(parsed, dict):
+            error_text = "local_openai_response_not_object"
+            _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+            return False, raw, {}, error_text, resolved_base_url
+        usage_payload = parsed.get("usage", {}) if isinstance(parsed.get("usage", {}), dict) else {}
+
+        text = ""
+        choices = parsed.get("choices", [])
+        if isinstance(choices, list):
+            for item in choices:
+                if not isinstance(item, dict):
+                    continue
+                message = item.get("message", {})
+                if isinstance(message, dict):
+                    content = message.get("content")
+                    if isinstance(content, str) and content.strip():
+                        text = content
+                        break
+                direct_text = item.get("text")
+                if isinstance(direct_text, str) and direct_text.strip():
+                    text = direct_text
+                    break
+        if not text.strip():
+            error_text = "local_openai_response_missing_text"
+            _record_local_openai_endpoint_result(resolved_base_url, ok=False, error=error_text)
+            return False, raw, usage_payload, error_text, resolved_base_url
+        _record_local_openai_endpoint_result(resolved_base_url, ok=True)
+        return True, text.strip(), usage_payload, "", resolved_base_url
+    finally:
+        _local_openai_endpoint_inflight_exit(resolved_base_url)
 
 
 def _resolve_pricing_entry(pricing: dict[str, Any], *, owner: str, model: str) -> dict[str, float]:
@@ -987,9 +1902,9 @@ def record_handoff_event(
     outcome: dict[str, Any],
 ) -> None:
     status = str(outcome.get("status", "")).strip().lower()
-    summary = str(outcome.get("summary", "")).strip()
-    blocker = str(outcome.get("blocker", "")).strip()
-    next_actions = [str(item) for item in (outcome.get("next_actions", []) or [])]
+    summary = _sanitize_summary_text(str(outcome.get("summary", "")), limit=320)
+    blocker = _sanitize_error_text(str(outcome.get("blocker", "")), limit=360)
+    next_actions = [_truncate_text(str(item), limit=180) for item in (outcome.get("next_actions", []) or [])]
     payload = {
         "timestamp": _now_iso(),
         "task_id": task.id,
@@ -1331,8 +2246,70 @@ def _normalize_legacy_task_spec(path: Path, raw: dict[str, Any]) -> list[dict[st
             "description": description,
             "depends_on": depends_on,
             "acceptance": acceptance,
+            "backlog": False,
         }
     ]
+
+
+def _task_backlog_terms() -> tuple[str, ...]:
+    raw = str(os.getenv("ORXAQ_TASK_BACKLOG_TERMS", "")).strip()
+    if not raw:
+        return BACKLOG_SIGNAL_TERMS
+    terms = tuple(
+        token.strip().lower()
+        for token in re.split(r"[,\s;]+", raw)
+        if token.strip()
+    )
+    return terms or BACKLOG_SIGNAL_TERMS
+
+
+def _contains_backlog_signal(text: str) -> bool:
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    return any(term in normalized for term in _task_backlog_terms())
+
+
+def _is_review_task(task: Task) -> bool:
+    haystack = " ".join((task.id, task.title, task.description)).strip().lower()
+    if not haystack:
+        return False
+    return any(term in haystack for term in REVIEW_TASK_SIGNAL_TERMS)
+
+
+def _payload_backlog_flag(item: dict[str, Any]) -> bool:
+    explicit = item.get("backlog", None)
+    if isinstance(explicit, bool):
+        return explicit
+    if isinstance(explicit, (int, float)):
+        return bool(explicit)
+    if isinstance(explicit, str):
+        normalized = explicit.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+
+    labels = item.get("labels", [])
+    if isinstance(labels, list):
+        for label in labels:
+            if _contains_backlog_signal(str(label)):
+                return True
+    tags = item.get("tags", [])
+    if isinstance(tags, list):
+        for tag in tags:
+            if _contains_backlog_signal(str(tag)):
+                return True
+
+    fields = (
+        str(item.get("lane_type", "")),
+        str(item.get("queue", "")),
+        str(item.get("kind", "")),
+        str(item.get("id", "")),
+        str(item.get("title", "")),
+        str(item.get("description", "")),
+    )
+    return any(_contains_backlog_signal(value) for value in fields if value.strip())
 
 
 def load_tasks(path: Path) -> list[Task]:
@@ -1357,6 +2334,7 @@ def load_tasks(path: Path) -> list[Task]:
             description=str(item["description"]),
             depends_on=[str(x) for x in item.get("depends_on", [])],
             acceptance=[str(x) for x in item.get("acceptance", [])],
+            backlog=_payload_backlog_flag(item),
         )
         if task.id in seen:
             raise ValueError(f"Duplicate task id: {task.id}")
@@ -1365,6 +2343,21 @@ def load_tasks(path: Path) -> list[Task]:
         seen.add(task.id)
         tasks.append(task)
     return tasks
+
+
+def _default_task_state_entry(task: Task) -> dict[str, Any]:
+    return {
+        "status": STATUS_PENDING,
+        "attempts": 0,
+        "retryable_failures": 0,
+        "deadlock_recoveries": 0,
+        "deadlock_reopens": 0,
+        "not_before": "",
+        "last_update": "",
+        "last_summary": "",
+        "last_error": "",
+        "owner": task.owner,
+    }
 
 
 def load_state(path: Path, tasks: list[Task]) -> dict[str, dict[str, Any]]:
@@ -1378,25 +2371,208 @@ def load_state(path: Path, tasks: list[Task]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for task in tasks:
         entry = raw.get(task.id, {})
+        default_entry = _default_task_state_entry(task)
         status = str(entry.get("status", STATUS_PENDING))
         if status not in VALID_STATUSES:
             status = STATUS_PENDING
         if status == STATUS_IN_PROGRESS:
             # Recover from interrupted runs without deadlocking task selection.
             status = STATUS_PENDING
-        out[task.id] = {
-            "status": status,
-            "attempts": _safe_int(entry.get("attempts", 0), 0),
-            "retryable_failures": _safe_int(entry.get("retryable_failures", 0), 0),
-            "deadlock_recoveries": _safe_int(entry.get("deadlock_recoveries", 0), 0),
-            "deadlock_reopens": _safe_int(entry.get("deadlock_reopens", 0), 0),
-            "not_before": str(entry.get("not_before", "")),
-            "last_update": str(entry.get("last_update", "")),
-            "last_summary": str(entry.get("last_summary", "")),
-            "last_error": str(entry.get("last_error", "")),
-            "owner": task.owner,
-        }
+        out[task.id] = dict(default_entry)
+        out[task.id]["status"] = status
+        out[task.id]["attempts"] = _safe_int(entry.get("attempts", 0), 0)
+        out[task.id]["retryable_failures"] = _safe_int(entry.get("retryable_failures", 0), 0)
+        out[task.id]["deadlock_recoveries"] = _safe_int(entry.get("deadlock_recoveries", 0), 0)
+        out[task.id]["deadlock_reopens"] = _safe_int(entry.get("deadlock_reopens", 0), 0)
+        out[task.id]["not_before"] = str(entry.get("not_before", ""))
+        out[task.id]["last_update"] = str(entry.get("last_update", ""))
+        out[task.id]["last_summary"] = str(entry.get("last_summary", ""))
+        out[task.id]["last_error"] = str(entry.get("last_error", ""))
+        out[task.id]["owner"] = task.owner
     return out
+
+
+def load_task_queue_state(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    claimed_payload = raw.get("claimed", {})
+    claimed: dict[str, str] = {}
+    if isinstance(claimed_payload, dict):
+        for key, value in claimed_payload.items():
+            task_id = str(key).strip()
+            if not task_id:
+                continue
+            claimed[task_id] = str(value).strip() or _now_iso()
+        return claimed
+    legacy_ids = raw.get("claimed_ids", [])
+    if isinstance(legacy_ids, list):
+        for item in legacy_ids:
+            task_id = str(item).strip()
+            if task_id:
+                claimed[task_id] = _now_iso()
+    return claimed
+
+
+def save_task_queue_state(path: Path | None, claimed: dict[str, str]) -> None:
+    if path is None:
+        return
+    try:
+        max_entries = max(100, int(str(os.getenv("ORXAQ_TASK_QUEUE_MAX_CLAIMED", "20000")).strip()))
+    except (TypeError, ValueError):
+        max_entries = 20000
+    if len(claimed) > max_entries:
+        ordered = sorted(
+            claimed.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:max_entries]
+        claimed = dict(ordered)
+    payload = {
+        "updated_at": _now_iso(),
+        "claimed_count": len(claimed),
+        "claimed": claimed,
+    }
+    _write_json(path, payload)
+
+
+def _decode_task_queue_items(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    raw_text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not raw_text:
+        return [], []
+
+    errors: list[str] = []
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)], []
+    if isinstance(parsed, dict):
+        tasks_payload = parsed.get("tasks", [])
+        if isinstance(tasks_payload, list):
+            return [item for item in tasks_payload if isinstance(item, dict)], []
+        return [parsed], []
+
+    items: list[dict[str, Any]] = []
+    for line_no, line in enumerate(raw_text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            row = json.loads(stripped)
+        except json.JSONDecodeError as err:
+            errors.append(f"line {line_no}: invalid JSON ({err.msg})")
+            continue
+        if not isinstance(row, dict):
+            errors.append(f"line {line_no}: entry must be a JSON object")
+            continue
+        items.append(row)
+    return items, errors
+
+
+def _queue_owner(task_id: str, raw_owner: Any) -> str:
+    owner = str(raw_owner or "").strip().lower()
+    if owner in SUPPORTED_OWNERS:
+        return owner
+    inferred_owner = task_id.split("-", 1)[0].strip().lower()
+    if inferred_owner in SUPPORTED_OWNERS:
+        return inferred_owner
+    return "codex"
+
+
+def _queue_task_from_item(item: dict[str, Any]) -> Task:
+    task_id = str(item.get("id") or item.get("task") or "").strip()
+    if not task_id:
+        raise ValueError("missing task id")
+    if len(task_id) > 180:
+        raise ValueError(f"task id too long ({len(task_id)} > 180)")
+    owner = _queue_owner(task_id, item.get("owner"))
+    priority = max(1, _safe_int(item.get("priority", 5), 5))
+    title = str(item.get("title") or task_id.replace("-", " ")).strip() or task_id
+    description = str(item.get("description") or title).strip() or title
+    if len(title) > 600:
+        title = title[:600]
+    if len(description) > 12_000:
+        description = description[:12_000]
+    depends_on_raw = item.get("depends_on", [])
+    depends_on: list[str] = []
+    if isinstance(depends_on_raw, list):
+        depends_on = [str(dep).strip() for dep in depends_on_raw if str(dep).strip()]
+    acceptance_raw = item.get("acceptance", [])
+    acceptance: list[str] = []
+    if isinstance(acceptance_raw, list):
+        acceptance = [str(step).strip() for step in acceptance_raw if str(step).strip()]
+    return Task(
+        id=task_id,
+        owner=owner,
+        priority=priority,
+        title=title,
+        description=description,
+        depends_on=depends_on,
+        acceptance=acceptance,
+        backlog=_payload_backlog_flag(item),
+    )
+
+
+def ingest_task_queue(
+    *,
+    queue_file: Path | None,
+    queue_state_file: Path | None,
+    tasks: list[Task],
+    state: dict[str, dict[str, Any]],
+    owner_filter: set[str] | None = None,
+) -> dict[str, Any]:
+    if queue_file is None or not queue_file.exists():
+        return {"enabled": bool(queue_file), "seen": 0, "imported": [], "skipped": 0, "errors": []}
+
+    claimed = load_task_queue_state(queue_state_file)
+    claimed_ids = set(claimed)
+    task_ids = {task.id for task in tasks}
+    imported_ids: list[str] = []
+    skipped = 0
+    errors: list[str] = []
+    items, decode_errors = _decode_task_queue_items(queue_file)
+    errors.extend(decode_errors)
+    now_iso = _now_iso()
+
+    for index, item in enumerate(items, start=1):
+        try:
+            task = _queue_task_from_item(item)
+        except ValueError as err:
+            errors.append(f"entry {index}: {err}")
+            continue
+        if owner_filter and task.owner not in owner_filter:
+            skipped += 1
+            continue
+        if task.id in task_ids or task.id in claimed_ids:
+            skipped += 1
+            continue
+        tasks.append(task)
+        state[task.id] = _default_task_state_entry(task)
+        claimed[task.id] = now_iso
+        claimed_ids.add(task.id)
+        task_ids.add(task.id)
+        imported_ids.append(task.id)
+
+    if imported_ids or decode_errors:
+        save_task_queue_state(queue_state_file, claimed)
+
+    return {
+        "enabled": True,
+        "seen": len(items),
+        "imported": imported_ids,
+        "skipped": skipped,
+        "errors": errors,
+        "queue_file": str(queue_file),
+        "queue_state_file": str(queue_state_file) if queue_state_file is not None else "",
+    }
 
 
 def save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
@@ -1524,8 +2700,10 @@ def select_next_task(
         ready.append(task)
     if not ready:
         return None
-    ready.sort(key=lambda t: (t.priority, OWNER_PRIORITY[t.owner], t.id))
-    return ready[0]
+    non_backlog = [task for task in ready if not task.backlog]
+    preferred = non_backlog if non_backlog else ready
+    preferred.sort(key=lambda t: (t.priority, OWNER_PRIORITY[t.owner], t.id))
+    return preferred[0]
 
 
 def soonest_pending_time(
@@ -1628,6 +2806,22 @@ def recover_deadlocked_tasks(
     }
 
 
+def _repo_is_git_worktree(repo_path: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--is-inside-work-tree"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    return result.stdout.strip().lower() == "true"
+
+
 def build_agent_prompt(
     task: Task,
     objective_text: str,
@@ -1640,6 +2834,7 @@ def build_agent_prompt(
     mcp_context: MCPContextBundle | None,
     startup_instructions: str = "",
     handoff_context: str = "",
+    repo_is_worktree: bool = True,
 ) -> str:
     acceptance = "\n".join(f"- {item}" for item in task.acceptance) or "- No explicit acceptance items"
 
@@ -1669,6 +2864,26 @@ def build_agent_prompt(
     handoff_block = ""
     if handoff_text:
         handoff_block = f"{handoff_text}\n\n"
+    if repo_is_worktree:
+        git_requirements = (
+            "- Record one baseline before edits: `git status -sb`, `git rev-parse --abbrev-ref HEAD`, and `git diff --name-only --diff-filter=U`.\n"
+            "- Issue-first workflow: attach work to an existing issue or create one before implementation; include issue reference in summary/next_actions.\n"
+            "- Use an issue-linked branch (`codex/issue-<id>-<topic>`). If current branch is not issue-linked, create/switch before edits.\n"
+            "- Keep one scoped task per issue-linked branch and avoid mixing unrelated changes in the same commit series.\n"
+            "- If unrelated modified files already exist, record the concrete file list once at baseline; only mention again if the file set changes or conflicts appear.\n"
+            "- Maintain strict issue/branch separation across repos; never collapse unrelated tasks into one issue or branch.\n"
+            "- For multi-repo tasks, keep separate issue/branch/commit series per repository and report the mapping explicitly.\n"
+            "- Commit and push contiguous changes.\n"
+            "- If git locks or in-progress git states are detected, recover safely and continue.\n"
+            "- Merge/rebase operations are allowed when there are no unresolved conflicts (`git diff --name-only --diff-filter=U` is empty).\n"
+        )
+    else:
+        git_requirements = (
+            "- Repository git metadata reports non-worktree mode (`rev-parse --is-inside-work-tree` is false); do not block on `git status` baseline commands.\n"
+            "- Record one filesystem baseline before edits: `pwd`, `ls -la`, and `rg -n \"^(<<<<<<<|=======|>>>>>>>)\" -S .`.\n"
+            "- Skip branch/issue/push operations that require a worktree; continue implementing and validating file-level changes.\n"
+            "- If git commands fail with `must be run in a work tree`, treat it as an environmental limitation and continue.\n"
+        )
 
     return (
         f"{objective_text.strip()}\n\n"
@@ -1696,13 +2911,12 @@ def build_agent_prompt(
         "- Scope boundary: complete only the current autonomous task listed above.\n"
         "- Do not start another task in this run; return final JSON immediately after this task is done/partial/blocked.\n"
         "- Do not ask for user nudges unless blocked by credentials, destructive actions, or true tradeoff decisions.\n"
+        f"{git_requirements}"
         "- Run validation commands: `make lint` then `make test`.\n"
-        "- Commit and push contiguous changes.\n"
         "- If a command fails transiently (rate limits/network/timeouts), retry with resilient fallbacks before giving up.\n"
         "- Use non-interactive commands only (never wait for terminal prompts).\n"
         "- Handle new/unknown file types safely: preserve binary formats, avoid destructive rewrites, and add `.gitattributes` entries when needed.\n"
-        "- If git locks or in-progress git states are detected, recover safely and continue.\n"
-        "- Merge/rebase operations are allowed when there are no unresolved conflicts (`git diff --name-only --diff-filter=U` is empty).\n"
+        "- If you are review-owner (Codex preferred), resolve non-ambiguous PR review comments, merge conflicts, and issue/branch hygiene gaps before escalating.\n"
         "- If you are implementation-owner: provide explicit test requests for Gemini in next_actions.\n"
         "- If you are test-owner: when you find implementation issues, provide concrete fix feedback and hints for Codex in blocker/next_actions.\n"
         "- Return ONLY JSON with keys: status, summary, commit, validations, next_actions, blocker.\n"
@@ -1721,16 +2935,20 @@ def run_command(
     stdin_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = build_subprocess_env(extra_env)
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(cwd),
+        "text": True,
+        "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "env": env,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
     try:
-        process = subprocess.Popen(
-            cmd,
-            cwd=str(cwd),
-            text=True,
-            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        process = subprocess.Popen(cmd, **popen_kwargs)
     except FileNotFoundError as err:
         missing = err.filename or (cmd[0] if cmd else "")
         return subprocess.CompletedProcess(
@@ -1755,8 +2973,15 @@ def run_command(
         except subprocess.TimeoutExpired:
             communicate_input = None
             if elapsed >= timeout_sec:
-                process.kill()
-                stdout, stderr = process.communicate()
+                _terminate_process_tree(process)
+                stdout = ""
+                stderr = ""
+                for _ in range(3):
+                    try:
+                        stdout, stderr = process.communicate(timeout=1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        _terminate_process_tree(process, grace_sec=0)
                 timeout_msg = f"\n[TIMEOUT] command exceeded {timeout_sec}s: {' '.join(cmd)}"
                 return subprocess.CompletedProcess(
                     cmd,
@@ -1766,6 +2991,51 @@ def run_command(
                 )
 
 
+def _terminate_process_tree(process: subprocess.Popen[str], grace_sec: float = 2.0) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                timeout=max(1, int(grace_sec) + 2),
+            )
+        except Exception:
+            pass
+        if process.poll() is None:
+            process.kill()
+        return
+    try:
+        pgid = os.getpgid(process.pid)
+    except Exception:
+        pgid = None
+    if pgid is not None and pgid > 0:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + max(0.0, grace_sec)
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                return
+            time.sleep(0.05)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    else:
+        process.terminate()
+        deadline = time.monotonic() + max(0.0, grace_sec)
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                return
+            time.sleep(0.05)
+        if process.poll() is None:
+            process.kill()
+
+
 def run_validations(
     repo: Path,
     validate_commands: list[str],
@@ -1773,9 +3043,23 @@ def run_validations(
     progress_callback: Callable[[str, int], None] | None = None,
     retries_per_command: int = 1,
 ) -> tuple[bool, str]:
+    def _split_command_env(raw_command: str) -> tuple[list[str], dict[str, str]]:
+        parts = shlex.split(raw_command)
+        env_overrides: dict[str, str] = {}
+        while parts and "=" in parts[0]:
+            candidate = parts[0]
+            key, value = candidate.split("=", 1)
+            if not key:
+                break
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                break
+            env_overrides[key] = value
+            parts = parts[1:]
+        return parts, env_overrides
+
     for raw in validate_commands:
         try:
-            cmd = shlex.split(raw)
+            cmd, extra_env = _split_command_env(raw)
         except ValueError as err:
             return False, f"Validation command parse failed for `{raw}`: {err}"
         if not cmd:
@@ -1789,6 +3073,7 @@ def run_validations(
                 cwd=repo,
                 timeout_sec=timeout_sec,
                 progress_callback=(lambda elapsed: progress_callback(raw, elapsed)) if progress_callback else None,
+                extra_env=extra_env or None,
             )
             if result.returncode == 0:
                 failure_details = ""
@@ -1803,7 +3088,7 @@ def run_validations(
         if fallbacks:
             fallback_errors: list[str] = []
             for fallback in fallbacks:
-                fallback_cmd = shlex.split(fallback)
+                fallback_cmd, fallback_env = _split_command_env(fallback)
                 if not fallback_cmd:
                     continue
                 _print(f"Running fallback validation in {repo}: {fallback}")
@@ -1812,6 +3097,7 @@ def run_validations(
                     cwd=repo,
                     timeout_sec=timeout_sec,
                     progress_callback=(lambda elapsed: progress_callback(fallback, elapsed)) if progress_callback else None,
+                    extra_env=fallback_env or None,
                 )
                 if fallback_result.returncode == 0:
                     failure_details = ""
@@ -2135,12 +3421,12 @@ def normalize_outcome(raw: dict[str, Any]) -> dict[str, Any]:
 
     out = {
         "status": status,
-        "summary": str(raw.get("summary", "")).strip(),
+        "summary": _sanitize_summary_text(str(raw.get("summary", ""))),
         "commit": str(raw.get("commit", "")).strip(),
         "validations": raw.get("validations", []),
-        "next_actions": [str(x) for x in next_actions],
-        "blocker": str(raw.get("blocker", "")).strip(),
-        "raw_output": str(raw.get("raw_output", "")).strip(),
+        "next_actions": [_truncate_text(str(x), limit=400) for x in next_actions],
+        "blocker": _sanitize_error_text(str(raw.get("blocker", ""))),
+        "raw_output": _truncate_text(str(raw.get("raw_output", "")).strip(), limit=MAX_STORED_ERROR_CHARS),
     }
     usage = raw.get("usage")
     if isinstance(usage, dict):
@@ -2158,6 +3444,49 @@ def is_gemini_capacity_error(text: str) -> bool:
     if not is_retryable_error(lowered):
         return False
     return any(pattern in lowered for pattern in GEMINI_CAPACITY_ERROR_PATTERNS)
+
+
+def _sanitize_summary_text(value: str, limit: int = MAX_STORED_SUMMARY_CHARS) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return _truncate_text(text, limit=limit) if text else ""
+
+
+def _sanitize_error_text(value: str, limit: int = MAX_STORED_ERROR_CHARS) -> str:
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw)
+    prompt_markers = (
+        "\nuser\n",
+        "Current autonomous task:",
+        "Execution requirements:",
+        "Autonomy skill protocol:",
+    )
+    for marker in prompt_markers:
+        idx = text.find(marker)
+        if idx >= 300:
+            suffix = ""
+            timeout_idx = text.rfind("[TIMEOUT]")
+            if timeout_idx > idx:
+                suffix = "\n" + _truncate_text(text[timeout_idx:].strip(), limit=360)
+            text = text[:idx].rstrip() + f"\n...[omitted echoed prompt at `{marker.strip()}`]{suffix}"
+            break
+    lines: list[str] = []
+    prev = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line == prev:
+            continue
+        prev = line
+        if len(line) > 360:
+            line = line[:360] + "...[truncated]"
+        lines.append(line)
+        if len(lines) >= 120:
+            break
+    compact = "\n".join(lines) if lines else text
+    return _truncate_text(compact, limit=limit)
 
 
 def gemini_model_candidates(primary: str | None, fallbacks: list[str]) -> list[str | None]:
@@ -2185,7 +3514,42 @@ def is_codex_model_selection_error(text: str) -> bool:
     return any(pattern in lowered for pattern in CODEX_MODEL_SELECTION_ERROR_PATTERNS)
 
 
-def codex_model_candidates(primary: str | None, route_decision: dict[str, Any]) -> list[str | None]:
+def _likely_hosted_codex_incompatible_model(model: str) -> bool:
+    value = str(model or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("gpt-"):
+        return False
+    if "/" in value:
+        return True
+    prefixes = (
+        "qwen",
+        "deepseek",
+        "gemma",
+        "llama",
+        "liquid",
+        "mistral",
+        "claude",
+        "gemini",
+    )
+    return any(value.startswith(prefix) for prefix in prefixes)
+
+
+def codex_model_candidates(
+    primary: str | None,
+    route_decision: dict[str, Any],
+    *,
+    local_only_mode: bool = False,
+) -> list[str | None]:
+    requested_model = str(route_decision.get("requested_model", "")).strip()
+    requested_model_allowed = bool(route_decision.get("requested_model_allowed", False))
+    strict_requested_model = (
+        str(os.getenv("ORXAQ_LOCAL_OPENAI_STRICT_REQUESTED_MODEL", "1")).strip().lower()
+        not in {"0", "false", "no", "off"}
+    )
+    if local_only_mode and strict_requested_model and requested_model and requested_model_allowed:
+        return [requested_model]
+
     allowed_models = _normalize_model_candidates(route_decision.get("allowed_models", []))
     ordered: list[str | None] = [primary]
     for key in ("fallback_model", "policy_fallback_model"):
@@ -2193,13 +3557,24 @@ def codex_model_candidates(primary: str | None, route_decision: dict[str, Any]) 
         if candidate:
             ordered.append(candidate)
     ordered.extend(allowed_models)
-    ordered.extend(DEFAULT_CODEX_COMPAT_MODELS)
-    # Final fallback: let Codex CLI choose its configured default model.
-    ordered.append(None)
+    if not local_only_mode:
+        ordered.extend(DEFAULT_CODEX_COMPAT_MODELS)
+        # Final fallback: let Codex CLI choose its configured default model.
+        ordered.append(None)
+        filter_incompatible = (
+            str(os.getenv("ORXAQ_AUTONOMY_CODEX_FILTER_INCOMPAT_MODELS", "1")).strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+        if filter_incompatible:
+            compatible = [item for item in ordered if item is None or not _likely_hosted_codex_incompatible_model(item)]
+            if compatible:
+                ordered = compatible
 
     seen: set[str] = set()
     out: list[str | None] = []
     for item in ordered:
+        if local_only_mode and item is None:
+            continue
         key = "" if item is None else item.strip().lower()
         if key in seen:
             continue
@@ -2260,9 +3635,13 @@ def run_codex_task(
     cycle: int,
     role: str = "implementation-owner",
     role_constraints: str = "",
+    privilege_policy: dict[str, Any] | None = None,
+    privilege_breakglass_file: Path | None = None,
+    privilege_audit_log: Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{task.id}_codex_result.json"
+    repo_is_worktree = _repo_is_git_worktree(repo)
     prompt = build_agent_prompt(
         task,
         objective_text,
@@ -2275,6 +3654,7 @@ def run_codex_task(
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
         handoff_context=handoff_context,
+        repo_is_worktree=repo_is_worktree,
     )
     if role_constraints.strip():
         prompt += f"\n{role_constraints.strip()}\n"
@@ -2311,31 +3691,161 @@ def run_codex_task(
         content=json.dumps(route_decision, sort_keys=True),
         meta={"agent": "codex", "provider": "codex"},
     )
+    permission_args, privilege_event = _resolve_provider_permission(
+        provider="codex",
+        task=task,
+        cycle=cycle,
+        privilege_policy=privilege_policy,
+        breakglass_file=privilege_breakglass_file,
+        audit_log_file=privilege_audit_log,
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="privilege_mode",
+        content=json.dumps(privilege_event, sort_keys=True),
+        meta={"agent": "codex", "provider": "codex", "mode": privilege_event.get("mode", "")},
+    )
 
     base_cmd = [
         codex_cmd,
+        *permission_args,
         "exec",
         "--cd",
         str(repo),
         "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
         "--output-schema",
         str(schema_path),
         "--output-last-message",
         str(output_file),
         prompt,
     ]
-    candidate_models = codex_model_candidates(routed_model, route_decision)
+    local_only_mode = _local_only_mode_enabled()
+    candidate_models = codex_model_candidates(
+        routed_model,
+        route_decision,
+        local_only_mode=local_only_mode,
+    )
+    if local_only_mode and not candidate_models:
+        fail_text = (
+            "Local-only mode enabled but no local codex model candidates were available "
+            "from RouteLLM policy/selection."
+        )
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content=fail_text,
+            meta={"agent": "codex", "local_only_mode": True},
+        )
+        return False, normalize_outcome(
+            {
+                "status": STATUS_BLOCKED,
+                "summary": "Local-only codex routing has no valid candidates",
+                "blocker": fail_text,
+                "next_actions": [
+                    "Update RouteLLM policy with LM Studio model IDs for codex provider.",
+                ],
+            }
+        )
     attempt_errors: list[str] = []
     result: subprocess.CompletedProcess[str] | None = None
     latency = 0.0
     model_name = routed_model or "codex_default"
     route_decision_runtime = dict(route_decision)
+    fallback_reason = "unsupported_model_fallback"
 
     for idx, model_candidate in enumerate(candidate_models, start=1):
+        output_file.unlink(missing_ok=True)
+        model_name = model_candidate or "codex_default"
+        if local_only_mode:
+            selected_base_url, endpoint_slot, endpoint_total = _select_local_openai_base_url(
+                model_name,
+                idx - 1,
+            )
+            _print(
+                f"Running Codex task {task.id} via local OpenAI-compatible executor"
+                + (
+                    f" (candidate {idx}/{len(candidate_models)}: {model_name}; "
+                    f"endpoint {endpoint_slot + 1}/{endpoint_total}: {selected_base_url})"
+                )
+            )
+            started = time.monotonic()
+            ok, local_text, local_usage, local_error, used_base_url = run_local_openai_chat_completion(
+                prompt=prompt,
+                model=model_name,
+                timeout_sec=timeout_sec,
+                base_url=selected_base_url,
+            )
+            latency = time.monotonic() - started
+            if ok:
+                parsed_candidate = parse_json_text(local_text)
+                if parsed_candidate is not None:
+                    if isinstance(local_usage, dict) and local_usage:
+                        parsed_candidate.setdefault("usage", local_usage)
+                    _write_text_atomic(output_file, json.dumps(parsed_candidate, sort_keys=True))
+                    result = subprocess.CompletedProcess(
+                        args=["local_openai_chat_completion"],
+                        returncode=0,
+                        stdout=local_text,
+                        stderr="",
+                    )
+                    route_decision_runtime["executor"] = "local_openai_compatible"
+                    route_decision_runtime["executor_endpoint"] = used_base_url
+                    route_decision_runtime["executor_endpoint_slot"] = endpoint_slot + 1
+                    route_decision_runtime["executor_endpoint_count"] = endpoint_total
+                    if idx > 1:
+                        route_decision_runtime["fallback_used"] = True
+                        route_decision_runtime["reason"] = fallback_reason
+                        route_decision_runtime["strategy"] = "static_fallback"
+                        route_decision_runtime["selected_model"] = model_candidate or ""
+                    break
+                local_error = "local_openai_response_not_task_json"
+            result = subprocess.CompletedProcess(
+                args=["local_openai_chat_completion"],
+                returncode=1,
+                stdout=local_text,
+                stderr=local_error,
+            )
+            error_text = (local_text + "\n" + local_error).strip()
+            attempt_errors.append(
+                f"[candidate {idx}/{len(candidate_models)} model={model_name}]\n{error_text}"
+            )
+            if idx < len(candidate_models):
+                next_model = candidate_models[idx]
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=task,
+                    owner=task.owner,
+                    event_type="agent_retry_fallback",
+                    content=(
+                        "Local model execution failed; retrying with fallback model "
+                        f"{next_model or 'default'}."
+                    ),
+                    meta={
+                        "agent": "codex",
+                        "failed_model": model_name,
+                        "next_model": next_model or "",
+                        "failed_endpoint": used_base_url,
+                        "local_only_mode": True,
+                    },
+                )
+                continue
+            break
+
         cmd = list(base_cmd)
         if model_candidate:
-            cmd[2:2] = ["--model", model_candidate]
+            try:
+                exec_index = cmd.index("exec")
+            except ValueError:
+                exec_index = 1
+            insert_at = min(len(cmd), exec_index + 1)
+            cmd[insert_at:insert_at] = ["--model", model_candidate]
         _print(
             f"Running Codex task {task.id}"
             + (f" (candidate {idx}/{len(candidate_models)}: {model_candidate or 'default'})")
@@ -2343,21 +3853,49 @@ def run_codex_task(
         started = time.monotonic()
         result = run_command(cmd, cwd=repo, timeout_sec=timeout_sec, progress_callback=progress_callback)
         latency = time.monotonic() - started
-        model_name = model_candidate or "codex_default"
         if result.returncode == 0:
             if idx > 1:
                 route_decision_runtime["fallback_used"] = True
-                route_decision_runtime["reason"] = "unsupported_model_fallback"
+                route_decision_runtime["reason"] = fallback_reason
                 route_decision_runtime["strategy"] = "static_fallback"
                 route_decision_runtime["selected_model"] = model_candidate or ""
+            break
+
+        parsed_nonzero: dict[str, Any] | None = None
+        if output_file.exists():
+            parsed_nonzero = parse_json_text(output_file.read_text(encoding="utf-8"))
+        if parsed_nonzero is not None:
+            prior_returncode = int(result.returncode)
+            result = subprocess.CompletedProcess(cmd, returncode=0, stdout=result.stdout, stderr=result.stderr)
+            if idx > 1:
+                route_decision_runtime["fallback_used"] = True
+                route_decision_runtime["reason"] = fallback_reason
+                route_decision_runtime["strategy"] = "static_fallback"
+                route_decision_runtime["selected_model"] = model_candidate or ""
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="agent_partial_output_recovered",
+                content=(
+                    "Recovered structured Codex output from output file after non-zero exit code "
+                    f"({prior_returncode}); proceeding."
+                ),
+                meta={"agent": "codex", "model": model_candidate or "", "returncode": prior_returncode},
+            )
             break
 
         error_text = (result.stdout + "\n" + result.stderr).strip()
         attempt_errors.append(
             f"[candidate {idx}/{len(candidate_models)} model={model_candidate or 'default'}]\n{error_text}"
         )
-        if is_codex_model_selection_error(error_text) and idx < len(candidate_models):
+        timeout_error = result.returncode == 124
+        selection_error = is_codex_model_selection_error(error_text)
+        if (selection_error or timeout_error) and idx < len(candidate_models):
             next_model = candidate_models[idx]
+            fallback_reason = "timeout_fallback" if timeout_error and not selection_error else "unsupported_model_fallback"
+            retry_reason = "timeout" if timeout_error and not selection_error else "model selection"
             append_conversation_event(
                 conversation_log_file,
                 cycle=cycle,
@@ -2365,13 +3903,14 @@ def run_codex_task(
                 owner=task.owner,
                 event_type="agent_retry_fallback",
                 content=(
-                    "Codex model selection failed; retrying with fallback model "
+                    f"Codex {retry_reason} failed; retrying with fallback model "
                     f"{next_model or 'default'}."
                 ),
                 meta={
                     "agent": "codex",
                     "failed_model": model_candidate or "",
                     "next_model": next_model or "",
+                    "reason": fallback_reason,
                 },
             )
             continue
@@ -2381,6 +3920,7 @@ def run_codex_task(
         stdout_text = result.stdout if result is not None else ""
         stderr_text = result.stderr if result is not None else ""
         fail_text = "\n\n".join(attempt_errors).strip() or (stdout_text + "\n" + stderr_text).strip()
+        fail_text = _sanitize_error_text(fail_text)
         fail_text = fail_text or "Codex command failed with unknown error."
         usage = extract_usage_metrics(stdout=stdout_text, stderr=stderr_text)
         telemetry = build_attempt_telemetry(
@@ -2495,7 +4035,36 @@ def run_gemini_task(
     codex_schema_path: Path | None = None,
     codex_output_dir: Path | None = None,
     codex_fallback_startup_instructions: str = "",
+    privilege_policy: dict[str, Any] | None = None,
+    privilege_breakglass_file: Path | None = None,
+    privilege_audit_log: Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
+    if _local_only_mode_enabled():
+        blocker = (
+            "Local-only mode enabled; Gemini provider execution is disabled "
+            "to avoid cloud fallback."
+        )
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content=blocker,
+            meta={"agent": "gemini", "local_only_mode": True},
+        )
+        return False, normalize_outcome(
+            {
+                "status": STATUS_BLOCKED,
+                "summary": "Local-only mode blocks Gemini lane",
+                "blocker": blocker,
+                "next_actions": [
+                    "Resume codex-owned lanes configured with LM Studio local models.",
+                ],
+            }
+        )
+
+    repo_is_worktree = _repo_is_git_worktree(repo)
     prompt = build_agent_prompt(
         task,
         objective_text,
@@ -2508,6 +4077,7 @@ def run_gemini_task(
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
         handoff_context=handoff_context,
+        repo_is_worktree=repo_is_worktree,
     )
     prompt += (
         "\nTesting-owner constraints:\n"
@@ -2547,6 +4117,23 @@ def run_gemini_task(
         content=json.dumps(route_decision, sort_keys=True),
         meta={"agent": "gemini", "provider": "gemini"},
     )
+    permission_args, privilege_event = _resolve_provider_permission(
+        provider="gemini",
+        task=task,
+        cycle=cycle,
+        privilege_policy=privilege_policy,
+        breakglass_file=privilege_breakglass_file,
+        audit_log_file=privilege_audit_log,
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="privilege_mode",
+        content=json.dumps(privilege_event, sort_keys=True),
+        meta={"agent": "gemini", "provider": "gemini", "mode": privilege_event.get("mode", "")},
+    )
 
     def attempt_cross_provider_fallback(
         *,
@@ -2557,60 +4144,6 @@ def run_gemini_task(
         fallback_failures: list[str] = []
         attempted = False
 
-        if claude_fallback_cmd:
-            attempted = True
-            append_conversation_event(
-                conversation_log_file,
-                cycle=cycle,
-                task=task,
-                owner=task.owner,
-                event_type="agent_provider_fallback",
-                content=reason,
-                meta={"from": "gemini", "to": "claude"},
-            )
-            claude_ok, claude_outcome = run_claude_task(
-                task=task,
-                repo=repo,
-                objective_text=objective_text,
-                claude_cmd=claude_fallback_cmd,
-                claude_model=claude_fallback_model,
-                routellm_enabled=routellm_enabled,
-                routellm_policy=effective_routellm_policy,
-                routellm_url=effective_routellm_url,
-                routellm_timeout_sec=effective_routellm_timeout_sec,
-                timeout_sec=timeout_sec,
-                retry_context=retry_context,
-                progress_callback=progress_callback,
-                repo_context=repo_context,
-                repo_hints=repo_hints,
-                skill_protocol=skill_protocol,
-                mcp_context=mcp_context,
-                startup_instructions=claude_fallback_startup_instructions,
-                handoff_context=handoff_context,
-                conversation_log_file=conversation_log_file,
-                cycle=cycle,
-                role="test-owner",
-                role_constraints=(
-                    "Testing-owner constraints:\n"
-                    "- Focus on tests/specs/benchmarks and validation depth.\n"
-                    "- Avoid production code edits unless strictly required to keep tests executable.\n"
-                    "- You are acting as a fallback provider for a Gemini-owned task."
-                ),
-            )
-            if claude_ok:
-                fallback_outcome = normalize_outcome(claude_outcome)
-                summary = str(fallback_outcome.get("summary", "")).strip()
-                fallback_outcome["summary"] = (
-                    f"Claude fallback succeeded after Gemini failure. {summary}".strip()
-                    if summary
-                    else "Claude fallback succeeded after Gemini failure."
-                )
-                return True, fallback_outcome
-            fallback_failures.append(
-                "Claude fallback failed:\n"
-                + str(claude_outcome.get("blocker", "") or claude_outcome.get("summary", "unknown error")).strip()
-            )
-
         if codex_fallback_cmd and codex_schema_path is not None and codex_output_dir is not None:
             attempted = True
             append_conversation_event(
@@ -2619,7 +4152,7 @@ def run_gemini_task(
                 task=task,
                 owner=task.owner,
                 event_type="agent_provider_fallback",
-                content="Claude fallback unavailable/failed; attempting OpenAI fallback provider.",
+                content=reason,
                 meta={"from": "gemini", "to": "codex"},
             )
             codex_ok, codex_outcome = run_codex_task(
@@ -2645,26 +4178,86 @@ def run_gemini_task(
                 handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
-                role="test-owner",
+                role="review-owner",
                 role_constraints=(
-                    "Testing-owner constraints:\n"
-                    "- Focus on tests/specs/benchmarks and validation depth.\n"
-                    "- Avoid production code edits unless strictly required to keep tests executable.\n"
+                    "Fallback review constraints:\n"
+                    "- Prefer review, validation, and minimal fixes over broad refactors.\n"
+                    "- Keep implementation changes narrowly scoped to unblock task acceptance.\n"
                     "- You are acting as a fallback provider for a Gemini-owned task."
                 ),
+                privilege_policy=privilege_policy,
+                privilege_breakglass_file=privilege_breakglass_file,
+                privilege_audit_log=privilege_audit_log,
             )
             if codex_ok:
                 fallback_outcome = normalize_outcome(codex_outcome)
                 summary = str(fallback_outcome.get("summary", "")).strip()
                 fallback_outcome["summary"] = (
-                    f"OpenAI fallback succeeded after Gemini failure. {summary}".strip()
+                    f"Codex fallback succeeded after Gemini failure. {summary}".strip()
                     if summary
-                    else "OpenAI fallback succeeded after Gemini failure."
+                    else "Codex fallback succeeded after Gemini failure."
                 )
                 return True, fallback_outcome
             fallback_failures.append(
-                "OpenAI fallback failed:\n"
+                "Codex fallback failed:\n"
                 + str(codex_outcome.get("blocker", "") or codex_outcome.get("summary", "unknown error")).strip()
+            )
+
+        if claude_fallback_cmd:
+            attempted = True
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=task,
+                owner=task.owner,
+                event_type="agent_provider_fallback",
+                content="Codex fallback unavailable/failed; attempting Claude fallback provider.",
+                meta={"from": "gemini", "to": "claude"},
+            )
+            claude_ok, claude_outcome = run_claude_task(
+                task=task,
+                repo=repo,
+                objective_text=objective_text,
+                claude_cmd=claude_fallback_cmd,
+                claude_model=claude_fallback_model,
+                routellm_enabled=routellm_enabled,
+                routellm_policy=effective_routellm_policy,
+                routellm_url=effective_routellm_url,
+                routellm_timeout_sec=effective_routellm_timeout_sec,
+                timeout_sec=timeout_sec,
+                retry_context=retry_context,
+                progress_callback=progress_callback,
+                repo_context=repo_context,
+                repo_hints=repo_hints,
+                skill_protocol=skill_protocol,
+                mcp_context=mcp_context,
+                startup_instructions=claude_fallback_startup_instructions,
+                handoff_context=handoff_context,
+                conversation_log_file=conversation_log_file,
+                cycle=cycle,
+                role="review-owner",
+                role_constraints=(
+                    "Fallback review constraints:\n"
+                    "- Prefer review, validation, and minimal fixes over broad refactors.\n"
+                    "- Keep implementation changes narrowly scoped to unblock task acceptance.\n"
+                    "- You are acting as a fallback provider for a Gemini-owned task."
+                ),
+                privilege_policy=privilege_policy,
+                privilege_breakglass_file=privilege_breakglass_file,
+                privilege_audit_log=privilege_audit_log,
+            )
+            if claude_ok:
+                fallback_outcome = normalize_outcome(claude_outcome)
+                summary = str(fallback_outcome.get("summary", "")).strip()
+                fallback_outcome["summary"] = (
+                    f"Claude fallback succeeded after Gemini failure. {summary}".strip()
+                    if summary
+                    else "Claude fallback succeeded after Gemini failure."
+                )
+                return True, fallback_outcome
+            fallback_failures.append(
+                "Claude fallback failed:\n"
+                + str(claude_outcome.get("blocker", "") or claude_outcome.get("summary", "unknown error")).strip()
             )
 
         if not attempted:
@@ -2689,17 +4282,18 @@ def run_gemini_task(
     model_name = routed_model or gemini_cmd
 
     for idx, model_candidate in enumerate(model_candidates, start=1):
-        cmd = [
-            gemini_cmd,
-            "--approval-mode",
-            "yolo",
-            "--output-format",
-            "text",
-            "-p",
-            prompt,
-        ]
+        cmd = [gemini_cmd]
         if model_candidate:
-            cmd[1:1] = ["--model", model_candidate]
+            cmd.extend(["--model", model_candidate])
+        cmd.extend(permission_args)
+        cmd.extend(
+            [
+                "--output-format",
+                "text",
+                "-p",
+                prompt,
+            ]
+        )
 
         _print(
             f"Running Gemini task {task.id}"
@@ -2760,7 +4354,7 @@ def run_gemini_task(
         fallback_result = attempt_cross_provider_fallback(
             fail_text=fail_text,
             telemetry=telemetry,
-            reason="Gemini failed; attempting Claude fallback provider.",
+            reason="Gemini failed; attempting Codex fallback provider.",
         )
         if fallback_result is not None:
             return fallback_result
@@ -2828,7 +4422,7 @@ def run_gemini_task(
         fallback_result = attempt_cross_provider_fallback(
             fail_text=combined_signal_text,
             telemetry=telemetry_payload,
-            reason="Gemini returned a capacity-like partial/blocked outcome; attempting Claude fallback provider.",
+            reason="Gemini returned a capacity-like partial/blocked outcome; attempting Codex fallback provider.",
         )
         if fallback_result is not None:
             return fallback_result
@@ -2859,7 +4453,36 @@ def run_claude_task(
     cycle: int,
     role: str = "review-owner",
     role_constraints: str = "",
+    privilege_policy: dict[str, Any] | None = None,
+    privilege_breakglass_file: Path | None = None,
+    privilege_audit_log: Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
+    if _local_only_mode_enabled():
+        blocker = (
+            "Local-only mode enabled; Claude provider execution is disabled "
+            "to avoid cloud fallback."
+        )
+        append_conversation_event(
+            conversation_log_file,
+            cycle=cycle,
+            task=task,
+            owner=task.owner,
+            event_type="agent_error",
+            content=blocker,
+            meta={"agent": "claude", "local_only_mode": True},
+        )
+        return False, normalize_outcome(
+            {
+                "status": STATUS_BLOCKED,
+                "summary": "Local-only mode blocks Claude lane",
+                "blocker": blocker,
+                "next_actions": [
+                    "Resume codex-owned lanes configured with LM Studio local models.",
+                ],
+            }
+        )
+
+    repo_is_worktree = _repo_is_git_worktree(repo)
     prompt = build_agent_prompt(
         task,
         objective_text,
@@ -2872,6 +4495,7 @@ def run_claude_task(
         mcp_context=mcp_context,
         startup_instructions=startup_instructions,
         handoff_context=handoff_context,
+        repo_is_worktree=repo_is_worktree,
     )
     constraints = role_constraints.strip()
     if not constraints and role == "review-owner":
@@ -2915,13 +4539,28 @@ def run_claude_task(
         content=json.dumps(route_decision, sort_keys=True),
         meta={"agent": "claude", "provider": "claude"},
     )
+    permission_args, privilege_event = _resolve_provider_permission(
+        provider="claude",
+        task=task,
+        cycle=cycle,
+        privilege_policy=privilege_policy,
+        breakglass_file=privilege_breakglass_file,
+        audit_log_file=privilege_audit_log,
+    )
+    append_conversation_event(
+        conversation_log_file,
+        cycle=cycle,
+        task=task,
+        owner=task.owner,
+        event_type="privilege_mode",
+        content=json.dumps(privilege_event, sort_keys=True),
+        meta={"agent": "claude", "provider": "claude", "mode": privilege_event.get("mode", "")},
+    )
 
     cmd = [
         claude_cmd,
         "--print",
-        "--permission-mode",
-        "bypassPermissions",
-        "--dangerously-skip-permissions",
+        *permission_args,
         "--add-dir",
         str(repo),
     ]
@@ -3132,16 +4771,16 @@ def schedule_retry(
     not_before = _now_utc() + dt.timedelta(seconds=delay)
     entry["status"] = STATUS_PENDING
     entry["not_before"] = not_before.isoformat()
-    entry["last_error"] = error.strip()
-    entry["last_summary"] = summary.strip()
+    entry["last_error"] = _sanitize_error_text(error)
+    entry["last_summary"] = _sanitize_summary_text(summary)
     entry["last_update"] = _now_iso()
     return delay
 
 
 def mark_blocked(entry: dict[str, Any], summary: str, error: str) -> None:
     entry["status"] = STATUS_BLOCKED
-    entry["last_error"] = error.strip()
-    entry["last_summary"] = summary.strip()
+    entry["last_error"] = _sanitize_error_text(error)
+    entry["last_summary"] = _sanitize_summary_text(summary)
     entry["last_update"] = _now_iso()
 
 
@@ -3155,6 +4794,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--tasks-file", default="config/tasks.json")
     parser.add_argument("--state-file", default="state/state.json")
+    parser.add_argument(
+        "--task-queue-file",
+        default="",
+        help="Optional JSON/NDJSON queue file for dynamically queued tasks.",
+    )
+    parser.add_argument(
+        "--task-queue-state-file",
+        default="",
+        help="Claim-state file for task queue ingestion deduplication.",
+    )
     parser.add_argument("--objective-file", default="config/objective.md")
     parser.add_argument("--codex-schema", default="config/codex_result.schema.json")
     parser.add_argument("--artifacts-dir", default="artifacts/autonomy")
@@ -3201,6 +4850,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-file", default="config/pricing.json")
     parser.add_argument("--routellm-policy-file", default="config/routellm_policy.json")
     parser.add_argument(
+        "--privilege-policy-file",
+        default="config/privilege_policy.json",
+        help="Privilege policy (least-privilege defaults + breakglass controls).",
+    )
+    parser.add_argument(
         "--routellm-enabled",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -3212,6 +4866,11 @@ def main(argv: list[str] | None = None) -> int:
         "--continuous",
         action="store_true",
         help="Continuously recycle completed tasks instead of exiting when all tasks are done.",
+    )
+    parser.add_argument(
+        "--execution-profile",
+        default=os.getenv("ORXAQ_AUTONOMY_EXECUTION_PROFILE", "standard"),
+        help="Autonomy execution profile (standard|high|extra_high).",
     )
     parser.add_argument(
         "--continuous-recycle-delay-sec",
@@ -3248,6 +4907,14 @@ def main(argv: list[str] | None = None) -> int:
     test_repo = Path(args.test_repo).resolve()
     tasks_file = Path(args.tasks_file).resolve()
     state_file = Path(args.state_file).resolve()
+    task_queue_file = Path(args.task_queue_file).resolve() if str(args.task_queue_file).strip() else None
+    if str(args.task_queue_state_file).strip():
+        task_queue_state_file = Path(args.task_queue_state_file).resolve()
+    elif task_queue_file is not None:
+        suffix = f"{task_queue_file.suffix}.claimed.json" if task_queue_file.suffix else ".claimed.json"
+        task_queue_state_file = task_queue_file.with_suffix(suffix)
+    else:
+        task_queue_state_file = None
     objective_file = Path(args.objective_file).resolve()
     schema_file = Path(args.codex_schema).resolve()
     artifacts_dir = Path(args.artifacts_dir).resolve()
@@ -3268,6 +4935,7 @@ def main(argv: list[str] | None = None) -> int:
     metrics_summary_file = Path(args.metrics_summary_file).resolve()
     pricing_file = Path(args.pricing_file).resolve() if args.pricing_file else None
     routellm_policy_file = Path(args.routellm_policy_file).resolve() if args.routellm_policy_file else None
+    privilege_policy_file = Path(args.privilege_policy_file).resolve() if args.privilege_policy_file else None
     dependency_state_file = Path(args.dependency_state_file).resolve() if args.dependency_state_file else None
     gemini_fallback_models = [str(item).strip() for item in args.gemini_fallback_model if str(item).strip()]
     if not gemini_fallback_models:
@@ -3293,20 +4961,39 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             raise RuntimeError(f"Unknown owner filter(s): {sorted(unknown)}")
         tasks = [task for task in tasks if task.owner in owner_filter]
-        if not tasks:
+        if not tasks and task_queue_file is None:
             raise RuntimeError(f"No tasks left after applying owner filter: {sorted(owner_filter)}")
+
+    validated_owner_clis: set[str] = set()
+
+    def _validate_owner_cli(owner: str) -> None:
+        normalized_owner = str(owner).strip().lower()
+        if normalized_owner in validated_owner_clis:
+            return
+        if normalized_owner == "codex":
+            ensure_cli_exists(args.codex_cmd, "Codex")
+        elif normalized_owner == "gemini":
+            ensure_cli_exists(args.gemini_cmd, "Gemini")
+        elif normalized_owner == "claude":
+            ensure_cli_exists(args.claude_cmd, "Claude")
+        validated_owner_clis.add(normalized_owner)
+
     owners = {task.owner for task in tasks}
-    if "codex" in owners:
-        ensure_cli_exists(args.codex_cmd, "Codex")
-    if "gemini" in owners:
-        ensure_cli_exists(args.gemini_cmd, "Gemini")
-    if "claude" in owners:
-        ensure_cli_exists(args.claude_cmd, "Claude")
+    if owner_filter:
+        owners.update(owner_filter)
+    for owner in sorted(owners):
+        _validate_owner_cli(owner)
 
     state = load_state(state_file, tasks)
     objective_text = _read_text(objective_file)
     pricing = load_pricing(pricing_file)
     routellm_policy = load_routellm_policy(routellm_policy_file)
+    privilege_policy = load_privilege_policy(privilege_policy_file)
+    privilege_breakglass_file, privilege_audit_log = resolve_privilege_artifact_paths(
+        policy=privilege_policy,
+        runtime_root=Path.cwd().resolve(),
+        artifacts_dir=artifacts_dir,
+    )
     routellm_url = str(args.routellm_url or "").strip()
     routellm_timeout_sec = max(1, int(args.routellm_timeout_sec))
     skill_protocol = load_skill_protocol(skill_protocol_file)
@@ -3316,20 +5003,108 @@ def main(argv: list[str] | None = None) -> int:
     claude_startup_instructions = _read_optional_text(claude_startup_prompt_file)
     save_state(state_file, state)
 
-    _print(f"Starting autonomy runner with {len(tasks)} tasks")
+    queue_persistent_mode_requested = task_queue_file is not None and (
+        str(os.getenv("ORXAQ_TASK_QUEUE_PERSISTENT_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    )
+    execution_policy = resolve_execution_policy(
+        execution_profile=args.execution_profile,
+        continuous_requested=bool(args.continuous),
+        queue_persistent_mode_requested=queue_persistent_mode_requested,
+        max_cycles_requested=int(args.max_cycles),
+    )
+    args.continuous = bool(execution_policy["continuous"])
+    effective_max_cycles = int(execution_policy["effective_max_cycles"])
+    queue_persistent_mode = bool(execution_policy["queue_persistent_mode"])
+    force_continuation = bool(execution_policy["force_continuation"])
+
+    _print(
+        "Starting autonomy runner with "
+        f"{len(tasks)} tasks (profile={execution_policy['execution_profile']}, "
+        f"continuous={args.continuous}, queue_persistent={queue_persistent_mode}, "
+        f"max_cycles={effective_max_cycles})"
+    )
     write_heartbeat(
         heartbeat_file,
         phase="started",
         cycle=0,
         task_id=None,
         message="autonomy runner started",
-        extra={"tasks": len(tasks)},
+        extra={
+            "tasks": len(tasks),
+            "execution_profile": execution_policy["execution_profile"],
+            "continuous": bool(args.continuous),
+            "queue_persistent_mode": queue_persistent_mode,
+            "force_continuation": force_continuation,
+            "assume_true_full_autonomy": bool(execution_policy["assume_true_full_autonomy"]),
+            "effective_max_cycles": effective_max_cycles,
+        },
     )
     auto_push_last_check: dict[str, float] = {}
     auto_push_repos = sorted({impl_repo, test_repo}, key=lambda path: str(path))
-
-    for cycle in range(1, args.max_cycles + 1):
+    last_queue_error_signature = ""
+    for cycle in range(1, effective_max_cycles + 1):
         dependency_state = load_dependency_state(dependency_state_file)
+        queue_payload = ingest_task_queue(
+            queue_file=task_queue_file,
+            queue_state_file=task_queue_state_file,
+            tasks=tasks,
+            state=state,
+            owner_filter=owner_filter if owner_filter else None,
+        )
+        queue_imported = queue_payload.get("imported", [])
+        if isinstance(queue_imported, list) and queue_imported:
+            save_state(state_file, state)
+            _print(
+                f"Ingested {len(queue_imported)} queued task(s): "
+                + ", ".join(str(task_id) for task_id in queue_imported[:8])
+            )
+            write_heartbeat(
+                heartbeat_file,
+                phase="task_queue_ingest",
+                cycle=cycle,
+                task_id=None,
+                message=f"ingested {len(queue_imported)} queued task(s)",
+                extra={
+                    "queue_file": queue_payload.get("queue_file", ""),
+                    "imported_task_ids": queue_imported,
+                },
+            )
+            append_conversation_event(
+                conversation_log_file,
+                cycle=cycle,
+                task=None,
+                owner="system",
+                event_type="task_queue_ingest",
+                content=(
+                    f"Imported {len(queue_imported)} task(s) from "
+                    f"{queue_payload.get('queue_file', '')}: {queue_imported}"
+                ),
+                meta={"queue": queue_payload},
+            )
+
+        queue_errors = queue_payload.get("errors", [])
+        if isinstance(queue_errors, list) and queue_errors:
+            signature = "|".join(str(item) for item in queue_errors[:6])
+            if signature != last_queue_error_signature:
+                last_queue_error_signature = signature
+                warning = "; ".join(str(item) for item in queue_errors[:3])
+                _print(f"Task queue ingest warning: {warning}")
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=None,
+                    owner="system",
+                    event_type="task_queue_ingest_warning",
+                    content=warning,
+                    meta={"queue": queue_payload},
+                )
+
+        current_owners = {task.owner for task in tasks}
+        if owner_filter:
+            current_owners.update(owner_filter)
+        for owner in sorted(current_owners):
+            _validate_owner_cli(owner)
+
         if args.auto_push_guard:
             min_interval = max(30, int(args.auto_push_interval_sec))
             now_mono = time.monotonic()
@@ -3394,6 +5169,43 @@ def main(argv: list[str] | None = None) -> int:
                         f"with delay={int(args.continuous_recycle_delay_sec)}s."
                     ),
                 )
+                continue
+            if queue_persistent_mode:
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="queue_idle_wait",
+                    cycle=cycle,
+                    task_id=None,
+                    message="all known tasks done; waiting for queued tasks",
+                    extra={
+                        "queue_file": str(task_queue_file) if task_queue_file else "",
+                        "execution_profile": execution_policy["execution_profile"],
+                    },
+                )
+                time.sleep(max(1, args.idle_sleep_sec))
+                continue
+            if force_continuation:
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="extra_high_wait",
+                    cycle=cycle,
+                    task_id=None,
+                    message="all tasks done; extra_high profile keeps autonomous continuation active",
+                    extra={
+                        "execution_profile": execution_policy["execution_profile"],
+                        "reason": "force_continuation_after_all_done",
+                    },
+                )
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=None,
+                    owner="system",
+                    event_type="extra_high_continuation",
+                    content="All tasks done; continuing autonomously due to extra_high profile.",
+                    meta={"reason": "force_continuation_after_all_done"},
+                )
+                time.sleep(max(1, args.idle_sleep_sec))
                 continue
             _print("All tasks are marked done.")
             write_heartbeat(
@@ -3492,6 +5304,48 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 time.sleep(min(10, max(1, args.idle_sleep_sec)))
                 continue
+            if queue_persistent_mode:
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="queue_idle_wait",
+                    cycle=cycle,
+                    task_id=None,
+                    message="no ready tasks; waiting for queued tasks",
+                    extra={
+                        "pending": pending,
+                        "blocked": blocked,
+                        "waiting_on_deps": waiting_on_deps,
+                        "execution_profile": execution_policy["execution_profile"],
+                    },
+                )
+                time.sleep(max(1, args.idle_sleep_sec))
+                continue
+            if force_continuation:
+                write_heartbeat(
+                    heartbeat_file,
+                    phase="extra_high_wait",
+                    cycle=cycle,
+                    task_id=None,
+                    message="no ready tasks; extra_high profile keeps autonomous continuation active",
+                    extra={
+                        "pending": pending,
+                        "blocked": blocked,
+                        "waiting_on_deps": waiting_on_deps,
+                        "execution_profile": execution_policy["execution_profile"],
+                        "reason": "force_continuation_when_stalled",
+                    },
+                )
+                append_conversation_event(
+                    conversation_log_file,
+                    cycle=cycle,
+                    task=None,
+                    owner="system",
+                    event_type="extra_high_continuation",
+                    content="No ready tasks; continuing autonomously due to extra_high profile.",
+                    meta={"reason": "force_continuation_when_stalled"},
+                )
+                time.sleep(max(1, args.idle_sleep_sec))
+                continue
             write_heartbeat(
                 heartbeat_file,
                 phase="stalled",
@@ -3566,6 +5420,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             ok = False
         elif task.owner == "codex":
+            codex_role = "review-owner" if _is_review_task(task) else "implementation-owner"
+            codex_role_constraints = ""
+            if codex_role == "review-owner":
+                codex_role_constraints = (
+                    "Review-owner constraints:\n"
+                    "- Focus on governance, architecture, security, and collaboration safety.\n"
+                    "- Translate findings into concrete and minimal remediations.\n"
+                    "- Keep evidence explicit (validation output, file-level changes, residual risks).\n"
+                )
             task_progress = lambda elapsed: write_heartbeat(
                 heartbeat_file,
                 phase="task_running",
@@ -3597,6 +5460,11 @@ def main(argv: list[str] | None = None) -> int:
                 handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
+                role=codex_role,
+                role_constraints=codex_role_constraints,
+                privilege_policy=privilege_policy,
+                privilege_breakglass_file=privilege_breakglass_file,
+                privilege_audit_log=privilege_audit_log,
             )
         elif task.owner == "gemini":
             task_progress = lambda elapsed: write_heartbeat(
@@ -3637,6 +5505,9 @@ def main(argv: list[str] | None = None) -> int:
                 codex_schema_path=schema_file,
                 codex_output_dir=artifacts_dir,
                 codex_fallback_startup_instructions=codex_startup_instructions,
+                privilege_policy=privilege_policy,
+                privilege_breakglass_file=privilege_breakglass_file,
+                privilege_audit_log=privilege_audit_log,
             )
         else:
             task_progress = lambda elapsed: write_heartbeat(
@@ -3668,6 +5539,9 @@ def main(argv: list[str] | None = None) -> int:
                 handoff_context=handoff_context,
                 conversation_log_file=conversation_log_file,
                 cycle=cycle,
+                privilege_policy=privilege_policy,
+                privilege_breakglass_file=privilege_breakglass_file,
+                privilege_audit_log=privilege_audit_log,
             )
 
         summarize_run(task=task, repo=owner_repo, outcome=outcome, report_dir=artifacts_dir)
@@ -3991,13 +5865,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         save_state(state_file, state)
 
-    _print(f"Reached max cycles: {args.max_cycles}")
+    _print(f"Reached max cycles: {effective_max_cycles}")
     write_heartbeat(
         heartbeat_file,
         phase="max_cycles_reached",
-        cycle=args.max_cycles,
+        cycle=effective_max_cycles,
         task_id=None,
         message="max cycle limit reached",
+        extra={"execution_profile": execution_policy["execution_profile"]},
     )
     return 3
 

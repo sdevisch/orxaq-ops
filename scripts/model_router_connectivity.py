@@ -28,6 +28,7 @@ class EndpointConfig:
     healthcheck_path: str
     auth_mode: str
     api_key_env: str
+    required: bool
     model_names: list[str] = field(default_factory=list)
     healthcheck_headers: dict[str, str] = field(default_factory=dict)
 
@@ -51,6 +52,19 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _as_text(value: Any) -> str:
     return str(value).strip()
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _normalize_base_url(raw: str) -> str:
@@ -83,7 +97,7 @@ def load_router_config(config_path: Path) -> list[EndpointConfig]:
     if not isinstance(model_list, list):
         return []
 
-    merged: dict[tuple[str, str, str, str, str, str, tuple[tuple[str, str], ...]], EndpointConfig] = {}
+    merged: dict[tuple[str, str, str, str, str, str, bool, tuple[tuple[str, str], ...]], EndpointConfig] = {}
     for row in model_list:
         if not isinstance(row, dict):
             continue
@@ -107,6 +121,7 @@ def load_router_config(config_path: Path) -> list[EndpointConfig]:
         if not auth_mode:
             auth_mode = "bearer" if _as_text(litellm_params.get("api_key_env", "")) else "none"
         api_key_env = _as_text(litellm_params.get("api_key_env", ""))
+        required = _as_bool(litellm_params.get("required", True), True)
 
         header_payload = litellm_params.get("healthcheck_headers", {})
         health_headers: dict[str, str] = {}
@@ -118,7 +133,7 @@ def load_router_config(config_path: Path) -> list[EndpointConfig]:
                     health_headers[normalized_key] = normalized_value
         header_items = tuple(sorted(health_headers.items()))
 
-        dedupe_key = (endpoint_id, provider, api_base, health_path, auth_mode, api_key_env, header_items)
+        dedupe_key = (endpoint_id, provider, api_base, health_path, auth_mode, api_key_env, required, header_items)
         existing = merged.get(dedupe_key)
         if existing is None:
             merged[dedupe_key] = EndpointConfig(
@@ -128,6 +143,7 @@ def load_router_config(config_path: Path) -> list[EndpointConfig]:
                 healthcheck_path=health_path,
                 auth_mode=auth_mode,
                 api_key_env=api_key_env,
+                required=required,
                 model_names=[model_name] if model_name else [],
                 healthcheck_headers=health_headers,
             )
@@ -143,6 +159,7 @@ def load_router_config(config_path: Path) -> list[EndpointConfig]:
             healthcheck_path=existing.healthcheck_path,
             auth_mode=existing.auth_mode,
             api_key_env=existing.api_key_env,
+            required=existing.required,
             model_names=model_names,
             healthcheck_headers=dict(existing.healthcheck_headers),
         )
@@ -196,6 +213,7 @@ def probe_endpoint(endpoint: EndpointConfig, *, timeout_sec: int = 6) -> dict[st
             "id": endpoint.endpoint_id,
             "provider": endpoint.provider,
             "api_base": endpoint.api_base,
+            "required": bool(endpoint.required),
             "healthcheck_url": url,
             "healthcheck_path": endpoint.healthcheck_path,
             "model_names": endpoint.model_names,
@@ -218,6 +236,7 @@ def probe_endpoint(endpoint: EndpointConfig, *, timeout_sec: int = 6) -> dict[st
             "id": endpoint.endpoint_id,
             "provider": endpoint.provider,
             "api_base": endpoint.api_base,
+            "required": bool(endpoint.required),
             "healthcheck_url": url,
             "healthcheck_path": endpoint.healthcheck_path,
             "model_names": endpoint.model_names,
@@ -235,6 +254,7 @@ def probe_endpoint(endpoint: EndpointConfig, *, timeout_sec: int = 6) -> dict[st
             "id": endpoint.endpoint_id,
             "provider": endpoint.provider,
             "api_base": endpoint.api_base,
+            "required": bool(endpoint.required),
             "healthcheck_url": url,
             "healthcheck_path": endpoint.healthcheck_path,
             "model_names": endpoint.model_names,
@@ -257,22 +277,38 @@ def run_connectivity_report(
     endpoints = load_router_config(config_path)
     rows = [probe_endpoint(endpoint, timeout_sec=timeout_sec) for endpoint in endpoints]
     endpoint_total = len(rows)
-    endpoint_healthy = sum(1 for row in rows if bool(row.get("ok", False)))
-    endpoint_unhealthy = endpoint_total - endpoint_healthy
+    required_rows = [row for row in rows if bool(row.get("required", True))]
+    optional_rows = [row for row in rows if not bool(row.get("required", True))]
+    endpoint_required_total = len(required_rows)
+    endpoint_optional_total = len(optional_rows)
+    endpoint_healthy = sum(1 for row in required_rows if bool(row.get("ok", False)))
+    endpoint_unhealthy = endpoint_required_total - endpoint_healthy
+    optional_endpoint_healthy = sum(1 for row in optional_rows if bool(row.get("ok", False)))
+    optional_endpoint_unhealthy = endpoint_optional_total - optional_endpoint_healthy
     payload = {
         "schema_version": "model-router-connectivity.v1",
         "generated_at_utc": _utc_now_iso(),
         "config_path": str(config_path.resolve()),
         "router": "litellm",
         "endpoint_total": endpoint_total,
+        "endpoint_required_total": endpoint_required_total,
+        "endpoint_optional_total": endpoint_optional_total,
         "endpoint_healthy": endpoint_healthy,
         "endpoint_unhealthy": endpoint_unhealthy,
+        "optional_endpoint_healthy": optional_endpoint_healthy,
+        "optional_endpoint_unhealthy": optional_endpoint_unhealthy,
         "all_healthy": endpoint_unhealthy == 0,
+        "all_endpoints_healthy": endpoint_unhealthy == 0 and optional_endpoint_unhealthy == 0,
         "summary": {
             "endpoint_total": endpoint_total,
+            "endpoint_required_total": endpoint_required_total,
+            "endpoint_optional_total": endpoint_optional_total,
             "endpoint_healthy": endpoint_healthy,
             "endpoint_unhealthy": endpoint_unhealthy,
+            "optional_endpoint_healthy": optional_endpoint_healthy,
+            "optional_endpoint_unhealthy": optional_endpoint_unhealthy,
             "all_healthy": endpoint_unhealthy == 0,
+            "all_endpoints_healthy": endpoint_unhealthy == 0 and optional_endpoint_unhealthy == 0,
         },
         "endpoints": rows,
     }
@@ -321,8 +357,12 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "endpoint_total": report.get("endpoint_total", 0),
+                "endpoint_required_total": report.get("endpoint_required_total", 0),
+                "endpoint_optional_total": report.get("endpoint_optional_total", 0),
                 "endpoint_healthy": report.get("endpoint_healthy", 0),
                 "endpoint_unhealthy": report.get("endpoint_unhealthy", 0),
+                "optional_endpoint_healthy": report.get("optional_endpoint_healthy", 0),
+                "optional_endpoint_unhealthy": report.get("optional_endpoint_unhealthy", 0),
                 "all_healthy": bool(report.get("all_healthy", False)),
                 "output": str(output_path),
             },

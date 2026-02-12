@@ -15,12 +15,23 @@
   },
   "monitoring": {
     "baseline_file": "artifacts/autonomy/git_hygiene_baseline.json",
+    "history_file": "artifacts/autonomy/git_hygiene_history.ndjson",
     "use_baseline_guard": true,
     "allow_missing_baseline": true,
     "allow_legacy_above_threshold_when_nonincreasing": true,
     "require_nonincreasing": false,
     "max_delta_local_branches": 0,
     "max_delta_remote_branches": 2,
-    "max_delta_total_branches": 2
+    "max_delta_total_branches": 2,
+    "legacy_suppression_stagnation": {
+      "enabled": true,
+      "window_runs": 12,
+      "min_reduction_local_branches": 5,
+      "min_reduction_remote_branches": 5,
+      "min_reduction_total_branches": 10,
+      "max_allowed_local_branches_while_suppressed": 300,
+      "max_allowed_remote_branches_while_suppressed": 300,
+      "max_allowed_total_branches_while_suppressed": 500
+    }
   }
 }

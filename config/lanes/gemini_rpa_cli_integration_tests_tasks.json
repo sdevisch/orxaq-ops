@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-cli-integration-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA CLI integration tests",
+    "description": "Add integration tests for command guards, output-file behaviors, and dry-run semantics across RPA CLI paths.",
+    "depends_on": [],
+    "acceptance": [
+      "RPA CLI integration coverage increases",
+      "Tests assert guardrails for unsafe URLs and invalid files",
+      "make lint and make test pass"
+    ]
+  }
+]

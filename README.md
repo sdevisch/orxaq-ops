@@ -110,6 +110,11 @@ make process-watchdog
 make full-autonomy
 make logs
 make model-router-connectivity
+make provider-autobootstrap
+make cleanup-loop-once
+make cleanup-loop-start
+make cleanup-loop-status
+make cleanup-loop-stop
 make dashboard
 make dashboard-status
 make dashboard-logs
@@ -117,10 +122,27 @@ make dashboard-stop
 make provider-cost-ingest
 make provider-cost-health
 make provider-cost-ingest-check
+make t1-basic-model-policy-check
+make pr-tier-ratio-check
+make backend-upgrade-policy-check
+make api-interop-policy-check
+make backlog-control-once
+make backlog-control-start
+make backlog-control-status
+make backlog-control-stop
 make swarm-todo-health-once
 make swarm-todo-health-start
 make swarm-todo-health-status
 make swarm-todo-health-stop
+make swarm-todo-health-current-once
+make swarm-todo-health-current-start
+make swarm-todo-health-current-status
+make swarm-todo-health-current-stop
+make swarm-health-strict
+make swarm-health-operational
+make swarm-health-snapshot
+make swarm-ready-queue
+make swarm-cycle-report
 make conversations
 make lanes-plan
 make lanes-status
@@ -167,10 +189,68 @@ Generate the Phase 1 model-router connectivity report:
 python3 scripts/model_router_connectivity.py --config ./config/litellm_swarm_router.json --output ./artifacts/model_connectivity.json
 ```
 
-Use it from `orxaq` swarm-health:
+Connectivity scoring treats only `required=true` endpoints as strict blockers; optional endpoints are still reported for observability.
+
+Use it from `orxaq` swarm-health (note the connectivity report lives in `orxaq-ops/artifacts`):
 
 ```bash
-python3 ../orxaq/orxaq_cli.py swarm-health --root ../orxaq --output ../orxaq/artifacts/health.json --strict --connectivity-report ./artifacts/model_connectivity.json
+python3 ../orxaq/orxaq_cli.py swarm-health --root ../orxaq --output ../orxaq/artifacts/health.json --strict --connectivity-report ../orxaq-ops/artifacts/model_connectivity.json
+```
+
+Preferred convenience targets:
+
+```bash
+# active/recent backlog scope (operationally useful)
+make swarm-todo-health-current-once
+
+# strict full backlog scan (includes historical worktree backlog files)
+make swarm-todo-health-once
+
+# strict swarm-health with correctly wired connectivity report path
+make swarm-health-strict
+
+# operational swarm-health (pipeline/runtime focus, excludes quality/security gates)
+make swarm-health-operational
+
+# strict+operational health against a temporary clean worktree snapshot
+make swarm-health-snapshot
+
+# enforce/monitor T1-model policy for basic coding tasks
+# (fails the criterion when telemetry is stale/incomplete even if violations=0)
+make t1-basic-model-policy-check
+
+# enforce PR tier-label mix so most PRs are T1 unless explicitly escalated
+make pr-tier-ratio-check
+
+# enforce least-privilege defaults; breakglass-only elevation with audit evidence
+make privilege-policy-check
+
+# enforce backend portfolio + upgrade lifecycle sequencing policy
+# (ensures routing + A/B prerequisites before upgrade automation)
+make backend-upgrade-policy-check
+
+# enforce external API interoperability policy gates
+# (REST/MCP + standards conformance + compatibility/security requirements)
+make api-interop-policy-check
+
+# deterministic backlog window controller (no AI routing decisions)
+make backlog-control-once
+
+# start/monitor deterministic backlog controller daemon
+make backlog-control-start
+make backlog-control-status
+
+# grant temporary breakglass elevation (TTL-bound, auditable)
+python3 scripts/grant_breakglass_privilege.py --root . --provider codex --reason "incident-mitigation" --scope "task=mesh-cli-rpa" --rollback-proof "revert commit <sha>" --ttl-minutes 30 --json
+
+# revoke active breakglass grant
+python3 scripts/revoke_breakglass_privilege.py --root . --reason "mitigation-complete" --json
+
+# generate deterministic 1-week T1 ready queue from live health artifacts
+make swarm-ready-queue
+
+# generate cycle report + blocked-cycle escalation artifacts
+make swarm-cycle-report
 ```
 
 Windows PowerShell wrappers:
@@ -260,7 +340,7 @@ make dashboard
 
 `make dashboard` starts a resilient background dashboard service and returns immediately.
 Use `make dashboard-status` to confirm, `make dashboard-logs` for troubleshooting, `make dashboard-ensure` to auto-restart stale dashboard code after updates, and `make dashboard-stop` to stop it.
-The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, response cost/quality metrics, cost windows (`1h/today/7d/30d`), a 24h cost trend sparkline, provider/model 30d cost splits, freshness/degradation signals, an auto-selected "most exciting stat" indicator (token flow when available), repo drift, and latest log signals.
+The dashboard provides live runner/supervisor state, task progress, lane status, conversation timeline, response cost/quality metrics, cost windows (`1h/today/7d/30d`), swarm daily budget status (cap/spend/remaining/hard-stop), a 24h cost trend sparkline, provider/model 30d cost splits, freshness/degradation signals, an auto-selected "most exciting stat" indicator (token flow when available), repo drift, and latest log signals.
 
 To ingest authoritative provider billing/usage snapshots (OpenAI/Anthropic/Gemini) into `artifacts/autonomy/provider_costs`, configure provider endpoint URLs and API keys in `.env.autonomy`, then run:
 
@@ -268,11 +348,23 @@ To ingest authoritative provider billing/usage snapshots (OpenAI/Anthropic/Gemin
 make provider-cost-ingest
 ```
 
+For one-command provider setup + validation bootstrap (auto-updates `.env.autonomy`, then runs preflight/connectivity when required keys are present):
+
+```bash
+make provider-autobootstrap
+```
+
 Validate freshness/provider health for the latest summary:
 
 ```bash
 make provider-cost-health
 ```
+
+This command writes `artifacts/autonomy/provider_cost_health.json` and enforces the swarm-wide daily budget guardrails configured via:
+
+- `ORXAQ_AUTONOMY_SWARM_DAILY_BUDGET_USD` (default `100`)
+- `ORXAQ_AUTONOMY_SWARM_BUDGET_WARNING_RATIO` (default `0.8`)
+- `ORXAQ_AUTONOMY_SWARM_BUDGET_ENFORCE_HARD_STOP` (default `1`)
 
 Run ingest plus health verification as one step:
 
@@ -285,6 +377,34 @@ For unattended scheduling, run `make provider-cost-ingest-check` from cron/syste
 ```bash
 0 * * * * cd /Users/sdevisch/dev/orxaq-ops && make provider-cost-ingest-check >> artifacts/autonomy/provider_costs/cron.log 2>&1
 ```
+
+Continuous health-green remediation loop (hourly, low Codex model, iterates issues until green or safe stop):
+
+```bash
+make cleanup-loop-once
+make cleanup-loop-start
+make cleanup-loop-status
+make cleanup-loop-stop
+```
+
+Tracking artifacts:
+- `artifacts/autonomy/health_green_loop/latest.json`
+- `artifacts/autonomy/health_green_loop/history.ndjson`
+- `artifacts/autonomy/health_green_loop/loop.log`
+
+Deterministic backlog control loop (bounded ready queue + marker-driven completion + continuous backlog amendment):
+
+```bash
+make backlog-control-once
+make backlog-control-start
+make backlog-control-status
+make backlog-control-stop
+```
+
+This controller writes `artifacts/autonomy/deterministic_backlog_health.json` and
+`artifacts/autonomy/deterministic_backlog_history.ndjson`, keeps ready tasks inside
+a configured min/target/max window, and transitions tasks to `done` only when
+explicit deterministic completion markers exist in `artifacts/autonomy/task_markers`.
 
 Inspect conversation events directly:
 

@@ -15,6 +15,7 @@ from typing import Any
 DEFAULT_OUTPUT = Path("artifacts/autonomy/git_hygiene_remediation.json")
 DEFAULT_PREFIXES = ("codex/", "claude/", "gemini/", "agent/", "autonomy/")
 DEFAULT_PROTECTED = ("main", "master", "develop", "dev", "staging", "production")
+RECOVERY_BRANCH_PATTERN = re.compile(r"(?:^|[-_/])recovery(?:$|[-_/0-9])", re.IGNORECASE)
 
 
 def _utc_now_iso() -> str:
@@ -144,9 +145,85 @@ def _age_days(now_ts: int, ref_ts: int) -> int:
     return max(0, int((now_ts - ref_ts) / 86400))
 
 
+def _active_worktree_branch_paths(repo: Path) -> dict[str, set[Path]]:
+    proc = _git(repo, ["worktree", "list", "--porcelain"])
+    if proc.returncode != 0:
+        return {}
+    branch_paths: dict[str, set[Path]] = {}
+    current_path: Path | None = None
+    for raw in (proc.stdout or "").splitlines():
+        line = raw.strip()
+        if not line:
+            current_path = None
+            continue
+        if line.startswith("worktree "):
+            raw_path = _as_text(line[len("worktree ") :])
+            current_path = Path(raw_path).expanduser().resolve() if raw_path else None
+            continue
+        if not line.startswith("branch ") or current_path is None:
+            continue
+        value = _as_text(line[len("branch ") :])
+        if value.startswith("refs/heads/"):
+            value = value[len("refs/heads/") :]
+        if value:
+            branch_paths.setdefault(value, set()).add(current_path)
+    return branch_paths
+
+
+def _active_worktree_branches(repo: Path) -> set[str]:
+    return set(_active_worktree_branch_paths(repo).keys())
+
+
+def _is_recovery_branch(branch: str) -> bool:
+    token = _as_text(branch)
+    if not token:
+        return False
+    return bool(RECOVERY_BRANCH_PATTERN.search(token))
+
+
 def _merged_into_base(repo: Path, branch_ref: str, base_ref: str) -> bool:
     proc = _git(repo, ["merge-base", "--is-ancestor", branch_ref, base_ref])
     return proc.returncode == 0
+
+
+def _ref_commit_sha(repo: Path, ref: str) -> str:
+    proc = _git(repo, ["rev-parse", "--verify", ref])
+    if proc.returncode != 0:
+        return ""
+    return _as_text(proc.stdout)
+
+
+def _archive_tag_name(*, branch: str, commit_sha: str, namespace: str) -> str:
+    branch_token = re.sub(r"[^a-zA-Z0-9._-]+", "-", branch).strip("-")
+    if not branch_token:
+        branch_token = "branch"
+    short_sha = _as_text(commit_sha)[:12]
+    if not short_sha:
+        short_sha = "unknown"
+    ns = _as_text(namespace).strip("/")
+    if not ns:
+        ns = "archive/branch-debt"
+    return f"{ns}/{branch_token}-{short_sha}"
+
+
+def _ensure_archive_tag(
+    repo: Path,
+    *,
+    tag_name: str,
+    target_ref: str,
+    remote: str,
+    push_remote: bool,
+) -> tuple[bool, str]:
+    exists = _git(repo, ["rev-parse", "--verify", f"refs/tags/{tag_name}"])
+    if exists.returncode != 0:
+        create = _git(repo, ["tag", tag_name, target_ref])
+        if create.returncode != 0:
+            return (False, _as_text(create.stderr or create.stdout or "archive_tag_create_failed"))
+    if push_remote:
+        push = _git(repo, ["push", remote, f"refs/tags/{tag_name}:refs/tags/{tag_name}"])
+        if push.returncode != 0:
+            return (False, _as_text(push.stderr or push.stdout or "archive_tag_push_failed"))
+    return (True, "")
 
 
 def _delete_remote_branch(repo: Path, remote: str, branch: str) -> tuple[bool, str]:
@@ -154,6 +231,35 @@ def _delete_remote_branch(repo: Path, remote: str, branch: str) -> tuple[bool, s
     if proc.returncode == 0:
         return (True, "")
     return (False, _as_text(proc.stderr or proc.stdout or "remote_delete_failed"))
+
+
+def _delete_remote_branches_batched(
+    repo: Path,
+    *,
+    remote: str,
+    branches: list[str],
+    chunk_size: int = 40,
+) -> tuple[set[str], dict[str, str]]:
+    deleted: set[str] = set()
+    failures: dict[str, str] = {}
+    if not branches:
+        return deleted, failures
+    step = max(1, int(chunk_size))
+    for start in range(0, len(branches), step):
+        chunk = [item for item in branches[start : start + step] if _as_text(item)]
+        if not chunk:
+            continue
+        proc = _git(repo, ["push", remote, "--delete", *chunk])
+        if proc.returncode == 0:
+            deleted.update(chunk)
+            continue
+        for branch in chunk:
+            ok, reason = _delete_remote_branch(repo, remote, branch)
+            if ok:
+                deleted.add(branch)
+            else:
+                failures[branch] = reason
+    return deleted, failures
 
 
 def _delete_local_branch(repo: Path, branch: str) -> tuple[bool, str]:
@@ -205,6 +311,71 @@ def _remove_worktree_if_clean(repo: Path, worktree_path: Path) -> tuple[bool, st
     return _remove_registered()
 
 
+def _inspect_worktree_dirty(worktree_path: Path) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "worktree_path": str(worktree_path),
+        "exists": worktree_path.exists() and worktree_path.is_dir(),
+        "status_ok": False,
+        "status_error": "",
+        "dirty_entry_count": 0,
+        "dirty_sample": [],
+    }
+    if not info["exists"]:
+        info["status_error"] = "worktree_missing"
+        return info
+    proc = _git(worktree_path, ["status", "--porcelain"])
+    if proc.returncode != 0:
+        info["status_error"] = _as_text(proc.stderr or proc.stdout or "worktree_status_failed")
+        return info
+    entries = [line for line in (proc.stdout or "").splitlines() if line.strip()]
+    info["status_ok"] = True
+    info["dirty_entry_count"] = len(entries)
+    info["dirty_sample"] = entries[:12]
+    return info
+
+
+def _retire_stale_recovery_worktrees(
+    repo: Path,
+    *,
+    branch: str,
+    age_days: int,
+    min_age_days: int,
+    worktree_paths_by_branch: dict[str, set[Path]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "eligible": False,
+        "attempted_paths_count": 0,
+        "removed_paths": [],
+        "failed": [],
+    }
+    if age_days < max(1, int(min_age_days)):
+        return result
+    if not _is_recovery_branch(branch):
+        return result
+    paths = sorted(worktree_paths_by_branch.get(branch, set()), key=lambda item: str(item))
+    if not paths:
+        return result
+    result["eligible"] = True
+    result["attempted_paths_count"] = len(paths)
+    removed_paths: list[Path] = []
+    failed: list[dict[str, str]] = []
+    for worktree_path in paths:
+        removed, reason = _remove_worktree_if_clean(repo, worktree_path)
+        if removed:
+            removed_paths.append(worktree_path)
+            continue
+        failed.append({"path": str(worktree_path), "reason": _as_text(reason) or "worktree_remove_failed"})
+    if removed_paths:
+        remaining_paths = {path for path in worktree_paths_by_branch.get(branch, set()) if path not in set(removed_paths)}
+        if remaining_paths:
+            worktree_paths_by_branch[branch] = remaining_paths
+        else:
+            worktree_paths_by_branch.pop(branch, None)
+    result["removed_paths"] = [str(path) for path in removed_paths]
+    result["failed"] = failed
+    return result
+
+
 def _as_repo_path(root: Path, raw: str) -> Path:
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
@@ -222,8 +393,16 @@ def remediate_repo(
     protected_branches: set[str],
     max_remote_deletes: int,
     max_local_deletes: int,
+    over_cap_total_branches: int,
+    ignore_stale_age_when_over_cap: bool,
     remove_worktree_locks: bool,
     allow_closed_pr_delete: bool,
+    archive_unmerged_branches: bool,
+    archive_unmerged_min_age_days: int,
+    archive_tag_namespace: str,
+    archive_push_remote_tags: bool,
+    retire_stale_recovery_worktrees: bool,
+    recovery_worktree_min_age_days: int,
     apply: bool,
 ) -> dict[str, Any]:
     now_ts = int(datetime.now(UTC).timestamp())
@@ -239,6 +418,7 @@ def remediate_repo(
         "worktree_removed_count": 0,
         "worktree_remove_failed_count": 0,
         "worktree_removed_paths": [],
+        "dirty_worktree_blockers": [],
         "repo_slug": "",
         "open_pr_head_count": 0,
         "closed_pr_head_count": 0,
@@ -258,6 +438,26 @@ def remediate_repo(
         "local_force_deleted_count": 0,
         "local_deleted_count": 0,
         "local_deleted": [],
+        "over_cap_total_branches": max(1, int(over_cap_total_branches)),
+        "ignore_stale_age_when_over_cap": bool(ignore_stale_age_when_over_cap),
+        "over_cap_mode_active": False,
+        "active_worktree_branch_count": 0,
+        "archive_unmerged_branches": bool(archive_unmerged_branches),
+        "archive_unmerged_min_age_days": max(1, int(archive_unmerged_min_age_days)),
+        "archive_tag_namespace": _as_text(archive_tag_namespace).strip("/") or "archive/branch-debt",
+        "archive_push_remote_tags": bool(archive_push_remote_tags),
+        "archive_tagged_count": 0,
+        "archive_tag_push_failed_count": 0,
+        "remote_archived_unmerged_deleted_count": 0,
+        "local_archived_unmerged_deleted_count": 0,
+        "remote_blocked_active_worktree_count": 0,
+        "local_blocked_active_worktree_count": 0,
+        "retire_stale_recovery_worktrees": bool(retire_stale_recovery_worktrees),
+        "recovery_worktree_min_age_days": max(1, int(recovery_worktree_min_age_days)),
+        "recovery_worktree_retire_attempted_count": 0,
+        "recovery_worktree_retired_count": 0,
+        "recovery_worktree_retire_failed_count": 0,
+        "recovery_worktree_retired_paths": [],
     }
 
     if not repo.exists() or not repo.is_dir():
@@ -304,19 +504,33 @@ def remediate_repo(
     )
     report["remote_branch_total"] = len(remote_rows)
     report["local_branch_total"] = len(local_rows)
+    total_branch_count = report["remote_branch_total"] + report["local_branch_total"]
+    over_cap_mode_active = bool(ignore_stale_age_when_over_cap) and total_branch_count > max(1, int(over_cap_total_branches))
+    report["over_cap_mode_active"] = over_cap_mode_active
+    active_worktree_paths_by_branch = _active_worktree_branch_paths(repo)
+    active_worktree_branches = set(active_worktree_paths_by_branch.keys())
+    report["active_worktree_branch_count"] = len(active_worktree_branches)
+    archive_tag_namespace_resolved = _as_text(report.get("archive_tag_namespace", "")).strip("/") or "archive/branch-debt"
+    archive_unmerged_min_age_days_resolved = max(1, int(report.get("archive_unmerged_min_age_days", 1) or 1))
 
     current = _current_branch(repo)
 
     remote_deleted: list[dict[str, Any]] = []
     local_deleted: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    archive_tagged_count = 0
+    archive_tag_push_failed_count = 0
+    remote_archived_unmerged_deleted_count = 0
+    local_archived_unmerged_deleted_count = 0
     remote_stale_prefix_count = 0
     remote_candidates = 0
     remote_blocked_open_pr_count = 0
     remote_blocked_unmerged_count = 0
+    remote_blocked_active_worktree_count = 0
     local_stale_prefix_count = 0
     local_candidates = 0
     local_blocked_unmerged_count = 0
+    local_blocked_active_worktree_count = 0
     local_blocked_worktree_count = 0
     local_blocked_worktree_dirty_count = 0
     local_force_deleted_count = 0
@@ -324,6 +538,13 @@ def remediate_repo(
     worktree_removed_count = 0
     worktree_remove_failed_count = 0
     worktree_removed_paths: list[str] = []
+    dirty_worktree_blockers: list[dict[str, Any]] = []
+    recovery_worktree_retire_attempted_count = 0
+    recovery_worktree_retired_count = 0
+    recovery_worktree_retire_failed_count = 0
+    recovery_worktree_retired_paths: list[str] = []
+    recovery_retire_attempted_branches: set[str] = set()
+    pending_remote_deletes: list[dict[str, Any]] = []
 
     for remote_ref, ts in remote_rows:
         if remote_ref in {f"{remote}/HEAD", remote}:
@@ -336,37 +557,138 @@ def remediate_repo(
         if not _is_prefix_match(branch, prefixes):
             continue
         age_days = _age_days(now_ts, ts)
-        if age_days < stale_days:
+        if age_days < stale_days and not over_cap_mode_active:
             continue
         remote_stale_prefix_count += 1
+        if branch in active_worktree_branches:
+            if (
+                apply
+                and remove_worktree_locks
+                and retire_stale_recovery_worktrees
+                and branch not in recovery_retire_attempted_branches
+            ):
+                recovery_retire_attempted_branches.add(branch)
+                retire_result = _retire_stale_recovery_worktrees(
+                    repo,
+                    branch=branch,
+                    age_days=age_days,
+                    min_age_days=max(1, int(recovery_worktree_min_age_days)),
+                    worktree_paths_by_branch=active_worktree_paths_by_branch,
+                )
+                if retire_result.get("eligible"):
+                    recovery_worktree_retire_attempted_count += int(retire_result.get("attempted_paths_count", 0) or 0)
+                    retired_paths = [str(item) for item in retire_result.get("removed_paths", []) if _as_text(item)]
+                    recovery_worktree_retired_count += len(retired_paths)
+                    recovery_worktree_retired_paths.extend(retired_paths)
+                    failed_rows = [row for row in retire_result.get("failed", []) if isinstance(row, dict)]
+                    recovery_worktree_retire_failed_count += len(failed_rows)
+                    for failed in failed_rows:
+                        skipped.append(
+                            {
+                                "scope": "remote",
+                                "branch": branch,
+                                "reason": f"stale_recovery_worktree_retire_failed:{_as_text(failed.get('reason', 'worktree_remove_failed'))}",
+                                "worktree_path": _as_text(failed.get("path", "")),
+                            }
+                        )
+                    active_worktree_branches = set(active_worktree_paths_by_branch.keys())
+            if branch in active_worktree_branches:
+                remote_blocked_active_worktree_count += 1
+                skipped.append({"scope": "remote", "branch": branch, "reason": "active_worktree_branch"})
+                continue
         if branch in open_heads:
             remote_blocked_open_pr_count += 1
             skipped.append({"scope": "remote", "branch": branch, "reason": "open_pr_head"})
             continue
         merged = _merged_into_base(repo, f"refs/remotes/{remote}/{branch}", base_ref)
         closed_pr_head = branch in closed_heads if allow_closed_pr_delete else False
-        if not merged and not closed_pr_head:
+        archive_unmerged = (
+            bool(archive_unmerged_branches)
+            and over_cap_mode_active
+            and age_days >= archive_unmerged_min_age_days_resolved
+            and not merged
+            and not closed_pr_head
+        )
+        if not merged and not closed_pr_head and not archive_unmerged:
             remote_blocked_unmerged_count += 1
-            skipped.append({"scope": "remote", "branch": branch, "reason": "not_merged_and_no_closed_pr"})
+            if bool(archive_unmerged_branches) and over_cap_mode_active and age_days < archive_unmerged_min_age_days_resolved:
+                skipped.append(
+                    {
+                        "scope": "remote",
+                        "branch": branch,
+                        "reason": f"archive_unmerged_min_age_not_met:{age_days}<{archive_unmerged_min_age_days_resolved}",
+                    }
+                )
+            else:
+                skipped.append({"scope": "remote", "branch": branch, "reason": "not_merged_and_no_closed_pr"})
             continue
         remote_candidates += 1
-        if len(remote_deleted) >= max_remote_deletes:
+        if len(pending_remote_deletes) >= max_remote_deletes:
             skipped.append({"scope": "remote", "branch": branch, "reason": "max_remote_deletes_reached"})
             continue
         if not apply:
             skipped.append({"scope": "remote", "branch": branch, "reason": "dry_run"})
             continue
-        deleted, reason = _delete_remote_branch(repo, remote, branch)
-        if deleted:
-            remote_deleted.append(
-                {
-                    "branch": branch,
-                    "age_days": age_days,
-                    "basis": "merged_into_base" if merged else "closed_pr_head",
-                }
+        archive_tag = ""
+        commit_sha = ""
+        if archive_unmerged:
+            commit_sha = _ref_commit_sha(repo, f"refs/remotes/{remote}/{branch}")
+            if not commit_sha:
+                skipped.append({"scope": "remote", "branch": branch, "reason": "archive_ref_sha_unavailable"})
+                continue
+            archive_tag = _archive_tag_name(
+                branch=branch,
+                commit_sha=commit_sha,
+                namespace=archive_tag_namespace_resolved,
             )
-        else:
-            skipped.append({"scope": "remote", "branch": branch, "reason": f"delete_failed:{reason}"})
+            tag_ok, tag_reason = _ensure_archive_tag(
+                repo,
+                tag_name=archive_tag,
+                target_ref=f"refs/remotes/{remote}/{branch}",
+                remote=remote,
+                push_remote=bool(archive_push_remote_tags),
+            )
+            if not tag_ok:
+                archive_tag_push_failed_count += 1
+                skipped.append({"scope": "remote", "branch": branch, "reason": f"archive_tag_failed:{tag_reason}"})
+                continue
+            archive_tagged_count += 1
+        pending_remote_deletes.append(
+            {
+                "branch": branch,
+                "age_days": age_days,
+                "basis": "merged_into_base" if merged else ("closed_pr_head" if closed_pr_head else "archived_unmerged_no_pr"),
+                "archive_unmerged": archive_unmerged,
+                "archive_tag": archive_tag,
+                "commit_sha": commit_sha,
+            }
+        )
+
+    if apply and pending_remote_deletes:
+        delete_order = [str(item.get("branch", "")).strip() for item in pending_remote_deletes if str(item.get("branch", "")).strip()]
+        deleted_branches, delete_failures = _delete_remote_branches_batched(
+            repo,
+            remote=remote,
+            branches=delete_order,
+        )
+        for item in pending_remote_deletes:
+            branch_name = str(item.get("branch", "")).strip()
+            if not branch_name:
+                continue
+            if branch_name in deleted_branches:
+                entry = {
+                    "branch": branch_name,
+                    "age_days": int(item.get("age_days", 0) or 0),
+                    "basis": str(item.get("basis", "merged_into_base")).strip() or "merged_into_base",
+                }
+                if bool(item.get("archive_unmerged", False)):
+                    entry["archive_tag"] = str(item.get("archive_tag", "")).strip()
+                    entry["commit_sha"] = str(item.get("commit_sha", "")).strip()
+                    remote_archived_unmerged_deleted_count += 1
+                remote_deleted.append(entry)
+                continue
+            reason = _as_text(delete_failures.get(branch_name, "remote_delete_failed"))
+            skipped.append({"scope": "remote", "branch": branch_name, "reason": f"delete_failed:{reason}"})
 
     for local_ref, ts in local_rows:
         branch = local_ref
@@ -377,14 +699,66 @@ def remediate_repo(
         if not _is_prefix_match(branch, prefixes):
             continue
         age_days = _age_days(now_ts, ts)
-        if age_days < stale_days:
+        if age_days < stale_days and not over_cap_mode_active:
             continue
         local_stale_prefix_count += 1
+        if branch in active_worktree_branches:
+            if (
+                apply
+                and remove_worktree_locks
+                and retire_stale_recovery_worktrees
+                and branch not in recovery_retire_attempted_branches
+            ):
+                recovery_retire_attempted_branches.add(branch)
+                retire_result = _retire_stale_recovery_worktrees(
+                    repo,
+                    branch=branch,
+                    age_days=age_days,
+                    min_age_days=max(1, int(recovery_worktree_min_age_days)),
+                    worktree_paths_by_branch=active_worktree_paths_by_branch,
+                )
+                if retire_result.get("eligible"):
+                    recovery_worktree_retire_attempted_count += int(retire_result.get("attempted_paths_count", 0) or 0)
+                    retired_paths = [str(item) for item in retire_result.get("removed_paths", []) if _as_text(item)]
+                    recovery_worktree_retired_count += len(retired_paths)
+                    recovery_worktree_retired_paths.extend(retired_paths)
+                    failed_rows = [row for row in retire_result.get("failed", []) if isinstance(row, dict)]
+                    recovery_worktree_retire_failed_count += len(failed_rows)
+                    for failed in failed_rows:
+                        skipped.append(
+                            {
+                                "scope": "local",
+                                "branch": branch,
+                                "reason": f"stale_recovery_worktree_retire_failed:{_as_text(failed.get('reason', 'worktree_remove_failed'))}",
+                                "worktree_path": _as_text(failed.get("path", "")),
+                            }
+                        )
+                    active_worktree_branches = set(active_worktree_paths_by_branch.keys())
+            if branch in active_worktree_branches:
+                local_blocked_active_worktree_count += 1
+                skipped.append({"scope": "local", "branch": branch, "reason": "active_worktree_branch"})
+                continue
         merged = _merged_into_base(repo, f"refs/heads/{branch}", base_ref)
         closed_pr_head = branch in closed_heads if allow_closed_pr_delete else False
-        if not merged and not closed_pr_head:
+        archive_unmerged = (
+            bool(archive_unmerged_branches)
+            and over_cap_mode_active
+            and age_days >= archive_unmerged_min_age_days_resolved
+            and not merged
+            and not closed_pr_head
+        )
+        if not merged and not closed_pr_head and not archive_unmerged:
             local_blocked_unmerged_count += 1
-            skipped.append({"scope": "local", "branch": branch, "reason": "not_merged_and_no_closed_pr"})
+            if bool(archive_unmerged_branches) and over_cap_mode_active and age_days < archive_unmerged_min_age_days_resolved:
+                skipped.append(
+                    {
+                        "scope": "local",
+                        "branch": branch,
+                        "reason": f"archive_unmerged_min_age_not_met:{age_days}<{archive_unmerged_min_age_days_resolved}",
+                    }
+                )
+            else:
+                skipped.append({"scope": "local", "branch": branch, "reason": "not_merged_and_no_closed_pr"})
             continue
         local_candidates += 1
         if len(local_deleted) >= max_local_deletes:
@@ -393,32 +767,64 @@ def remediate_repo(
         if not apply:
             skipped.append({"scope": "local", "branch": branch, "reason": "dry_run"})
             continue
+        archive_tag = ""
+        commit_sha = ""
+        if archive_unmerged:
+            commit_sha = _ref_commit_sha(repo, f"refs/heads/{branch}")
+            if not commit_sha:
+                skipped.append({"scope": "local", "branch": branch, "reason": "archive_ref_sha_unavailable"})
+                continue
+            archive_tag = _archive_tag_name(
+                branch=branch,
+                commit_sha=commit_sha,
+                namespace=archive_tag_namespace_resolved,
+            )
+            tag_ok, tag_reason = _ensure_archive_tag(
+                repo,
+                tag_name=archive_tag,
+                target_ref=f"refs/heads/{branch}",
+                remote=remote,
+                push_remote=bool(archive_push_remote_tags),
+            )
+            if not tag_ok:
+                archive_tag_push_failed_count += 1
+                skipped.append({"scope": "local", "branch": branch, "reason": f"archive_tag_failed:{tag_reason}"})
+                continue
+            archive_tagged_count += 1
         deleted, reason = _delete_local_branch(repo, branch)
         if deleted:
+            basis = "merged_into_base" if merged else ("closed_pr_head" if closed_pr_head else "archived_unmerged_no_pr")
             local_deleted.append(
                 {
                     "branch": branch,
                     "age_days": age_days,
-                    "basis": "merged_into_base" if merged else "closed_pr_head",
+                    "basis": basis,
+                    **({"archive_tag": archive_tag, "commit_sha": commit_sha} if archive_unmerged else {}),
                 }
             )
+            if archive_unmerged:
+                local_archived_unmerged_deleted_count += 1
         else:
             if (
                 apply
                 and not merged
-                and closed_pr_head
+                and (closed_pr_head or archive_unmerged)
                 and "is not fully merged" in reason
             ):
                 force_deleted, force_reason = _force_delete_local_branch(repo, branch)
                 if force_deleted:
                     local_force_deleted_count += 1
+                    basis = "closed_pr_head_force_delete" if closed_pr_head else "archived_unmerged_no_pr_force_delete"
                     local_deleted.append(
                         {
                             "branch": branch,
                             "age_days": age_days,
-                            "basis": "closed_pr_head_force_delete",
+                            "basis": basis,
+                            **({"archive_tag": archive_tag, "commit_sha": commit_sha} if archive_unmerged else {}),
                         }
                     )
+                    if archive_unmerged:
+                        local_archived_unmerged_deleted_count += 1
                     continue
                 reason = f"{reason};force_delete_failed:{force_reason}"
             worktree_path = _extract_worktree_path(reason)
@@ -430,14 +836,18 @@ def remediate_repo(
                     worktree_removed_paths.append(str(worktree_path))
                     deleted_retry, retry_reason = _delete_local_branch(repo, branch)
                     if deleted_retry:
+                        basis = "merged_into_base" if merged else ("closed_pr_head" if closed_pr_head else "archived_unmerged_no_pr")
                         local_deleted.append(
                             {
                                 "branch": branch,
                                 "age_days": age_days,
-                                "basis": "merged_into_base" if merged else "closed_pr_head",
+                                "basis": basis,
                                 "worktree_reconciled": True,
+                                **({"archive_tag": archive_tag, "commit_sha": commit_sha} if archive_unmerged else {}),
                             }
                         )
+                        if archive_unmerged:
+                            local_archived_unmerged_deleted_count += 1
                         continue
                     reason = f"{reason};retry_failed:{retry_reason}"
                 else:
@@ -447,26 +857,47 @@ def remediate_repo(
                 local_blocked_worktree_count += 1
             if "worktree_remove_failed:worktree_dirty" in reason:
                 local_blocked_worktree_dirty_count += 1
+                wt = _extract_worktree_path(reason)
+                blocker: dict[str, Any] = {
+                    "branch": branch,
+                    "repo_root": str(repo),
+                    "reason": "worktree_dirty",
+                    "worktree_path": str(wt) if wt is not None else "",
+                }
+                if wt is not None:
+                    blocker.update(_inspect_worktree_dirty(wt))
+                dirty_worktree_blockers.append(blocker)
             skipped.append({"scope": "local", "branch": branch, "reason": f"delete_failed:{reason}"})
 
     report["remote_stale_prefix_count"] = remote_stale_prefix_count
     report["remote_candidate_count"] = remote_candidates
     report["remote_blocked_open_pr_count"] = remote_blocked_open_pr_count
     report["remote_blocked_unmerged_count"] = remote_blocked_unmerged_count
+    report["remote_blocked_active_worktree_count"] = remote_blocked_active_worktree_count
     report["remote_deleted_count"] = len(remote_deleted)
     report["remote_deleted"] = remote_deleted
+    report["remote_archived_unmerged_deleted_count"] = remote_archived_unmerged_deleted_count
     report["local_stale_prefix_count"] = local_stale_prefix_count
     report["local_candidate_count"] = local_candidates
     report["local_blocked_unmerged_count"] = local_blocked_unmerged_count
+    report["local_blocked_active_worktree_count"] = local_blocked_active_worktree_count
     report["local_blocked_worktree_count"] = local_blocked_worktree_count
     report["local_blocked_worktree_dirty_count"] = local_blocked_worktree_dirty_count
     report["local_force_deleted_count"] = local_force_deleted_count
     report["local_deleted_count"] = len(local_deleted)
     report["local_deleted"] = local_deleted
+    report["local_archived_unmerged_deleted_count"] = local_archived_unmerged_deleted_count
+    report["archive_tagged_count"] = archive_tagged_count
+    report["archive_tag_push_failed_count"] = archive_tag_push_failed_count
+    report["recovery_worktree_retire_attempted_count"] = recovery_worktree_retire_attempted_count
+    report["recovery_worktree_retired_count"] = recovery_worktree_retired_count
+    report["recovery_worktree_retire_failed_count"] = recovery_worktree_retire_failed_count
+    report["recovery_worktree_retired_paths"] = recovery_worktree_retired_paths
     report["worktree_remove_attempted_count"] = worktree_remove_attempted_count
     report["worktree_removed_count"] = worktree_removed_count
     report["worktree_remove_failed_count"] = worktree_remove_failed_count
     report["worktree_removed_paths"] = worktree_removed_paths
+    report["dirty_worktree_blockers"] = dirty_worktree_blockers
     report["skipped"] = skipped
     report["ok"] = len(report["errors"]) == 0
     return report
@@ -484,6 +915,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-remote-deletes", type=int, default=60, help="Maximum remote deletions per repo.")
     parser.add_argument("--max-local-deletes", type=int, default=60, help="Maximum local deletions per repo.")
     parser.add_argument(
+        "--over-cap-total-branches",
+        type=int,
+        default=500,
+        help="Activate over-cap remediation mode when local+remote branches exceed this value.",
+    )
+    parser.add_argument(
+        "--ignore-stale-age-when-over-cap",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When in over-cap mode, allow merged/closed-PR branch cleanup regardless of stale-days age.",
+    )
+    parser.add_argument(
         "--remove-worktree-locks",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -494,6 +937,41 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Allow deletion when branch is tied to a closed PR head (open PR heads remain protected).",
+    )
+    parser.add_argument(
+        "--archive-unmerged-branches",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="When over-cap, archive unmerged/no-PR branches to tags before deletion.",
+    )
+    parser.add_argument(
+        "--archive-unmerged-min-age-days",
+        type=int,
+        default=2,
+        help="Minimum age in days before archive-delete for unmerged/no-PR branches when enabled.",
+    )
+    parser.add_argument(
+        "--archive-tag-namespace",
+        default="archive/branch-debt",
+        help="Tag namespace prefix used for archive-delete backups.",
+    )
+    parser.add_argument(
+        "--archive-push-remote-tags",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Push archive tags to remote before deleting archive-delete branches.",
+    )
+    parser.add_argument(
+        "--retire-stale-recovery-worktrees",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Attempt clean removal of stale *recovery* worktrees before classifying branch as active-worktree-blocked.",
+    )
+    parser.add_argument(
+        "--recovery-worktree-min-age-days",
+        type=int,
+        default=2,
+        help="Minimum branch age in days before stale recovery worktree retirement is attempted.",
     )
     parser.add_argument("--apply", action=argparse.BooleanOptionalAction, default=False, help="Apply deletions.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output JSON report path.")
@@ -529,8 +1007,16 @@ def main(argv: list[str] | None = None) -> int:
                 protected_branches=protected,
                 max_remote_deletes=max(0, int(args.max_remote_deletes)),
                 max_local_deletes=max(0, int(args.max_local_deletes)),
+                over_cap_total_branches=max(1, int(args.over_cap_total_branches)),
+                ignore_stale_age_when_over_cap=bool(args.ignore_stale_age_when_over_cap),
                 remove_worktree_locks=bool(args.remove_worktree_locks),
                 allow_closed_pr_delete=bool(args.allow_closed_pr_delete),
+                archive_unmerged_branches=bool(args.archive_unmerged_branches),
+                archive_unmerged_min_age_days=max(1, int(args.archive_unmerged_min_age_days)),
+                archive_tag_namespace=_as_text(args.archive_tag_namespace) or "archive/branch-debt",
+                archive_push_remote_tags=bool(args.archive_push_remote_tags),
+                retire_stale_recovery_worktrees=bool(args.retire_stale_recovery_worktrees),
+                recovery_worktree_min_age_days=max(1, int(args.recovery_worktree_min_age_days)),
                 apply=bool(args.apply),
             )
         )
@@ -545,19 +1031,58 @@ def main(argv: list[str] | None = None) -> int:
         "local_stale_prefix_count": sum(int(row.get("local_stale_prefix_count", 0) or 0) for row in repo_reports),
         "remote_deleted_count": sum(int(row.get("remote_deleted_count", 0) or 0) for row in repo_reports),
         "local_deleted_count": sum(int(row.get("local_deleted_count", 0) or 0) for row in repo_reports),
+        "remote_archived_unmerged_deleted_count": sum(
+            int(row.get("remote_archived_unmerged_deleted_count", 0) or 0) for row in repo_reports
+        ),
+        "local_archived_unmerged_deleted_count": sum(
+            int(row.get("local_archived_unmerged_deleted_count", 0) or 0) for row in repo_reports
+        ),
+        "archive_tagged_count": sum(int(row.get("archive_tagged_count", 0) or 0) for row in repo_reports),
+        "archive_tag_push_failed_count": sum(int(row.get("archive_tag_push_failed_count", 0) or 0) for row in repo_reports),
+        "recovery_worktree_retire_attempted_count": sum(
+            int(row.get("recovery_worktree_retire_attempted_count", 0) or 0) for row in repo_reports
+        ),
+        "recovery_worktree_retired_count": sum(
+            int(row.get("recovery_worktree_retired_count", 0) or 0) for row in repo_reports
+        ),
+        "recovery_worktree_retire_failed_count": sum(
+            int(row.get("recovery_worktree_retire_failed_count", 0) or 0) for row in repo_reports
+        ),
         "remote_candidate_count": sum(int(row.get("remote_candidate_count", 0) or 0) for row in repo_reports),
         "local_candidate_count": sum(int(row.get("local_candidate_count", 0) or 0) for row in repo_reports),
         "remote_blocked_open_pr_count": sum(int(row.get("remote_blocked_open_pr_count", 0) or 0) for row in repo_reports),
         "remote_blocked_unmerged_count": sum(int(row.get("remote_blocked_unmerged_count", 0) or 0) for row in repo_reports),
+        "remote_blocked_active_worktree_count": sum(
+            int(row.get("remote_blocked_active_worktree_count", 0) or 0) for row in repo_reports
+        ),
         "local_blocked_unmerged_count": sum(int(row.get("local_blocked_unmerged_count", 0) or 0) for row in repo_reports),
+        "local_blocked_active_worktree_count": sum(
+            int(row.get("local_blocked_active_worktree_count", 0) or 0) for row in repo_reports
+        ),
         "local_blocked_worktree_count": sum(int(row.get("local_blocked_worktree_count", 0) or 0) for row in repo_reports),
         "local_blocked_worktree_dirty_count": sum(
             int(row.get("local_blocked_worktree_dirty_count", 0) or 0) for row in repo_reports
         ),
         "local_force_deleted_count": sum(int(row.get("local_force_deleted_count", 0) or 0) for row in repo_reports),
+        "dirty_worktree_blocker_count": sum(
+            len(row.get("dirty_worktree_blockers", []))
+            for row in repo_reports
+            if isinstance(row, dict) and isinstance(row.get("dirty_worktree_blockers"), list)
+        ),
         "open_pr_head_count": sum(int(row.get("open_pr_head_count", 0) or 0) for row in repo_reports),
         "error_count": sum(len(row.get("errors", [])) for row in repo_reports if isinstance(row, dict)),
     }
+    dirty_worktree_blockers: list[dict[str, Any]] = []
+    for repo_report in repo_reports:
+        if not isinstance(repo_report, dict):
+            continue
+        rows = repo_report.get("dirty_worktree_blockers", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            dirty_worktree_blockers.append(row)
     report = {
         "schema_version": "git-hygiene-remediation.v1",
         "generated_at_utc": _utc_now_iso(),
@@ -568,8 +1093,17 @@ def main(argv: list[str] | None = None) -> int:
         "branch_prefixes": list(prefixes),
         "remove_worktree_locks": bool(args.remove_worktree_locks),
         "allow_closed_pr_delete": bool(args.allow_closed_pr_delete),
+        "over_cap_total_branches": max(1, int(args.over_cap_total_branches)),
+        "ignore_stale_age_when_over_cap": bool(args.ignore_stale_age_when_over_cap),
+        "archive_unmerged_branches": bool(args.archive_unmerged_branches),
+        "archive_unmerged_min_age_days": max(1, int(args.archive_unmerged_min_age_days)),
+        "archive_tag_namespace": _as_text(args.archive_tag_namespace).strip("/") or "archive/branch-debt",
+        "archive_push_remote_tags": bool(args.archive_push_remote_tags),
+        "retire_stale_recovery_worktrees": bool(args.retire_stale_recovery_worktrees),
+        "recovery_worktree_min_age_days": max(1, int(args.recovery_worktree_min_age_days)),
         "apply": bool(args.apply),
         "repos": repo_reports,
+        "dirty_worktree_blockers": dirty_worktree_blockers[:100],
         "summary": summary,
         "ok": summary["error_count"] == 0,
     }

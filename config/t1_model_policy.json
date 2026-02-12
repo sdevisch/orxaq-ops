@@ -1,0 +1,45 @@
+{
+  "schema_version": "t1-model-policy.v1",
+  "enabled": true,
+  "lookback_hours": 168,
+  "basic_task_max_difficulty": 55,
+  "t1_models": [
+    "liquid/lfm2.5-1.2b",
+    "google/gemma-3-4b",
+    "deepseek-coder-v2-lite-instruct"
+  ],
+  "t1_model_prefixes": [],
+  "monitoring": {
+    "require_recent_metrics": true,
+    "max_metrics_age_minutes": 240,
+    "min_scanned_metrics": 1,
+    "max_parse_skip_ratio": 0.1,
+    "required_fields": [
+      "task_id",
+      "prompt_difficulty_score",
+      "routing_reason"
+    ]
+  },
+  "escalation": {
+    "min_difficulty": 70,
+    "routing_reason_allowlist": [
+      "router_selected_model",
+      "router_quality_override",
+      "router_capacity_fallback",
+      "cross_provider_fallback",
+      "model selection",
+      "timeout_fallback",
+      "unsupported_model_fallback"
+    ],
+    "notes_regex": [
+      "escalat",
+      "fallback",
+      "capacity",
+      "timeout",
+      "cross-provider"
+    ],
+    "task_allowlist": [],
+    "task_regex_allowlist": []
+  },
+  "max_violations": 0
+}

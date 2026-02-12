@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-rln-merge-fixes",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Fix RLN semantic compaction and merge corruption",
+    "description": "Harden RLN merge/extraction under small context windows and high-collision facts.",
+    "depends_on": [],
+    "acceptance": [
+      "RLN semantic compaction failures are resolved",
+      "Merge behavior remains stable on adversarial fixtures",
+      "Validation commands pass"
+    ]
+  }
+]

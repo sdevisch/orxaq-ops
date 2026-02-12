@@ -11,7 +11,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from orxaq_autonomy.context import write_default_skill_protocol
-from orxaq_autonomy.protocols import load_mcp_context, load_skill_protocol
+from orxaq_autonomy.protocols import MCPContextBundle, SkillProtocolSpec, load_mcp_context, load_skill_protocol
 
 
 class ProtocolTests(unittest.TestCase):
@@ -45,6 +45,13 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(protocol.version, "2")
             self.assertEqual(protocol.required_behaviors, ["a", "b"])
 
+    def test_load_skill_protocol_non_object_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "skill.json"
+            path.write_text('["x"]', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                SkillProtocolSpec.from_json_file(path)
+
     def test_load_mcp_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "mcp.json"
@@ -64,6 +71,26 @@ class ProtocolTests(unittest.TestCase):
             rendered = bundle.render_context()
             self.assertIn("alpha", rendered)
             self.assertIn("beta", rendered)
+
+    def test_load_mcp_context_edge_cases(self):
+        self.assertIsNone(load_mcp_context(None))
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = pathlib.Path(tmp) / "missing.json"
+            self.assertIsNone(load_mcp_context(missing))
+
+            path = pathlib.Path(tmp) / "mcp.json"
+            path.write_text(
+                json.dumps({"resources": ["bad", {"text": "  "}, {"text": "ok"}, {"content": "z"}]}),
+                encoding="utf-8",
+            )
+            bundle = load_mcp_context(path, max_snippets=1, max_chars=1)
+            assert bundle is not None
+            self.assertEqual(bundle.snippets, ["o"])
+            self.assertIn("MCP context", bundle.render_context())
+
+    def test_render_context_empty_snippets(self):
+        bundle = MCPContextBundle(source="x", snippets=[])
+        self.assertEqual(bundle.render_context(), "")
 
     def test_write_default_skill_protocol(self):
         with tempfile.TemporaryDirectory() as tmp:

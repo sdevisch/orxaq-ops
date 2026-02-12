@@ -12,6 +12,15 @@ from typing import Any
 
 from .context import write_default_skill_protocol
 from .dashboard import start_dashboard
+from .event_mesh import (
+    EventMeshConfig,
+    dispatch_events,
+    event_mesh_status,
+    export_events_for_coordination,
+    import_events_from_coordination,
+    publish_event,
+    write_node_manifest,
+)
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
@@ -20,6 +29,7 @@ from .manager import (
     dashboard_status_snapshot,
     ensure_background,
     ensure_dashboard_background,
+    full_autonomy_snapshot,
     health_snapshot,
     install_keepalive,
     lane_status_snapshot,
@@ -27,6 +37,7 @@ from .manager import (
     lane_status_fallback_snapshot,
     load_lane_specs,
     preflight,
+    process_watchdog_pass,
     reset_state,
     render_monitor_text,
     run_foreground,
@@ -947,6 +958,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
+    watchdog = sub.add_parser("process-watchdog")
+    watchdog.add_argument("--strict", action="store_true")
+    full = sub.add_parser("full-autonomy")
+    full.add_argument("--allow-dirty", action="store_true")
+    full.add_argument("--strict", action="store_true")
     metrics = sub.add_parser("metrics")
     metrics.add_argument("--json", action="store_true")
     monitor = sub.add_parser("monitor")
@@ -1061,6 +1077,44 @@ def main(argv: list[str] | None = None) -> int:
     lane_stop = sub.add_parser("lane-stop")
     lane_stop.add_argument("--lane", required=True)
 
+    mesh_init = sub.add_parser("mesh-init")
+    mesh_init.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        help="Node capability to include in the node manifest; repeatable.",
+    )
+
+    mesh_publish = sub.add_parser("mesh-publish")
+    mesh_publish.add_argument("--topic", required=True)
+    mesh_publish.add_argument("--event-type", required=True)
+    mesh_publish.add_argument("--payload-json", default="{}")
+    mesh_publish.add_argument("--causation-id", default="")
+    mesh_publish.add_argument("--source", default="cli")
+
+    mesh_dispatch = sub.add_parser("mesh-dispatch")
+    mesh_dispatch.add_argument("--max-events", type=int, default=128)
+
+    mesh_import = sub.add_parser("mesh-import")
+    mesh_import.add_argument("--max-events", type=int, default=1024)
+
+    mesh_export = sub.add_parser("mesh-export")
+    mesh_export.add_argument("--max-events", type=int, default=512)
+
+    mesh_sync = sub.add_parser("mesh-sync")
+    mesh_sync.add_argument("--max-import-events", type=int, default=1024)
+    mesh_sync.add_argument("--max-dispatch-events", type=int, default=128)
+    mesh_sync.add_argument("--max-export-events", type=int, default=512)
+
+    mesh_autonomy_once = sub.add_parser("mesh-autonomy-once")
+    mesh_autonomy_once.add_argument("--max-import-events", type=int, default=1024)
+    mesh_autonomy_once.add_argument("--max-dispatch-events", type=int, default=128)
+    mesh_autonomy_once.add_argument("--max-export-events", type=int, default=512)
+    mesh_autonomy_once.add_argument("--lane", default="")
+    mesh_autonomy_once.add_argument("--no-ensure-lanes", action="store_true")
+
+    sub.add_parser("mesh-status")
+
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
 
@@ -1087,6 +1141,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "health":
             print(json.dumps(health_snapshot(cfg), indent=2, sort_keys=True))
+            return 0
+        if args.command == "process-watchdog":
+            payload = process_watchdog_pass(cfg)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            if args.strict and not payload.get("ok", False):
+                return 1
+            return 0
+        if args.command == "full-autonomy":
+            payload = full_autonomy_snapshot(cfg, require_clean=not args.allow_dirty)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            if args.strict and not payload.get("ok", False):
+                return 1
             return 0
         if args.command == "metrics":
             payload = monitor_snapshot(cfg).get("response_metrics", {})
@@ -1387,7 +1453,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "lanes-plan":
             lanes = load_lane_specs(cfg)
             if args.json:
-                print(json.dumps({"lanes_file": str(cfg.lanes_file), "lanes": lanes}, indent=2, sort_keys=True))
+                print(
+                    json.dumps(
+                        {"lanes_file": str(cfg.lanes_file), "lanes": lanes},
+                        indent=2,
+                        sort_keys=True,
+                        default=str,
+                    )
+                )
                 return 0
             print(f"lanes_file: {cfg.lanes_file}")
             if not lanes:
@@ -1567,6 +1640,100 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             stop_ok = bool(payload.get("ok", int(payload.get("failed_count", 0)) == 0))
             return 0 if stop_ok else 1
+        if args.command == "mesh-init":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            capabilities = [str(item).strip() for item in args.capability if str(item).strip()]
+            payload = write_node_manifest(mesh_cfg, capabilities=capabilities or None)
+            print(json.dumps({"ok": True, "manifest": payload}, indent=2, sort_keys=True))
+            return 0
+        if args.command == "mesh-publish":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            try:
+                payload_json = json.loads(args.payload_json)
+            except json.JSONDecodeError as err:
+                raise RuntimeError(f"Invalid --payload-json: {err}") from err
+            if not isinstance(payload_json, dict):
+                raise RuntimeError("--payload-json must decode to a JSON object.")
+            event = publish_event(
+                mesh_cfg,
+                topic=args.topic,
+                event_type=args.event_type,
+                payload=payload_json,
+                causation_id=args.causation_id,
+                source=args.source,
+            )
+            print(json.dumps({"ok": True, "event": event}, indent=2, sort_keys=True))
+            return 0
+        if args.command == "mesh-dispatch":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            payload = dispatch_events(mesh_cfg, max_events=args.max_events)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "mesh-import":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            payload = import_events_from_coordination(mesh_cfg, max_events=args.max_events)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "mesh-export":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            payload = export_events_for_coordination(mesh_cfg, max_events=args.max_events)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0 if payload.get("ok", False) else 1
+        if args.command == "mesh-sync":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            imported = import_events_from_coordination(mesh_cfg, max_events=args.max_import_events)
+            dispatched = dispatch_events(mesh_cfg, max_events=args.max_dispatch_events)
+            exported = export_events_for_coordination(mesh_cfg, max_events=args.max_export_events)
+            ok = bool(imported.get("ok", False) and dispatched.get("ok", False) and exported.get("ok", False))
+            print(
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "imported": imported,
+                        "dispatched": dispatched,
+                        "exported": exported,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0 if ok else 1
+        if args.command == "mesh-autonomy-once":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            imported = import_events_from_coordination(mesh_cfg, max_events=args.max_import_events)
+            dispatched = dispatch_events(mesh_cfg, max_events=args.max_dispatch_events)
+            lane_payload: dict[str, Any] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "no_ensure_lanes",
+            }
+            if not args.no_ensure_lanes:
+                lane_payload = ensure_lanes_background(cfg, lane_id=args.lane.strip() or None)
+            exported = export_events_for_coordination(mesh_cfg, max_events=args.max_export_events)
+            ok = bool(
+                imported.get("ok", False)
+                and dispatched.get("ok", False)
+                and exported.get("ok", False)
+                and lane_payload.get("ok", True)
+            )
+            print(
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "imported": imported,
+                        "dispatched": dispatched,
+                        "lane_actions": lane_payload,
+                        "exported": exported,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0 if ok else 1
+        if args.command == "mesh-status":
+            mesh_cfg = EventMeshConfig.from_root(cfg.root_dir)
+            print(json.dumps(event_mesh_status(mesh_cfg), indent=2, sort_keys=True))
+            return 0
     except (FileNotFoundError, RuntimeError) as err:
         print(
             json.dumps(

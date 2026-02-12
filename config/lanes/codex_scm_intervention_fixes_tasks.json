@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-scm-intervention-fixes",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Fix SCM intervention robustness API issues",
+    "description": "Harden StructuralCausalModel constructor/equation handling and intervention edge behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "SCM intervention robustness tests pass",
+      "Constructor/equation invariants are enforced",
+      "Validation commands pass"
+    ]
+  }
+]
