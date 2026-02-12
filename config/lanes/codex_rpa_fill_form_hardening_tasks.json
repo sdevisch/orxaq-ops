@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-rpa-fill-form-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Harden RPA fill-form selectors and pacing behavior",
+    "description": "Improve fill_form and paced typing reliability for malformed fields, selector collisions, and timing edge cases.",
+    "depends_on": [],
+    "acceptance": [
+      "Fill-form flows fail fast with actionable diagnostics",
+      "Pacing behavior remains deterministic for edge-case inputs",
+      "make lint, make test, make version-check, and make repo-hygiene pass"
+    ]
+  }
+]

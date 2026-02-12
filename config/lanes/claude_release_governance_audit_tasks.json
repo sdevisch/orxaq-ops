@@ -1,0 +1,15 @@
+[
+  {
+    "id": "claude-release-governance-audit",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Release governance and controls audit",
+    "description": "Review release readiness controls, docs, and CI governance evidence.",
+    "depends_on": [],
+    "acceptance": [
+      "Findings converted into concrete doc/control updates",
+      "Release governance evidence is explicit",
+      "Validation commands pass"
+    ]
+  }
+]

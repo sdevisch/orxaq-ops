@@ -1,0 +1,15 @@
+[
+  {
+    "id": "rln-adversarial-coverage-expansion",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand adversarial RLN tests for anti-compaction guarantees",
+    "description": "In the independent test tree, add tests and benchmark cases that stress tiny-context behavior and detail retention over recursive context flow.",
+    "depends_on": [],
+    "acceptance": [
+      "Adds adversarial RLN tests and benchmark scenarios",
+      "Includes baseline-vs-RLN retention assertions",
+      "Validation commands pass in the test repo"
+    ]
+  }
+]

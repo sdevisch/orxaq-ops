@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-release-quality-orxaq",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Close release-quality blockers in orxaq",
+    "description": "Resolve failing release-quality paths, harden validation workflows, and produce deterministic pass evidence in orxaq.",
+    "depends_on": [],
+    "acceptance": [
+      "Release-quality blockers are fixed or explicitly triaged with evidence",
+      "Validation gates pass for lint/version/repo-hygiene/tests",
+      "Changes are deterministic and safe for autonomous execution"
+    ]
+  }
+]

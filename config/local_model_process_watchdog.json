@@ -1,0 +1,40 @@
+{
+  "processes": [
+    {
+      "id": "local-idle-guard",
+      "pid_file": "artifacts/autonomy/local_models/idle_guard.pid",
+      "match_regex": "local_model_idle_guard.py",
+      "restart_command": [
+        "make",
+        "local-idle-guard-start"
+      ],
+      "cwd": "/Users/sdevisch/dev/orxaq-ops",
+      "restart_cooldown_sec": 15,
+      "startup_grace_sec": 3
+    },
+    {
+      "id": "remote-heartbeat",
+      "pid_file": "artifacts/autonomy/local_models/remote_heartbeat.pid",
+      "match_regex": "lmstudio_remote_heartbeat.py",
+      "restart_command": [
+        "make",
+        "remote-heartbeat-start"
+      ],
+      "cwd": "/Users/sdevisch/dev/orxaq-ops",
+      "restart_cooldown_sec": 15,
+      "startup_grace_sec": 3
+    },
+    {
+      "id": "autonomy-supervisor",
+      "pid_file": "artifacts/autonomy/supervisor.pid",
+      "match_regex": "orxaq_autonomy\\.cli.*supervise",
+      "restart_command": [
+        "make",
+        "start"
+      ],
+      "cwd": "/Users/sdevisch/dev/orxaq-ops",
+      "restart_cooldown_sec": 20,
+      "startup_grace_sec": 5
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-odyssey-skin-regression",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand Odyssey skin regression and parity checks",
+    "description": "Add and harden tests for skin selection fallback/parity and smoke critical skins in Odyssey Phase32.",
+    "depends_on": [],
+    "acceptance": [
+      "Skin regression coverage increases with deterministic assertions",
+      "Smoke runs cover multiple skins with no parity break",
+      "Validation commands pass"
+    ]
+  }
+]

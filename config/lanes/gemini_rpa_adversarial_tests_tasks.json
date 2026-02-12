@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-adversarial-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA adversarial regression tests",
+    "description": "Add targeted adversarial tests around URL safety and workflow safety boundaries.",
+    "depends_on": [],
+    "acceptance": [
+      "RPA adversarial coverage increases",
+      "Findings include concrete fix hints if failures persist",
+      "Validation commands pass"
+    ]
+  }
+]

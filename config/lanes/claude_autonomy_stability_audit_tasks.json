@@ -1,0 +1,15 @@
+[
+  {
+    "id": "claude-autonomy-stability-audit",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Audit autonomy stability runbooks and resilience controls",
+    "description": "Review and improve autonomy runbook guidance for resilient non-interactive operation and safe recovery behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "Recovery and retry guidance is explicit, actionable, and safe for unattended execution",
+      "Runbook recommendations preserve validation and hosted control checks",
+      "Findings are translated into concrete implementation or documentation updates"
+    ]
+  }
+]

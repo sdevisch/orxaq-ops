@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-rpa-workflow-execution-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Harden RPA workflow spec validation and execution guards",
+    "description": "Tighten workflow spec validation, actionable error surfacing, and deterministic execution boundaries for workflow steps.",
+    "depends_on": [],
+    "acceptance": [
+      "Invalid workflow specs are rejected before execution",
+      "Dry-run and execution paths remain behaviorally consistent",
+      "make lint, make test, make version-check, and make repo-hygiene pass"
+    ]
+  }
+]

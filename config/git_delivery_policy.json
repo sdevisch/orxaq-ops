@@ -1,0 +1,29 @@
+{
+  "schema_version": "git-delivery-policy.v1",
+  "branch": {
+    "require_ticket_branch": true,
+    "ticket_branch_regex": "^(codex|claude|gemini|agent)/issue-[0-9]+-[a-z0-9._-]+$"
+  },
+  "change_block": {
+    "enforce_max_changed_lines": true,
+    "max_changed_lines": 400,
+    "allow_env_override": "ORXAQ_ALLOW_LARGE_CHANGE_BLOCK"
+  },
+  "pull_request": {
+    "require_pr": true,
+    "require_open": true,
+    "allow_draft": false,
+    "require_review": true,
+    "required_approvals": 1,
+    "require_review_decision_approved": true,
+    "allow_self_authored_approval_waiver": true,
+    "allow_env_override": "ORXAQ_ALLOW_PR_WORKFLOW_BYPASS"
+  },
+  "monitoring": {
+    "base_ref": "origin/main",
+    "include_working_tree_changes": true,
+    "baseline_file": "artifacts/autonomy/git_delivery_baseline.json",
+    "use_baseline_delta": true,
+    "allow_missing_baseline": true
+  }
+}

@@ -1,0 +1,106 @@
+[
+  {
+    "id": "lease-backend-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Lease backend hardening",
+    "description": "Abstract leader lease storage (file + etcd fallback) and document runtime flags with retry/timeout policy.",
+    "depends_on": [],
+    "acceptance": [
+      "Leader lease backend interface supports `file` plus production backend (etcd or postgres).",
+      "Configuration variables document `ORXAQ_AUTONOMY_LEADER_LEASE_BACKEND` and connection options.",
+      "Lease renewal/acquire operations honor retry + timeout policy and expose observer mode when backend unreachable."
+    ]
+  },
+  {
+    "id": "manager-leadership-integration",
+    "owner": "codex",
+    "priority": 2,
+    "title": "Manager leadership integration",
+    "description": "Ensure every mutating manager path honors current leader epoch and emits consistent command status transitions.",
+    "depends_on": [
+      "lease-backend-hardening"
+    ],
+    "acceptance": [
+      "Mutating actions (`start/stop lane`, scaling commands) gate on leader flag and epoch.",
+      "Manager emits epoch + leader metadata with every scaling command and outcome event.",
+      "`applied | noop | rejected_* | actuation_failed` statuses appear in command log."
+    ]
+  },
+  {
+    "id": "dmn-decision-engine",
+    "owner": "codex",
+    "priority": 3,
+    "title": "DMN-powered decision engine",
+    "description": "Extract scaling/routing policy into versioned DMN tables with explain feedback.",
+    "depends_on": [
+      "manager-leadership-integration"
+    ],
+    "acceptance": [
+      "DMN engine evaluates current behavior with match trace, version hash, and decision metadata.",
+      "Decision trace appears on every `decision.made` event.",
+      "Existing scaling behavior is preserved when tables mirror current logic."
+    ]
+  },
+  {
+    "id": "execution-dag-scheduler",
+    "owner": "codex",
+    "priority": 4,
+    "title": "Execution DAG scheduler",
+    "description": "Add DAG frontier scheduling with durable frontier state and idempotent claims.",
+    "depends_on": [
+      "dmn-decision-engine"
+    ],
+    "acceptance": [
+      "DAG frontier state model records `pending|ready|running|success|failed|blocked` for every node.",
+      "Leader failover can replay DAG state without duplicate side effects.",
+      "Worker claims include `(task_id, attempt, leader_epoch)` to dedupe retries."
+    ]
+  },
+  {
+    "id": "causal-intervention-gate",
+    "owner": "codex",
+    "priority": 5,
+    "title": "Causal DAG intervention gate",
+    "description": "Add causal evidence requirements before disruptive control actions.",
+    "depends_on": [
+      "execution-dag-scheduler"
+    ],
+    "acceptance": [
+      "Disruptive actions (`restart_many`, `isolate_node`, aggressive scale-down) require causal metadata.",
+      "Causal hypothesis/evidence recorded in command log and surfaced to observability.",
+      "Operator can opt into enforced vs advisory mode for causal gate."
+    ]
+  },
+  {
+    "id": "observability-dashboard",
+    "owner": "codex",
+    "priority": 6,
+    "title": "Observability + dashboard",
+    "description": "Surface leader/lease/command health and DMN/causal traces in CLI/dashboard.",
+    "depends_on": [
+      "manager-leadership-integration",
+      "dmn-decision-engine",
+      "causal-intervention-gate"
+    ],
+    "acceptance": [
+      "Dashboard shows current leader identity/epoch, lease age/TTL, and command statuses.",
+      "DMN decision trace and causal tag appear in UI and CLI status endpoints."
+    ]
+  },
+  {
+    "id": "chaos-reliability-validation",
+    "owner": "codex",
+    "priority": 7,
+    "title": "Reliability validation + chaos",
+    "description": "Build chaos validation scripts to verify leader failover, lease expiry, and split-brain defenses.",
+    "depends_on": [
+      "causal-intervention-gate",
+      "observability-dashboard"
+    ],
+    "acceptance": [
+      "Chaos scripts simulate leader kill, lease expiry takeover, stale command replays, and delayed delivery.",
+      "Validation run emits pass/fail report with evidence that split-brain commands = 0 and failover RTO ≤ 30s."
+    ]
+  }
+]

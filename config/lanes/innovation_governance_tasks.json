@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "define-governance-contract",
+      "description": "Create comprehensive innovation governance contract",
+      "priority": 1,
+      "status": "completed",
+      "artifacts": [
+        "docs/governance/innovation_governance_contract.md"
+      ]
+    }
+  ]
+}

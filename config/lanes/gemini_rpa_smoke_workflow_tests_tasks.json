@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-smoke-workflow-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Add lightweight RPA smoke workflow scenarios",
+    "description": "Add fast smoke workflow tests that catch high-signal regressions in core RPA paths with low runtime cost.",
+    "depends_on": [],
+    "acceptance": [
+      "Smoke workflow tests execute quickly and deterministically",
+      "Coverage includes core RPA success and guarded-failure paths",
+      "make lint and make test pass"
+    ]
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-orchestrator-guard-fixes",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Fix orchestrator adversarial guard mismatches",
+    "description": "Resolve validation mismatches in backdoor/frontdoor/identifiability guard logic.",
+    "depends_on": [],
+    "acceptance": [
+      "Orchestrator adversarial guard tests pass",
+      "Guard API behavior is deterministic",
+      "Validation commands pass"
+    ]
+  }
+]

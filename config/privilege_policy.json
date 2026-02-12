@@ -1,0 +1,57 @@
+{
+  "schema_version": "privilege-policy.v1",
+  "default_mode": "least_privilege",
+  "providers": {
+    "codex": {
+      "least_privilege_args": [
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "never"
+      ],
+      "elevated_args": [
+        "--dangerously-bypass-approvals-and-sandbox"
+      ]
+    },
+    "gemini": {
+      "least_privilege_args": [],
+      "elevated_args": [
+        "--approval-mode",
+        "yolo"
+      ]
+    },
+    "claude": {
+      "least_privilege_args": [
+        "--permission-mode",
+        "acceptEdits"
+      ],
+      "elevated_args": [
+        "--permission-mode",
+        "bypassPermissions",
+        "--dangerously-skip-permissions"
+      ]
+    }
+  },
+  "breakglass": {
+    "enabled": true,
+    "active_grant_file": "artifacts/autonomy/breakglass/active_grant.json",
+    "audit_log_file": "artifacts/autonomy/privilege_escalations.ndjson",
+    "max_ttl_minutes": 120,
+    "required_fields": [
+      "grant_id",
+      "reason",
+      "scope",
+      "requested_by",
+      "approved_by",
+      "issued_at",
+      "expires_at",
+      "rollback_proof",
+      "providers"
+    ]
+  },
+  "monitoring": {
+    "require_recent_events": true,
+    "max_event_age_minutes": 240,
+    "min_scanned_events": 0
+  }
+}

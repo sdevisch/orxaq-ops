@@ -1,0 +1,15 @@
+[
+  {
+    "id": "task-dashboard-api-resilience",
+    "owner": "codex",
+    "priority": 4,
+    "title": "Low-level agent: harden distributed todo API fallback behavior and stale-data annotations.",
+    "description": "Execute lane objective in config/objectives/codex_dashboard_api_resilience.md and deliver a minimal tested patch.",
+    "depends_on": [],
+    "acceptance": [
+      "Implements requested improvement with clear before/after behavior",
+      "Includes focused automated coverage or assertions",
+      "Lane validation commands pass"
+    ]
+  }
+]

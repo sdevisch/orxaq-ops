@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-rpa-orchestrator-bridge-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Harden mesh orchestrator RPA bridge and CLI guardrails",
+    "description": "Fix orchestrator wrapper behavior for rpa-workflow/rpa-screenshot flows, including unsafe URL and result-file boundary handling.",
+    "depends_on": [],
+    "acceptance": [
+      "RPA orchestrator bridge returns deterministic success/error payloads",
+      "CLI guard behavior for unsafe URLs and file boundaries is explicit",
+      "make lint, make test, make version-check, and make repo-hygiene pass"
+    ]
+  }
+]

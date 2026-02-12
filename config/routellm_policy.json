@@ -1,0 +1,254 @@
+{
+  "version": 2,
+  "enabled": true,
+  "router": {
+    "timeout_sec": 5,
+    "url": ""
+  },
+  "providers": {
+    "claude": {
+      "enabled": true,
+      "fallback_model": "claude-3-5-haiku-latest",
+      "respect_requested_model": false,
+      "default_objective": "cost_speed",
+      "allowed_models": [
+        "claude-3-5-haiku-latest",
+        "claude-3-5-sonnet-latest",
+        "claude-3-7-sonnet-latest"
+      ]
+    },
+    "codex": {
+      "enabled": true,
+      "fallback_model": "liquid/lfm2.5-1.2b",
+      "respect_requested_model": false,
+      "default_objective": "cost_speed",
+      "objective_weights": {
+        "cost_speed": {
+          "cost": 0.58,
+          "speed": 0.37,
+          "quality": 0.05
+        },
+        "balanced": {
+          "cost": 0.34,
+          "speed": 0.31,
+          "quality": 0.35
+        },
+        "quality": {
+          "cost": 0.08,
+          "speed": 0.20,
+          "quality": 0.72
+        }
+      },
+      "allowed_models": [
+        "liquid/lfm2.5-1.2b",
+        "google/gemma-3-4b",
+        "deepseek-coder-v2-lite-instruct",
+        "qwen/qwen2.5-coder-32b",
+        "qwen/qwen3-coder-next",
+        "gpt-5.3-codex"
+      ]
+    },
+    "gemini": {
+      "enabled": true,
+      "fallback_model": "gemini-2.5-flash",
+      "respect_requested_model": false,
+      "default_objective": "cost_speed",
+      "allowed_models": [
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro"
+      ]
+    }
+  },
+  "model_catalog": {
+    "liquid/lfm2.5-1.2b": {
+      "family": "liquid",
+      "local": true,
+      "input_per_million": 0.05,
+      "output_per_million": 0.08,
+      "speed_tps": 270,
+      "quality_score": 44,
+      "max_context_tokens": 16384
+    },
+    "google/gemma-3-4b": {
+      "family": "gemma",
+      "local": true,
+      "input_per_million": 0.1,
+      "output_per_million": 0.15,
+      "speed_tps": 190,
+      "quality_score": 54,
+      "max_context_tokens": 8192
+    },
+    "deepseek-coder-v2-lite-instruct": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.16,
+      "output_per_million": 0.24,
+      "speed_tps": 110,
+      "quality_score": 63,
+      "max_context_tokens": 65536
+    },
+    "qwen/qwen2.5-coder-32b": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.42,
+      "output_per_million": 0.63,
+      "speed_tps": 70,
+      "quality_score": 82,
+      "max_context_tokens": 32768
+    },
+    "qwen/qwen3-coder-next": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.5,
+      "output_per_million": 0.75,
+      "speed_tps": 60,
+      "quality_score": 86,
+      "max_context_tokens": 32768
+    },
+    "meta/llama-3.3-70b": {
+      "family": "llama",
+      "local": true,
+      "input_per_million": 0.7,
+      "output_per_million": 0.95,
+      "speed_tps": 30,
+      "quality_score": 83,
+      "max_context_tokens": 8192
+    },
+    "gpt-5.3-codex": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 2.0,
+      "output_per_million": 8.0,
+      "speed_tps": 95,
+      "quality_score": 92,
+      "max_context_tokens": 256000
+    },
+    "gpt-4.1-mini": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 0.4,
+      "output_per_million": 1.6,
+      "speed_tps": 180,
+      "quality_score": 74,
+      "max_context_tokens": 128000
+    },
+    "gpt-4.1": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 2.0,
+      "output_per_million": 8.0,
+      "speed_tps": 90,
+      "quality_score": 88,
+      "max_context_tokens": 128000
+    },
+    "gpt-5-mini": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 0.8,
+      "output_per_million": 3.2,
+      "speed_tps": 165,
+      "quality_score": 82,
+      "max_context_tokens": 256000
+    },
+    "gpt-5-codex": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 2.0,
+      "output_per_million": 8.0,
+      "speed_tps": 95,
+      "quality_score": 91,
+      "max_context_tokens": 256000
+    },
+    "gemini-2.0-flash": {
+      "family": "gemini",
+      "local": false,
+      "input_per_million": 0.2,
+      "output_per_million": 0.8,
+      "speed_tps": 220,
+      "quality_score": 68,
+      "max_context_tokens": 1048576
+    },
+    "gemini-2.5-flash": {
+      "family": "gemini",
+      "local": false,
+      "input_per_million": 0.3,
+      "output_per_million": 1.2,
+      "speed_tps": 200,
+      "quality_score": 79,
+      "max_context_tokens": 1048576
+    },
+    "gemini-2.5-pro": {
+      "family": "gemini",
+      "local": false,
+      "input_per_million": 1.5,
+      "output_per_million": 6.0,
+      "speed_tps": 110,
+      "quality_score": 90,
+      "max_context_tokens": 1048576
+    },
+    "claude-3-5-haiku-latest": {
+      "family": "claude",
+      "local": false,
+      "input_per_million": 0.25,
+      "output_per_million": 1.25,
+      "speed_tps": 200,
+      "quality_score": 72,
+      "max_context_tokens": 200000
+    },
+    "claude-3-5-sonnet-latest": {
+      "family": "claude",
+      "local": false,
+      "input_per_million": 3.0,
+      "output_per_million": 15.0,
+      "speed_tps": 95,
+      "quality_score": 89,
+      "max_context_tokens": 200000
+    },
+    "claude-3-7-sonnet-latest": {
+      "family": "claude",
+      "local": false,
+      "input_per_million": 3.0,
+      "output_per_million": 15.0,
+      "speed_tps": 105,
+      "quality_score": 92,
+      "max_context_tokens": 200000
+    },
+    "qwen2.5-coder-7b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.12,
+      "output_per_million": 0.18,
+      "speed_tps": 180,
+      "quality_score": 58,
+      "max_context_tokens": 32768
+    },
+    "qwen2.5-coder-14b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.18,
+      "output_per_million": 0.27,
+      "speed_tps": 120,
+      "quality_score": 69,
+      "max_context_tokens": 32768
+    },
+    "qwen2.5-coder-32b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.42,
+      "output_per_million": 0.63,
+      "speed_tps": 70,
+      "quality_score": 82,
+      "max_context_tokens": 32768
+    },
+    "deepseek-coder-v2-instruct": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.38,
+      "output_per_million": 0.58,
+      "speed_tps": 58,
+      "quality_score": 79,
+      "max_context_tokens": 65536
+    }
+  }
+}

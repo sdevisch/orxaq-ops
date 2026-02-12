@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-workflow-spec-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA workflow-spec validation tests",
+    "description": "Add tests for malformed step structures, unsupported actions, missing required fields, and invalid dry-run payloads.",
+    "depends_on": [],
+    "acceptance": [
+      "Workflow-spec validation edge-case coverage increases",
+      "Tests assert clear invalid-spec error semantics",
+      "make lint and make test pass"
+    ]
+  }
+]

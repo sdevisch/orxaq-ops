@@ -1,0 +1,104 @@
+{
+  "version": 2,
+  "enabled": true,
+  "router": {
+    "url": "http://127.0.0.1:8788/route",
+    "timeout_sec": 2
+  },
+  "providers": {
+    "codex": {
+      "enabled": true,
+      "fallback_model": "deepseek-coder-v2-lite-instruct",
+      "respect_requested_model": false,
+      "default_objective": "cost_speed",
+      "allowed_models": [
+        "deepseek-coder-v2-lite-instruct",
+        "qwen/qwen2.5-coder-32b",
+        "qwen/qwen3-coder-next",
+        "meta/llama-3.3-70b",
+        "google/gemma-3-4b",
+        "deepseek/deepseek-r1-0528-qwen3-8b",
+        "qwen2.5-coder-7b-instruct"
+      ]
+    },
+    "gemini": {
+      "enabled": false,
+      "fallback_model": "",
+      "respect_requested_model": false,
+      "default_objective": "cost_speed",
+      "allowed_models": []
+    },
+    "claude": {
+      "enabled": false,
+      "fallback_model": "",
+      "respect_requested_model": false,
+      "default_objective": "cost_speed",
+      "allowed_models": []
+    }
+  },
+  "model_catalog": {
+    "deepseek-coder-v2-lite-instruct": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.16,
+      "output_per_million": 0.24,
+      "speed_tps": 110,
+      "quality_score": 63,
+      "max_context_tokens": 65536
+    },
+    "qwen/qwen2.5-coder-32b": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.42,
+      "output_per_million": 0.63,
+      "speed_tps": 70,
+      "quality_score": 82,
+      "max_context_tokens": 32768
+    },
+    "qwen/qwen3-coder-next": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.5,
+      "output_per_million": 0.75,
+      "speed_tps": 60,
+      "quality_score": 86,
+      "max_context_tokens": 32768
+    },
+    "meta/llama-3.3-70b": {
+      "family": "llama",
+      "local": true,
+      "input_per_million": 0.7,
+      "output_per_million": 0.95,
+      "speed_tps": 30,
+      "quality_score": 83,
+      "max_context_tokens": 8192
+    },
+    "google/gemma-3-4b": {
+      "family": "gemma",
+      "local": true,
+      "input_per_million": 0.1,
+      "output_per_million": 0.15,
+      "speed_tps": 190,
+      "quality_score": 54,
+      "max_context_tokens": 8192
+    },
+    "deepseek/deepseek-r1-0528-qwen3-8b": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.24,
+      "output_per_million": 0.36,
+      "speed_tps": 95,
+      "quality_score": 72,
+      "max_context_tokens": 65536
+    },
+    "qwen2.5-coder-7b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.18,
+      "output_per_million": 0.27,
+      "speed_tps": 145,
+      "quality_score": 70,
+      "max_context_tokens": 32768
+    }
+  }
+}
