@@ -53,6 +53,7 @@ class ModelRouterConnectivityTests(unittest.TestCase):
             healthcheck_path="/v1/models",
             auth_mode="none",
             api_key_env="",
+            required=False,
             model_names=["openai/gpt-test"],
         )
         with mock.patch.object(
@@ -74,6 +75,7 @@ class ModelRouterConnectivityTests(unittest.TestCase):
             healthcheck_path="/v1/models",
             auth_mode="none",
             api_key_env="",
+            required=False,
             model_names=["openai/gpt-test"],
         )
         error = HTTPError(
