@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status router-check router-profile-apply profile-apply rpa-schedule dashboard lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status router-check router-profile-apply profile-apply rpa-schedule dashboard lint test version-check repo-hygiene pr-review-snapshot bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -87,7 +87,7 @@ pre-push:
 	pre-commit run --all-files --hook-stage push
 
 lint:
-	$(PYTHON) -m py_compile src/orxaq_autonomy/*.py scripts/autonomy_runner.py
+	$(PYTHON) -m py_compile src/orxaq_autonomy/*.py scripts/autonomy_runner.py scripts/pr_review_snapshot.py
 	bash -n scripts/autonomy_manager.sh scripts/preflight.sh scripts/generate_workspace.sh scripts/open_vscode.sh scripts/install_keepalive.sh
 
 test:
@@ -98,6 +98,9 @@ version-check:
 
 repo-hygiene:
 	$(PYTHON) scripts/check_repo_hygiene.py --root .
+
+pr-review-snapshot:
+	$(PYTHON) scripts/pr_review_snapshot.py --root . --repo Orxaq/orxaq-ops --repo Orxaq/orxaq --output ./artifacts/autonomy/pr_review_snapshot.json --markdown ./artifacts/autonomy/pr_review_snapshot.md --json
 
 bump-patch:
 	$(PYTHON) scripts/bump_version.py --part patch --apply
