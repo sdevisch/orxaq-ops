@@ -258,6 +258,43 @@ class SwarmReadyQueueTests(unittest.TestCase):
         self.assertIn("T1-PR-REVIEWER-CAPACITY", task_ids)
         self.assertEqual(queue["summary"]["pr_approval_self_blocked_count"], 3)
 
+    def test_build_queue_can_refresh_todo_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            # Provide a minimal refresh script that writes current_latest.json with no unassigned tasks.
+            checker = root / "scripts" / "swarm_todo_health_current.py"
+            checker.parent.mkdir(parents=True, exist_ok=True)
+            checker.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env python3",
+                        "import argparse, json",
+                        "",
+                        "def main():",
+                        "  p = argparse.ArgumentParser()",
+                        "  p.add_argument('--output-file', required=True)",
+                        "  p.add_argument('--json', action='store_true')",
+                        "  p.add_argument('--root', default='.')",
+                        "  args = p.parse_args()",
+                        "  payload = {\"distributed_todo\": {\"stale_file_count\": 0, \"unassigned_active_task_total\": 0}, \"warnings\": []}",
+                        "  with open(args.output_file, 'w', encoding='utf-8') as f: f.write(json.dumps(payload) + '\\n')",
+                        "  if args.json: print(json.dumps(payload))",
+                        "  return 0",
+                        "",
+                        "if __name__ == '__main__':",
+                        "  raise SystemExit(main())",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            queue = swarm_ready_queue.build_queue(root, max_items=50, refresh_todo_summary=True)
+
+        self.assertTrue(queue["summary"]["todo_health_refresh_attempted"])
+        self.assertTrue(queue["summary"]["todo_health_refresh_ok"])
+        self.assertEqual(queue["summary"]["unassigned_active_task_total"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

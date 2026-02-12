@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,38 @@ def _load_json(path: Path) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _refresh_todo_summary(root: Path, summary_path: Path) -> dict[str, Any]:
+    checker = (root / "scripts" / "swarm_todo_health_current.py").resolve()
+    result = {
+        "attempted": True,
+        "ok": False,
+        "reason": "",
+        "returncode": -1,
+    }
+    if not checker.exists():
+        result["reason"] = "todo_health_checker_missing"
+        return result
+    cmd = [
+        sys.executable,
+        str(checker),
+        "--root",
+        str(root),
+        "--json",
+        "--output-file",
+        str(summary_path),
+    ]
+    proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    result["returncode"] = int(proc.returncode)
+    if proc.returncode == 0:
+        result["ok"] = True
+        result["reason"] = ""
+    else:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        result["reason"] = stderr[:220] or stdout[:220] or "todo_health_refresh_failed"
+    return result
 
 
 def _task(
@@ -44,7 +78,12 @@ def _task(
     }
 
 
-def build_queue(root: Path, max_items: int) -> dict[str, Any]:
+def build_queue(
+    root: Path,
+    max_items: int,
+    *,
+    refresh_todo_summary: bool = True,
+) -> dict[str, Any]:
     artifacts = root / "artifacts"
     auto_artifacts = artifacts / "autonomy"
     provider_summary = auto_artifacts / "provider_costs" / "summary.json"
@@ -63,6 +102,15 @@ def build_queue(root: Path, max_items: int) -> dict[str, Any]:
     provider = _load_json(provider_summary)
     provider_cost_health = _load_json(provider_cost_health_summary)
     connectivity = _load_json(connectivity_summary)
+    todo_refresh = {
+        "attempted": False,
+        "ok": True,
+        "reason": "disabled",
+        "returncode": 0,
+    }
+    if refresh_todo_summary:
+        todo_refresh = _refresh_todo_summary(root, todo_summary)
+
     todo = _load_json(todo_summary)
     t1_policy = _load_json(t1_policy_summary)
     privilege_policy = _load_json(privilege_policy_summary)
@@ -74,6 +122,24 @@ def build_queue(root: Path, max_items: int) -> dict[str, Any]:
     pr_approval_remediation = _load_json(pr_approval_remediation_summary)
 
     tasks: list[dict[str, Any]] = []
+
+    if refresh_todo_summary and not bool(todo_refresh.get("ok", False)) and not todo:
+        tasks.append(
+            _task(
+                task_id="T1-TODO-HEALTH-REFRESH",
+                title="Restore current todo health refresh path",
+                priority="P1",
+                rationale=(
+                    "ready queue could not refresh or load swarm_todo_health current snapshot "
+                    f"(reason={str(todo_refresh.get('reason', '')).strip() or 'unknown'})."
+                ),
+                acceptance=[
+                    "swarm_todo_health_current checker runs successfully from ready-queue path.",
+                    "current_latest.json is refreshed before queue generation.",
+                    "ready queue summary includes current unassigned/stale todo metrics.",
+                ],
+            )
+        )
 
     provider_ok = bool(provider.get("ok", False))
     provider_health_ok = bool(provider_cost_health.get("ok", provider_ok))
@@ -519,6 +585,9 @@ def build_queue(root: Path, max_items: int) -> dict[str, Any]:
         "summary": {
             "task_count": len(tasks),
             "endpoint_unhealthy": endpoint_unhealthy,
+            "todo_health_refresh_attempted": bool(todo_refresh.get("attempted", False)),
+            "todo_health_refresh_ok": bool(todo_refresh.get("ok", False)),
+            "todo_health_refresh_reason": str(todo_refresh.get("reason", "")).strip(),
             "provider_health_ok": provider_health_ok,
             "provider_telemetry_mode": provider_telemetry_mode,
             "provider_health_effective_ok": provider_health_effective_ok,
@@ -581,6 +650,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", default=".", help="Path to orxaq-ops root.")
     parser.add_argument("--output", default="artifacts/autonomy/ready_queue_week.json", help="Output JSON path.")
     parser.add_argument("--max-items", type=int, default=21, help="Maximum tasks in ready queue.")
+    parser.add_argument(
+        "--refresh-todo-summary",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Refresh swarm_todo_health current snapshot before queue generation.",
+    )
     return parser
 
 
@@ -588,7 +663,11 @@ def main() -> int:
     args = _parser().parse_args()
     root = Path(args.root).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
-    report = build_queue(root, max_items=max(1, int(args.max_items)))
+    report = build_queue(
+        root,
+        max_items=max(1, int(args.max_items)),
+        refresh_todo_summary=bool(args.refresh_todo_summary),
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"output": str(output), "task_count": report["summary"]["task_count"]}, sort_keys=True))
