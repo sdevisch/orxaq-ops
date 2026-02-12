@@ -428,6 +428,9 @@ def build_queue(
     remediation_local_blocked_unmerged = int(remediation_summary.get("local_blocked_unmerged_count", 0) or 0)
     remediation_local_blocked_worktree = int(remediation_summary.get("local_blocked_worktree_count", 0) or 0)
     remediation_worktree_prune_removed = int(remediation_summary.get("worktree_prune_removed_count", 0) or 0)
+    remediation_worktree_remove_attempted = int(remediation_summary.get("worktree_remove_attempted_count", 0) or 0)
+    remediation_worktree_removed = int(remediation_summary.get("worktree_removed_count", 0) or 0)
+    remediation_worktree_remove_failed = int(remediation_summary.get("worktree_remove_failed_count", 0) or 0)
     remediation_remote_deleted = int(remediation_summary.get("remote_deleted_count", 0) or 0)
     remediation_local_deleted = int(remediation_summary.get("local_deleted_count", 0) or 0)
     if not remediation_exists:
@@ -485,10 +488,14 @@ def build_queue(
                 rationale=(
                     "Git hygiene remediation could not delete some local branches because they are "
                     f"still bound to worktrees (blocked_worktree={remediation_local_blocked_worktree}, "
-                    f"worktree_prune_removed={remediation_worktree_prune_removed})."
+                    f"worktree_prune_removed={remediation_worktree_prune_removed}, "
+                    f"worktree_remove_attempted={remediation_worktree_remove_attempted}, "
+                    f"worktree_removed={remediation_worktree_removed}, "
+                    f"worktree_remove_failed={remediation_worktree_remove_failed})."
                 ),
                 acceptance=[
                     "Stale worktree metadata is pruned before remediation runs.",
+                    "Clean stale worktrees are removed and branch deletion retried automatically.",
                     "Worktree-bound deletion failures are reduced with deterministic evidence.",
                     "Active lane worktrees remain intact and documented.",
                 ],
@@ -742,6 +749,9 @@ def build_queue(
             "git_hygiene_remediation_local_blocked_unmerged_count": remediation_local_blocked_unmerged,
             "git_hygiene_remediation_local_blocked_worktree_count": remediation_local_blocked_worktree,
             "git_hygiene_remediation_worktree_prune_removed_count": remediation_worktree_prune_removed,
+            "git_hygiene_remediation_worktree_remove_attempted_count": remediation_worktree_remove_attempted,
+            "git_hygiene_remediation_worktree_removed_count": remediation_worktree_removed,
+            "git_hygiene_remediation_worktree_remove_failed_count": remediation_worktree_remove_failed,
             "git_hygiene_remediation_remote_deleted": remediation_remote_deleted,
             "git_hygiene_remediation_local_deleted": remediation_local_deleted,
             "backend_upgrade_policy_ok": backend_upgrade_ok,

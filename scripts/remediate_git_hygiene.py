@@ -163,6 +163,41 @@ def _delete_local_branch(repo: Path, branch: str) -> tuple[bool, str]:
     return (False, _as_text(proc.stderr or proc.stdout or "local_delete_failed"))
 
 
+def _extract_worktree_path(reason: str) -> Path | None:
+    match = re.search(r"used by worktree at '([^']+)'", reason)
+    if not match:
+        return None
+    raw = _as_text(match.group(1))
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def _remove_worktree_if_clean(repo: Path, worktree_path: Path) -> tuple[bool, str]:
+    repo_resolved = repo.resolve()
+    if worktree_path == repo_resolved:
+        return (False, "worktree_is_repo_root")
+
+    def _remove_registered() -> tuple[bool, str]:
+        proc = _git(repo, ["worktree", "remove", "--force", str(worktree_path)])
+        if proc.returncode != 0:
+            return (False, _as_text(proc.stderr or proc.stdout or "worktree_remove_failed"))
+        return (True, "")
+
+    if not worktree_path.exists() or not worktree_path.is_dir():
+        return _remove_registered()
+
+    status = _git(worktree_path, ["status", "--porcelain"])
+    if status.returncode != 0:
+        status_reason = _as_text(status.stderr or status.stdout or "worktree_status_failed")
+        if "must be run in a work tree" in status_reason.lower():
+            return _remove_registered()
+        return (False, status_reason)
+    if _as_text(status.stdout):
+        return (False, "worktree_dirty")
+    return _remove_registered()
+
+
 def _as_repo_path(root: Path, raw: str) -> Path:
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
@@ -180,6 +215,7 @@ def remediate_repo(
     protected_branches: set[str],
     max_remote_deletes: int,
     max_local_deletes: int,
+    remove_worktree_locks: bool,
     allow_closed_pr_delete: bool,
     apply: bool,
 ) -> dict[str, Any]:
@@ -192,6 +228,10 @@ def remediate_repo(
         "fetch_prune_ok": False,
         "worktree_prune_ok": False,
         "worktree_prune_removed_count": 0,
+        "worktree_remove_attempted_count": 0,
+        "worktree_removed_count": 0,
+        "worktree_remove_failed_count": 0,
+        "worktree_removed_paths": [],
         "repo_slug": "",
         "open_pr_head_count": 0,
         "closed_pr_head_count": 0,
@@ -269,6 +309,10 @@ def remediate_repo(
     local_candidates = 0
     local_blocked_unmerged_count = 0
     local_blocked_worktree_count = 0
+    worktree_remove_attempted_count = 0
+    worktree_removed_count = 0
+    worktree_remove_failed_count = 0
+    worktree_removed_paths: list[str] = []
 
     for remote_ref, ts in remote_rows:
         if remote_ref in {f"{remote}/HEAD", remote}:
@@ -348,6 +392,28 @@ def remediate_repo(
                 }
             )
         else:
+            worktree_path = _extract_worktree_path(reason)
+            if apply and remove_worktree_locks and worktree_path is not None:
+                worktree_remove_attempted_count += 1
+                removed, remove_reason = _remove_worktree_if_clean(repo, worktree_path)
+                if removed:
+                    worktree_removed_count += 1
+                    worktree_removed_paths.append(str(worktree_path))
+                    deleted_retry, retry_reason = _delete_local_branch(repo, branch)
+                    if deleted_retry:
+                        local_deleted.append(
+                            {
+                                "branch": branch,
+                                "age_days": age_days,
+                                "basis": "merged_into_base" if merged else "closed_pr_head",
+                                "worktree_reconciled": True,
+                            }
+                        )
+                        continue
+                    reason = f"{reason};retry_failed:{retry_reason}"
+                else:
+                    worktree_remove_failed_count += 1
+                    reason = f"{reason};worktree_remove_failed:{remove_reason}"
             if "used by worktree at" in reason:
                 local_blocked_worktree_count += 1
             skipped.append({"scope": "local", "branch": branch, "reason": f"delete_failed:{reason}"})
@@ -364,6 +430,10 @@ def remediate_repo(
     report["local_blocked_worktree_count"] = local_blocked_worktree_count
     report["local_deleted_count"] = len(local_deleted)
     report["local_deleted"] = local_deleted
+    report["worktree_remove_attempted_count"] = worktree_remove_attempted_count
+    report["worktree_removed_count"] = worktree_removed_count
+    report["worktree_remove_failed_count"] = worktree_remove_failed_count
+    report["worktree_removed_paths"] = worktree_removed_paths
     report["skipped"] = skipped
     report["ok"] = len(report["errors"]) == 0
     return report
@@ -380,6 +450,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--protected-branch", action="append", default=[], help="Protected branch name (repeatable).")
     parser.add_argument("--max-remote-deletes", type=int, default=60, help="Maximum remote deletions per repo.")
     parser.add_argument("--max-local-deletes", type=int, default=60, help="Maximum local deletions per repo.")
+    parser.add_argument(
+        "--remove-worktree-locks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When local deletion is blocked by a clean attached worktree, remove that worktree and retry deletion.",
+    )
     parser.add_argument(
         "--allow-closed-pr-delete",
         action=argparse.BooleanOptionalAction,
@@ -420,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
                 protected_branches=protected,
                 max_remote_deletes=max(0, int(args.max_remote_deletes)),
                 max_local_deletes=max(0, int(args.max_local_deletes)),
+                remove_worktree_locks=bool(args.remove_worktree_locks),
                 allow_closed_pr_delete=bool(args.allow_closed_pr_delete),
                 apply=bool(args.apply),
             )
@@ -428,6 +505,9 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "repo_count": len(repo_reports),
         "worktree_prune_removed_count": sum(int(row.get("worktree_prune_removed_count", 0) or 0) for row in repo_reports),
+        "worktree_remove_attempted_count": sum(int(row.get("worktree_remove_attempted_count", 0) or 0) for row in repo_reports),
+        "worktree_removed_count": sum(int(row.get("worktree_removed_count", 0) or 0) for row in repo_reports),
+        "worktree_remove_failed_count": sum(int(row.get("worktree_remove_failed_count", 0) or 0) for row in repo_reports),
         "remote_stale_prefix_count": sum(int(row.get("remote_stale_prefix_count", 0) or 0) for row in repo_reports),
         "local_stale_prefix_count": sum(int(row.get("local_stale_prefix_count", 0) or 0) for row in repo_reports),
         "remote_deleted_count": sum(int(row.get("remote_deleted_count", 0) or 0) for row in repo_reports),
@@ -449,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
         "base_ref": _as_text(args.base_ref) or "origin/main",
         "stale_days": max(1, int(args.stale_days)),
         "branch_prefixes": list(prefixes),
+        "remove_worktree_locks": bool(args.remove_worktree_locks),
         "allow_closed_pr_delete": bool(args.allow_closed_pr_delete),
         "apply": bool(args.apply),
         "repos": repo_reports,

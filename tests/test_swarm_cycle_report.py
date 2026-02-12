@@ -142,6 +142,9 @@ class SwarmCycleReportTests(unittest.TestCase):
                     "local_blocked_unmerged_count": 0,
                     "local_blocked_worktree_count": 0,
                     "worktree_prune_removed_count": 0,
+                    "worktree_remove_attempted_count": 0,
+                    "worktree_removed_count": 0,
+                    "worktree_remove_failed_count": 0,
                     "remote_deleted_count": 0,
                     "local_deleted_count": 0,
                 },
@@ -258,6 +261,7 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertTrue(report["summary"]["git_delivery_policy_ok"])
         self.assertTrue(report["summary"]["git_hygiene_remediation_ok"])
         self.assertEqual(report["summary"]["git_hygiene_remediation_remote_blocked_open_pr_count"], 0)
+        self.assertEqual(report["summary"]["git_hygiene_remediation_worktree_removed_count"], 0)
 
     def test_build_report_fails_when_backend_upgrade_policy_unhealthy(self):
         with tempfile.TemporaryDirectory() as td:

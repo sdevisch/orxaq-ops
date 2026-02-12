@@ -79,6 +79,9 @@ class SwarmReadyQueueTests(unittest.TestCase):
                     "local_blocked_unmerged_count": 0,
                     "local_blocked_worktree_count": 0,
                     "worktree_prune_removed_count": 0,
+                    "worktree_remove_attempted_count": 0,
+                    "worktree_removed_count": 0,
+                    "worktree_remove_failed_count": 0,
                     "remote_deleted_count": 0,
                     "local_deleted_count": 0,
                 },
@@ -254,6 +257,9 @@ class SwarmReadyQueueTests(unittest.TestCase):
                         "local_blocked_unmerged_count": 5,
                         "local_blocked_worktree_count": 1,
                         "worktree_prune_removed_count": 0,
+                        "worktree_remove_attempted_count": 1,
+                        "worktree_removed_count": 1,
+                        "worktree_remove_failed_count": 0,
                         "remote_deleted_count": 1,
                         "local_deleted_count": 1,
                     },
@@ -267,6 +273,7 @@ class SwarmReadyQueueTests(unittest.TestCase):
         self.assertIn("T1-GIT-HYGIENE-BRANCH-GOVERNANCE", task_ids)
         self.assertEqual(queue["summary"]["git_hygiene_remediation_remote_candidates"], 2)
         self.assertEqual(queue["summary"]["git_hygiene_remediation_local_candidates"], 3)
+        self.assertEqual(queue["summary"]["git_hygiene_remediation_worktree_removed_count"], 1)
 
     def test_build_queue_adds_branch_governance_task_for_non_actionable_stale_branches(self):
         with tempfile.TemporaryDirectory() as td:
@@ -286,6 +293,9 @@ class SwarmReadyQueueTests(unittest.TestCase):
                         "local_blocked_unmerged_count": 18,
                         "local_blocked_worktree_count": 0,
                         "worktree_prune_removed_count": 0,
+                        "worktree_remove_attempted_count": 0,
+                        "worktree_removed_count": 0,
+                        "worktree_remove_failed_count": 0,
                         "remote_deleted_count": 0,
                         "local_deleted_count": 0,
                     },
