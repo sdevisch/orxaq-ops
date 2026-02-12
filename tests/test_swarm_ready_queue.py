@@ -204,6 +204,52 @@ class SwarmReadyQueueTests(unittest.TestCase):
         self.assertGreater(queue["summary"]["lanes_total_count"], 0)
         self.assertGreater(queue["summary"]["lanes_enabled_runnable_count"], 0)
 
+    def test_build_queue_suppresses_optional_connectivity_tasks_for_ignored_endpoints(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(
+                root / "state" / "ignored_connectivity_endpoints.json",
+                {"ignore_endpoint_ids": ["lmstudio-node-2", "lmstudio-node-3"]},
+            )
+            self._write_json(
+                root / "artifacts" / "model_connectivity.json",
+                {
+                    "endpoint_unhealthy": 0,
+                    "endpoints": [
+                        {
+                            "id": "lmstudio-node-2",
+                            "ok": False,
+                            "required": False,
+                            "auth_configured": True,
+                            "status_code": 0,
+                            "error": "timed out",
+                        },
+                        {
+                            "id": "lmstudio-node-3",
+                            "ok": False,
+                            "required": False,
+                            "auth_configured": True,
+                            "status_code": 0,
+                            "error": "timed out",
+                        },
+                        {
+                            "id": "some-optional-endpoint",
+                            "ok": False,
+                            "required": False,
+                            "auth_configured": True,
+                            "status_code": 503,
+                            "error": "service_unavailable",
+                        },
+                    ],
+                },
+            )
+            queue = swarm_ready_queue.build_queue(root, max_items=50)
+
+        task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
+        self.assertNotIn("T1-CONN-lmstudio-node-2", task_ids)
+        self.assertNotIn("T1-CONN-lmstudio-node-3", task_ids)
+        self.assertIn("T1-CONN-some-optional-endpoint", task_ids)
+
     def test_build_queue_adds_git_delivery_task_when_policy_unhealthy(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._base_root(td)

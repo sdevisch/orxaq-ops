@@ -27,6 +27,34 @@ def _load_json(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _load_ignored_endpoint_ids(root: Path) -> set[str]:
+    """Return endpoint ids to ignore for optional connectivity remediation tasks.
+
+    Deterministic sources only:
+    - `ORXAQ_AUTONOMY_IGNORE_ENDPOINT_IDS` (comma-separated).
+    - `state/ignored_connectivity_endpoints.json` (gitignored).
+    """
+
+    ignored: set[str] = set()
+
+    env_raw = os.getenv("ORXAQ_AUTONOMY_IGNORE_ENDPOINT_IDS", "")
+    if env_raw.strip():
+        for part in env_raw.split(","):
+            token = part.strip()
+            if token:
+                ignored.add(token.lower())
+
+    state_payload = _load_json((root / "state" / "ignored_connectivity_endpoints.json").resolve())
+    state_ids = state_payload.get("ignore_endpoint_ids", [])
+    if isinstance(state_ids, list):
+        for item in state_ids:
+            token = str(item).strip()
+            if token:
+                ignored.add(token.lower())
+
+    return ignored
+
+
 def _refresh_todo_summary(root: Path, summary_path: Path) -> dict[str, Any]:
     checker = (root / "scripts" / "swarm_todo_health_current.py").resolve()
     result = {
@@ -106,6 +134,7 @@ def build_queue(
     provider = _load_json(provider_summary)
     provider_cost_health = _load_json(provider_cost_health_summary)
     connectivity = _load_json(connectivity_summary)
+    ignored_endpoint_ids = _load_ignored_endpoint_ids(root)
     todo_refresh = {
         "attempted": False,
         "ok": True,
@@ -175,6 +204,9 @@ def build_queue(
             if provider_unconfigured and not endpoint_required and not endpoint_auth_configured:
                 continue
             endpoint_id = str(endpoint.get("id", "unknown")).strip() or "unknown"
+            # Operators can suppress noisy optional endpoints deterministically (for example, offsite LAN nodes).
+            if not endpoint_required and endpoint_id.lower() in ignored_endpoint_ids:
+                continue
             status_code = int(endpoint.get("status_code", 0) or 0)
             reason = str(endpoint.get("error", "")).strip()[:180]
             tasks.append(
@@ -831,6 +863,7 @@ def build_queue(
         "summary": {
             "task_count": len(tasks),
             "endpoint_unhealthy": endpoint_unhealthy,
+            "ignored_optional_endpoint_ids": sorted(ignored_endpoint_ids),
             "todo_health_refresh_attempted": bool(todo_refresh.get("attempted", False)),
             "todo_health_refresh_ok": bool(todo_refresh.get("ok", False)),
             "todo_health_refresh_reason": str(todo_refresh.get("reason", "")).strip(),
