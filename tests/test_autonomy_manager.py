@@ -1093,10 +1093,71 @@ class ManagerTests(unittest.TestCase):
             ), mock.patch(
                 "orxaq_autonomy.manager.health_snapshot",
                 return_value={"heartbeat_stale": False},
+            ), mock.patch(
+                "orxaq_autonomy.manager.dashboard_status_snapshot",
+                return_value={"running": True},
+            ), mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": True,
+                    "lanes": [{"id": "lane-a", "enabled": True, "health": "ok", "heartbeat_stale": False}],
+                },
             ):
                 payload = manager.full_autonomy_snapshot(cfg)
             self.assertTrue(payload["ok"])
             self.assertTrue(pathlib.Path(payload["full_autonomy_report_file"]).exists())
+
+    def test_full_autonomy_snapshot_accepts_idle_runner_when_no_pending_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            with mock.patch("orxaq_autonomy.manager.preflight", return_value={"clean": True}), mock.patch(
+                "orxaq_autonomy.manager.process_watchdog_pass",
+                return_value={"ok": True},
+            ), mock.patch(
+                "orxaq_autonomy.manager.status_snapshot",
+                return_value={"supervisor_running": True, "runner_running": False},
+            ), mock.patch(
+                "orxaq_autonomy.manager.health_snapshot",
+                return_value={
+                    "heartbeat_stale": False,
+                    "blocked_tasks": [],
+                    "state_counts": {"pending": 0, "in_progress": 0},
+                },
+            ), mock.patch(
+                "orxaq_autonomy.manager.dashboard_status_snapshot",
+                return_value={"running": True},
+            ), mock.patch(
+                "orxaq_autonomy.manager.lane_status_snapshot",
+                return_value={
+                    "ok": True,
+                    "lanes": [{"id": "lane-a", "enabled": True, "health": "ok", "heartbeat_stale": False}],
+                },
+            ):
+                payload = manager.full_autonomy_snapshot(cfg)
+            self.assertTrue(payload["ok"])
+
+    def test_parallel_capacity_snapshot_uses_parallel_key_when_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            snapshot = manager._parallel_capacity_snapshot(
+                cfg,
+                [
+                    {
+                        "parallel_key": "codex::test-model::127.0.0.1:1234",
+                        "running": True,
+                    }
+                ],
+            )
+            by_key = snapshot.get("by_key", {})
+            self.assertIn("codex::test-model::127.0.0.1:1234", by_key)
+            entry = by_key["codex::test-model::127.0.0.1:1234"]
+            self.assertEqual(entry["provider"], "codex")
+            self.assertEqual(entry["model"], "test-model")
+            self.assertEqual(entry["endpoint_key"], "127.0.0.1:1234")
+            self.assertEqual(entry["lane_count"], 1)
+            self.assertEqual(entry["running_count"], 1)
 
     def test_monitor_snapshot_writes_monitor_file(self):
         with tempfile.TemporaryDirectory() as td:

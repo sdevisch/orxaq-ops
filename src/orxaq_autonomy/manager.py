@@ -4587,12 +4587,46 @@ def full_autonomy_snapshot(config: ManagerConfig, *, require_clean: bool = True)
     watchdog_payload = process_watchdog_pass(config)
     status = status_snapshot(config)
     health = health_snapshot(config)
+    dashboard: dict[str, Any] = {}
+    lanes: dict[str, Any] = {}
+    lane_health_errors: list[str] = []
+    try:
+        dashboard = dashboard_status_snapshot(config)
+    except Exception as err:  # noqa: BLE001
+        dashboard = {"running": False, "error": str(err)}
+    try:
+        lanes = lane_status_snapshot(config)
+    except Exception as err:  # noqa: BLE001
+        lanes = {"ok": False, "partial": True, "errors": [str(err)], "lanes": []}
+    enabled_lanes: list[dict[str, Any]] = []
+    for lane in lanes.get("lanes", []) if isinstance(lanes.get("lanes", []), list) else []:
+        if isinstance(lane, dict) and bool(lane.get("enabled", False)):
+            enabled_lanes.append(lane)
+    for lane in enabled_lanes:
+        lane_id = str(lane.get("id", "")).strip() or "unknown"
+        lane_health = str(lane.get("health", "")).strip().lower() or "unknown"
+        if lane_health not in {"ok", "idle", "paused"}:
+            lane_health_errors.append(f"{lane_id}:health={lane_health}")
+            continue
+        if bool(lane.get("heartbeat_stale", False)):
+            lane_health_errors.append(f"{lane_id}:heartbeat_stale")
+    runner_ok = bool(status.get("runner_running", False))
+    if not runner_ok:
+        state_counts = health.get("state_counts", {}) if isinstance(health.get("state_counts", {}), dict) else {}
+        pending = _int_value(state_counts.get("pending", 0), 0)
+        in_progress = _int_value(state_counts.get("in_progress", 0), 0)
+        blocked_tasks = health.get("blocked_tasks", [])
+        blocked = blocked_tasks if isinstance(blocked_tasks, list) else []
+        runner_ok = pending == 0 and in_progress == 0 and len(blocked) == 0
     ok = (
         bool(preflight_payload.get("clean", True))
         and bool(watchdog_payload.get("ok", False))
         and bool(status.get("supervisor_running", False))
-        and bool(status.get("runner_running", False))
+        and runner_ok
         and not bool(health.get("heartbeat_stale", False))
+        and bool(dashboard.get("running", False))
+        and bool(lanes.get("ok", False))
+        and len(lane_health_errors) == 0
     )
     payload = {
         "timestamp": _now_iso(),
@@ -4601,6 +4635,9 @@ def full_autonomy_snapshot(config: ManagerConfig, *, require_clean: bool = True)
         "watchdog": watchdog_payload,
         "status": status,
         "health": health,
+        "dashboard": dashboard,
+        "lanes": lanes,
+        "lane_health_errors": lane_health_errors,
     }
     _write_json_file(report_file, payload)
     payload["full_autonomy_report_file"] = str(report_file)
@@ -5629,8 +5666,14 @@ def _parallel_capacity_snapshot(config: ManagerConfig, lane_rows: list[dict[str,
     for lane in lane_rows:
         if not isinstance(lane, dict):
             continue
-        identity = _parallel_identity(lane)
-        key = identity["key"]
+        lane_key = str(lane.get("parallel_key", "")).strip()
+        if lane_key:
+            provider, model, endpoint_key = _split_parallel_key(lane_key)
+            key = lane_key
+            identity = {"owner": provider, "model": model, "endpoint_key": endpoint_key, "key": key}
+        else:
+            identity = _parallel_identity(lane)
+            key = identity["key"]
         entry = aggregates.setdefault(
             key,
             {
