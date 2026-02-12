@@ -5930,6 +5930,8 @@ class ManagerTests(unittest.TestCase):
             ), mock.patch(
                 "orxaq_autonomy.manager._git_output",
                 side_effect=[
+                    (False, ""),
+                    (False, ""),
                     (True, ".git\n"),
                     (True, "abc123\n"),
                     (True, "codex/legacy-branch\n"),
@@ -5964,6 +5966,8 @@ class ManagerTests(unittest.TestCase):
             ), mock.patch(
                 "orxaq_autonomy.manager._git_output",
                 side_effect=[
+                    (False, ""),
+                    (False, ""),
                     (True, ".git\n"),
                     (True, "abc123\n"),
                     (False, ""),
@@ -6024,6 +6028,8 @@ class ManagerTests(unittest.TestCase):
             ), mock.patch(
                 "orxaq_autonomy.manager._git_output",
                 side_effect=[
+                    (False, ""),
+                    (False, ""),
                     (True, ".git\n"),
                     (True, "abc123\n"),
                     (True, "codex/legacy-branch\n"),
@@ -6088,6 +6094,8 @@ class ManagerTests(unittest.TestCase):
             ), mock.patch(
                 "orxaq_autonomy.manager._git_output",
                 side_effect=[
+                    (False, ""),
+                    (False, ""),
                     (True, ".git\n"),
                     (True, "abc123\n"),
                     (True, "codex/legacy-branch\n"),

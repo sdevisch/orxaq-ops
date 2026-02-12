@@ -628,6 +628,27 @@ def runtime_diagnostics(config: ManagerConfig) -> dict[str, Any]:
     errors: list[str] = []
     recommendations: list[str] = []
 
+    git_ok, inside_out = _git_output(config.root_dir, ["rev-parse", "--is-inside-work-tree"])
+    if not git_ok:
+        msg = f"git metadata unavailable for {config.root_dir}"
+        checks.append({"name": "git_repo", "ok": False, "message": msg})
+        errors.append(msg)
+        recommendations.append("Ensure the autonomy root is a git worktree clone.")
+    else:
+        remediation = _ensure_git_common_core_bare_false(config.root_dir, artifacts_dir=config.artifacts_dir)
+        if remediation.get("fixed"):
+            if remediation.get("remediation_applied"):
+                msg = "remediated git common config: core.bare=true -> false"
+            else:
+                msg = "git common config core.bare is not true"
+            checks.append({"name": "git_worktree_common_nonbare", "ok": True, "message": msg})
+        else:
+            detail = remediation.get("set_error") or "core.bare remains true"
+            msg = f"git common config indicates a bare repository; worktrees may break: {detail}"
+            checks.append({"name": "git_worktree_common_nonbare", "ok": False, "message": msg})
+            errors.append(msg)
+            recommendations.append(f"Run `git -C {config.root_dir} config --local core.bare false`.")
+
     codex_path = _resolve_binary(config.codex_cmd)
     if codex_path:
         checks.append(
@@ -773,6 +794,15 @@ def _first_nonempty_line(text: str) -> str:
     return ""
 
 
+def _parse_git_bool(text: str) -> bool | None:
+    token = _first_nonempty_line(text).strip().lower()
+    if token in {"true", "yes", "on", "1"}:
+        return True
+    if token in {"false", "no", "off", "0"}:
+        return False
+    return None
+
+
 def _git_output(repo: Path, args: list[str]) -> tuple[bool, str]:
     proc = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -781,6 +811,54 @@ def _git_output(repo: Path, args: list[str]) -> tuple[bool, str]:
     )
     text = (proc.stdout + "\n" + proc.stderr).strip()
     return proc.returncode == 0, text
+
+
+def _ensure_git_common_core_bare_false(repo: Path, *, artifacts_dir: Path | None = None) -> dict[str, Any]:
+    """Ensure the shared git config does not declare the repository as bare.
+
+    Background: With `extensions.worktreeConfig=true`, a single worktree can override
+    `core.bare=false` in `config.worktree` while the common config remains `core.bare=true`.
+    Existing worktrees created before the override will then behave as bare repositories
+    (`rev-parse --is-inside-work-tree` returns false), breaking lane startup with errors like
+    "this operation must be run in a work tree".
+    """
+
+    before_ok, before_out = _git_output(repo, ["config", "--local", "--bool", "--get", "core.bare"])
+    before = _parse_git_bool(before_out) if before_ok else None
+    applied = False
+    set_error = ""
+
+    if before is True:
+        applied = True
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "config", "--local", "core.bare", "false"],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            set_error = (proc.stdout + "\n" + proc.stderr).strip()
+
+    after_ok, after_out = _git_output(repo, ["config", "--local", "--bool", "--get", "core.bare"])
+    after = _parse_git_bool(after_out) if after_ok else None
+
+    payload = {
+        "generated_at_utc": _now_iso(),
+        "repo_root": str(repo),
+        "local_core_bare_before": before,
+        "local_core_bare_after": after,
+        "remediation_applied": applied,
+        "set_error": set_error,
+        "fixed": after is not True,
+    }
+
+    if artifacts_dir is not None and (applied or set_error):
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        (artifacts_dir / "git_worktree_common_config_remediation.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    return payload
 
 
 def _lane_worktree_branch_name(lane_id: str, role: str) -> str:
@@ -832,6 +910,7 @@ def _prepare_lane_worktree_checkout(
         raise RuntimeError(message)
 
     top_repo = Path(repo).resolve()
+    _ensure_git_common_core_bare_false(top_repo)
     ok_common, common_out = _git_output(top_repo, ["rev-parse", "--git-common-dir"])
     if not ok_common:
         raise RuntimeError(f"unable to resolve git common dir for {repo}: {common_out}")
