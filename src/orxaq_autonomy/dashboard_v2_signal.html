@@ -1,0 +1,2165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SIGNAL — Command Interface</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#0a0a0a;font-family:'SF Mono','Fira Code','Cascadia Code','JetBrains Mono',monospace;color:#e0e0e0;-webkit-font-smoothing:antialiased}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#252525;border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:#333}
+
+/* ── Main layout ── */
+.signal-root{display:flex;flex-direction:column;height:100vh;align-items:center;justify-content:flex-start;padding-top:25vh;transition:padding-top 0.3s ease}
+.signal-root.has-results{padding-top:80px}
+
+/* ── Command bar ── */
+.cmd-wrap{width:100%;max-width:640px;padding:0 24px;position:relative;z-index:20;flex-shrink:0}
+.cmd-bar{position:relative;width:100%}
+.cmd-input{width:100%;background:#141414;border:1px solid #252525;border-radius:12px;padding:16px 20px;font-family:inherit;font-size:15px;color:#e0e0e0;outline:none;transition:border-color 0.2s,box-shadow 0.2s}
+.cmd-input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,0.1),0 0 20px rgba(59,130,246,0.05)}
+.cmd-input::placeholder{color:#444}
+.cmd-ghost{position:absolute;top:0;left:0;right:0;bottom:0;padding:16px 20px;font-family:inherit;font-size:15px;color:#333;pointer-events:none;white-space:nowrap;overflow:hidden}
+
+/* ── Autocomplete dropdown ── */
+.ac-dropdown{position:absolute;top:100%;left:0;right:0;background:#141414;border:1px solid #252525;border-top:none;border-radius:0 0 12px 12px;max-height:280px;overflow-y:auto;z-index:30;display:none}
+.ac-dropdown.open{display:block}
+.ac-item{padding:10px 20px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;transition:background 0.1s;font-size:13px}
+.ac-item:hover,.ac-item.focused{background:#1a1a1a}
+.ac-item .ac-cmd{color:#3b82f6;font-weight:600}
+.ac-item .ac-alias{color:#555;margin-left:8px;font-size:11px}
+.ac-item .ac-desc{color:#555;font-size:11px;text-align:right;flex-shrink:0;margin-left:16px}
+
+/* ── Results area ── */
+.results-wrap{width:100%;max-width:640px;padding:0 24px;margin-top:12px;flex:1;overflow-y:auto;overflow-x:hidden;z-index:10}
+.results-count{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;padding:0 4px;display:flex;justify-content:space-between;align-items:center}
+.results-list{display:flex;flex-direction:column;gap:4px;padding-bottom:60px}
+
+/* ── Result card ── */
+.card{background:#111;border:1px solid #1e1e1e;border-radius:8px;overflow:hidden;transition:border-color 0.2s,background 0.15s;cursor:pointer}
+.card:hover{border-color:#2a2a2a;background:#131313}
+.card.focused{border-color:#3b82f6;background:#111318}
+.card.expanded{cursor:default}
+.card-header{display:flex;align-items:center;gap:10px;padding:12px 16px;min-height:44px}
+.card-icon{font-size:13px;flex-shrink:0;width:20px;text-align:center;opacity:0.7}
+.card-title{flex:1;font-size:13px;color:#e0e0e0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-stat{font-size:11px;color:#888;flex-shrink:0;font-variant-numeric:tabular-nums}
+.card-chevron{font-size:10px;color:#444;flex-shrink:0;transition:transform 0.2s}
+.card.expanded .card-chevron{transform:rotate(90deg)}
+
+/* ── Card body (expanded) ── */
+.card-body{max-height:0;overflow:hidden;transition:max-height 0.25s ease,padding 0.25s ease}
+.card.expanded .card-body{max-height:2000px}
+.card-body-inner{padding:0 16px 16px;border-top:1px solid #1a1a1a}
+
+/* ── Badges ── */
+.badge{display:inline-block;font-size:9px;padding:2px 7px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;line-height:1.4;vertical-align:middle}
+.badge-success{background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.2)}
+.badge-warning{background:rgba(245,158,11,0.12);color:#f59e0b;border:1px solid rgba(245,158,11,0.2)}
+.badge-critical{background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.2)}
+.badge-info{background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.2)}
+.badge-muted{background:rgba(85,85,85,0.15);color:#777;border:1px solid rgba(85,85,85,0.2)}
+.badge-owner{font-size:8px;padding:1px 5px;border-radius:3px;font-weight:700;letter-spacing:0.06em}
+
+/* ── Status badge helper ── */
+.status-done{background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.2)}
+.status-in_progress,.status-active{background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.2)}
+.status-blocked{background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.2)}
+.status-pending{background:rgba(245,158,11,0.12);color:#f59e0b;border:1px solid rgba(245,158,11,0.2)}
+.status-idle{background:rgba(85,85,85,0.15);color:#777;border:1px solid rgba(85,85,85,0.2)}
+
+/* ── Metric grid ── */
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+@media(max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr)}}
+.metric-cell{background:#0e0e0e;border:1px solid #1a1a1a;border-radius:6px;padding:10px 12px;text-align:center}
+.metric-label{font-size:8px;color:#555;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px}
+.metric-value{font-size:18px;font-weight:700;color:#e0e0e0;font-variant-numeric:tabular-nums}
+.metric-value.ok{color:#10b981}
+.metric-value.warn{color:#f59e0b}
+.metric-value.crit{color:#ef4444}
+.metric-value.info{color:#3b82f6}
+
+/* ── Detail tables ── */
+.detail-section{margin-top:14px}
+.detail-section-title{font-size:9px;color:#555;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1a1a1a}
+.detail-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #0e0e0e;font-size:12px}
+.detail-row:last-child{border-bottom:none}
+.detail-key{color:#777;font-size:11px}
+.detail-val{color:#e0e0e0;font-size:12px;text-align:right;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+
+/* ── Task list inside lane card ── */
+.task-item{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;margin:3px 0;background:#0c0c0c;border-radius:4px;border-left:2px solid #1a1a1a;font-size:11px}
+.task-item.task-done{border-left-color:#10b981}
+.task-item.task-in_progress{border-left-color:#3b82f6}
+.task-item.task-blocked{border-left-color:#ef4444}
+.task-item.task-pending{border-left-color:#f59e0b}
+.task-id{color:#3b82f6;font-weight:600;white-space:nowrap;flex-shrink:0}
+.task-summary{color:#999;flex:1;overflow:hidden;text-overflow:ellipsis}
+.task-meta{color:#555;font-size:10px;white-space:nowrap;flex-shrink:0}
+
+/* ── Health criterion row ── */
+.health-row{display:flex;align-items:center;gap:10px;padding:8px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:12px}
+.health-indicator{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.health-indicator.pass{background:#10b981}
+.health-indicator.fail{background:#ef4444}
+.health-indicator.warn{background:#f59e0b}
+.health-name{flex:1;color:#ccc}
+.health-status{flex-shrink:0}
+
+/* ── Commit row ── */
+.commit-row{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:12px}
+.commit-hash{color:#3b82f6;font-size:11px;font-weight:600;flex-shrink:0}
+.commit-msg{flex:1;color:#ccc;overflow:hidden;text-overflow:ellipsis}
+.commit-meta{color:#555;font-size:10px;flex-shrink:0;text-align:right;white-space:nowrap}
+
+/* ── Event row ── */
+.event-row{display:flex;align-items:flex-start;gap:8px;padding:7px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:11px}
+.event-time{color:#444;font-size:10px;flex-shrink:0;font-variant-numeric:tabular-nums;min-width:50px}
+.event-body{flex:1;color:#999}
+.event-lane{color:#555;font-size:10px;flex-shrink:0}
+
+/* ── Highlight ── */
+.hl{background:rgba(59,130,246,0.2);border-radius:2px;padding:0 1px}
+
+/* ── Progress bar ── */
+.progress{height:4px;background:#1a1a1a;border-radius:2px;overflow:hidden;margin-top:6px}
+.progress-fill{height:100%;border-radius:2px;transition:width 0.3s}
+.progress-fill.ok{background:#10b981}
+.progress-fill.info{background:#3b82f6}
+.progress-fill.warn{background:#f59e0b}
+.progress-fill.crit{background:#ef4444}
+
+/* ── Shimmer loading ── */
+.shimmer{position:relative;overflow:hidden;background:#111;border-radius:8px;height:44px;margin-bottom:4px}
+.shimmer::after{content:'';position:absolute;top:0;left:-100%;width:100%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.02),transparent);animation:shimmer 1.5s infinite}
+@keyframes shimmer{to{left:100%}}
+
+/* ── Status line ── */
+.status-line{position:fixed;bottom:0;left:0;right:0;text-align:center;padding:10px;font-size:10px;color:#333;z-index:5;letter-spacing:0.06em}
+.status-line .conn-ok{color:#10b981}
+.status-line .conn-err{color:#ef4444}
+.status-line .sep{color:#222;margin:0 8px}
+
+/* ── Help overlay ── */
+.help-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+@media(max-width:500px){.help-grid{grid-template-columns:1fr}}
+.help-item{display:flex;gap:10px;padding:6px 10px;background:#0c0c0c;border-radius:4px;font-size:12px}
+.help-cmd{color:#3b82f6;font-weight:600;min-width:90px;flex-shrink:0}
+.help-desc{color:#777}
+
+/* ── Owner colors ── */
+.owner-codex{background:rgba(0,200,255,0.12);color:#00c8ff;border:1px solid rgba(0,200,255,0.25)}
+.owner-gemini{background:rgba(255,136,0,0.12);color:#ff8800;border:1px solid rgba(255,136,0,0.25)}
+.owner-claude{background:rgba(168,85,247,0.12);color:#a855f7;border:1px solid rgba(168,85,247,0.25)}
+.owner-unknown{background:rgba(90,122,138,0.12);color:#5a7a8a;border:1px solid rgba(90,122,138,0.25)}
+
+/* ── Connectivity endpoint row ── */
+.conn-row{display:flex;align-items:center;gap:10px;padding:8px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:12px}
+.conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.conn-dot.up{background:#10b981}
+.conn-dot.down{background:#ef4444}
+.conn-dot.unknown{background:#555}
+.conn-name{flex:1;color:#ccc}
+.conn-latency{color:#555;font-size:11px;flex-shrink:0;font-variant-numeric:tabular-nums}
+
+/* ── Policy row ── */
+.policy-row{display:flex;align-items:center;gap:10px;padding:8px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:12px}
+.policy-name{flex:1;color:#ccc;text-transform:capitalize}
+
+/* ── Privilege detail ── */
+.priv-row{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:12px}
+.priv-key{color:#777}
+.priv-val{color:#e0e0e0;font-weight:600}
+
+/* ── Backlog task ── */
+.backlog-task{padding:8px 10px;margin:2px 0;background:#0c0c0c;border-radius:4px;font-size:12px;border-left:2px solid #1a1a1a}
+.backlog-task .bt-id{color:#3b82f6;font-weight:600}
+.backlog-task .bt-desc{color:#999;margin-top:2px}
+.backlog-task .bt-meta{display:flex;gap:8px;margin-top:4px;font-size:10px;color:#555}
+
+/* ── Empty state ── */
+.empty-state{text-align:center;padding:40px 20px;color:#333;font-size:13px}
+.empty-state .empty-icon{font-size:24px;margin-bottom:8px;opacity:0.4}
+.empty-state .empty-hint{font-size:11px;color:#2a2a2a;margin-top:6px}
+
+/* ── Action confirm buttons ── */
+.action-confirm-btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border, #252525);
+  border-radius: 6px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.confirm-yes {
+  background: rgba(59,130,246,0.15);
+  color: #3b82f6;
+  border-color: rgba(59,130,246,0.3);
+}
+.confirm-yes:hover { background: rgba(59,130,246,0.25); }
+.confirm-no {
+  background: transparent;
+  color: #555;
+}
+.confirm-no:hover { background: rgba(255,255,255,0.05); }
+</style>
+</head>
+<body>
+
+<div class="signal-root" id="root">
+  <!-- Command bar -->
+  <div class="cmd-wrap">
+    <div class="cmd-bar" id="cmd-bar">
+      <div class="cmd-ghost" id="cmd-ghost"></div>
+      <input type="text" class="cmd-input" id="cmd-input"
+             placeholder="Type a command or search... (try /status, /blocked, /cost)"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <div class="ac-dropdown" id="ac-dropdown"></div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div class="results-wrap" id="results-wrap" style="display:none">
+    <div class="results-count" id="results-count"></div>
+    <div class="results-list" id="results-list"></div>
+  </div>
+</div>
+
+<!-- Status line -->
+<div class="status-line" id="status-line">
+  &#x2500;&#x2500;&#x2500; signal &#x00b7; connecting... &#x2500;&#x2500;&#x2500;
+</div>
+
+<script>
+// =====================================================================
+// STATE
+// =====================================================================
+const S = {
+  snapshot: null,
+  report: null,
+  costSeries: null,
+  privileges: null,
+  policies: null,
+  backlog: null,
+  responseStream: null,
+  lastRefresh: 0,
+  connected: false,
+  error: null,
+  searchIndex: [],
+  commandHistory: [],
+  historyPos: -1,
+  focusedCard: -1,
+  expandedCards: new Set(),
+  currentQuery: '',
+  currentResults: [],
+};
+
+// =====================================================================
+// HTML ESCAPING
+// =====================================================================
+const _escDiv = document.createElement('div');
+function esc(s) {
+  if (s == null) return '';
+  _escDiv.textContent = String(s);
+  return _escDiv.innerHTML;
+}
+
+// =====================================================================
+// COMMANDS REGISTRY
+// =====================================================================
+const COMMANDS = [
+  { cmd: '/status',       aliases: ['/s'],      desc: 'Full swarm status overview' },
+  { cmd: '/blocked',      aliases: ['/b'],      desc: 'Show all blocked lanes' },
+  { cmd: '/alerts',       aliases: ['/a'],      desc: 'Show all active alerts' },
+  { cmd: '/cost',         aliases: [],          desc: 'Cost breakdown and trends' },
+  { cmd: '/lanes',        aliases: [],          desc: 'All lanes grouped by status' },
+  { cmd: '/lane',         aliases: [],          desc: 'Specific lane detail (fuzzy match)' },
+  { cmd: '/health',       aliases: [],          desc: '19 health criteria with pass/fail' },
+  { cmd: '/git',          aliases: [],          desc: 'Git state and recent commits' },
+  { cmd: '/events',       aliases: ['/e'],      desc: 'Recent event stream' },
+  { cmd: '/owners',       aliases: [],          desc: 'Per-owner summary' },
+  { cmd: '/connectivity', aliases: ['/conn'],   desc: 'Model endpoint status' },
+  { cmd: '/privileges',   aliases: ['/priv'],   desc: 'Privilege state and escalations' },
+  { cmd: '/policies',     aliases: [],          desc: 'Policy compliance status' },
+  { cmd: '/backlog',      aliases: [],          desc: 'Task backlog overview' },
+  { cmd: '/metrics',      aliases: [],          desc: 'Response metrics (pass rate, latency)' },
+  { cmd: '/responses',    aliases: [],          desc: 'Recent individual response metrics' },
+  { cmd: '/help',         aliases: ['/h'],      desc: 'Show all available commands' },
+  { cmd: '/unblock',      aliases: ['/ub'],      desc: 'Clear error & retry a blocked task' },
+  { cmd: '/reprioritize', aliases: ['/reprio'],   desc: 'Change task priority' },
+  { cmd: '/grant',        aliases: [],            desc: 'Issue a breakglass grant' },
+  { cmd: '/revoke',       aliases: [],            desc: 'Revoke a breakglass grant' },
+  { cmd: '/heal',         aliases: ['/heal-locks'], desc: 'Remove stale git lock files' },
+  { cmd: '/stop',         aliases: [],            desc: 'Stop the autonomy runner' },
+  { cmd: '/start',        aliases: [],            desc: 'Start the autonomy runner' },
+  { cmd: '/ensure',       aliases: [],            desc: 'Ensure runner is alive' },
+  { cmd: '/release-lock', aliases: [],            desc: 'Remove stale runner lock' },
+  { cmd: '/audit',        aliases: [],            desc: 'Show recent action audit trail' },
+  { cmd: '/actions',      aliases: [],            desc: 'List available operator actions' },
+];
+
+// =====================================================================
+// FUZZY SEARCH
+// =====================================================================
+function fuzzyScore(query, text) {
+  if (!query || !text) return 0;
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+
+  // Exact match
+  if (t === q) return 1000;
+
+  // Starts with
+  if (t.startsWith(q)) return 800 + (q.length / t.length) * 100;
+
+  // Word boundary match (query matches start of a word in text)
+  const words = t.split(/[\s\-_./]+/);
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].startsWith(q)) return 600 + (q.length / t.length) * 100;
+  }
+
+  // Substring match
+  const idx = t.indexOf(q);
+  if (idx >= 0) return 400 + (q.length / t.length) * 100 - idx * 0.5;
+
+  // Character sequence match (all chars of query appear in order in text)
+  let qi = 0;
+  let consecutiveBonus = 0;
+  let lastMatchIdx = -2;
+  let matchCount = 0;
+  let firstMatchIdx = -1;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      if (firstMatchIdx === -1) firstMatchIdx = ti;
+      if (ti === lastMatchIdx + 1) consecutiveBonus += 20;
+      // Word boundary bonus
+      if (ti === 0 || /[\s\-_./]/.test(t[ti - 1])) consecutiveBonus += 15;
+      lastMatchIdx = ti;
+      matchCount++;
+      qi++;
+    }
+  }
+  if (qi === q.length) {
+    const coverage = matchCount / t.length;
+    return 100 + consecutiveBonus + coverage * 80 - firstMatchIdx * 0.3;
+  }
+
+  return 0;
+}
+
+function highlightMatch(text, query) {
+  if (!query || !text) return esc(text);
+  const t = String(text);
+  const q = query.toLowerCase();
+  const tl = t.toLowerCase();
+  const idx = tl.indexOf(q);
+  if (idx >= 0) {
+    return esc(t.substring(0, idx)) +
+      '<span class="hl">' + esc(t.substring(idx, idx + q.length)) + '</span>' +
+      esc(t.substring(idx + q.length));
+  }
+  return esc(t);
+}
+
+// =====================================================================
+// SEARCH INDEX BUILDER
+// =====================================================================
+function buildSearchIndex() {
+  const idx = [];
+  const snap = S.snapshot;
+  if (!snap) return idx;
+
+  // Lanes
+  (snap.lanes || []).forEach(lane => {
+    idx.push({
+      type: 'lane', data: lane,
+      fields: [
+        { key: 'lane_id', val: lane.lane_id },
+        { key: 'owner', val: lane.owner },
+        { key: 'status', val: lane.status },
+      ]
+    });
+    // Tasks within lanes
+    (lane.tasks || []).forEach(task => {
+      idx.push({
+        type: 'task', data: { ...task, lane_id: lane.lane_id, lane_owner: lane.owner },
+        fields: [
+          { key: 'task_id', val: task.task_id },
+          { key: 'summary', val: task.last_summary },
+          { key: 'lane_id', val: lane.lane_id },
+          { key: 'owner', val: task.owner },
+        ]
+      });
+    });
+  });
+
+  // Alerts
+  (snap.alerts || []).forEach(alert => {
+    idx.push({
+      type: 'alert', data: alert,
+      fields: [
+        { key: 'message', val: alert.message },
+        { key: 'type', val: alert.type },
+        { key: 'lane_id', val: alert.lane_id || '' },
+      ]
+    });
+  });
+
+  // Events
+  (snap.events || []).forEach(evt => {
+    idx.push({
+      type: 'event', data: evt,
+      fields: [
+        { key: 'message', val: evt.message || evt.event || '' },
+        { key: 'type', val: evt.type || evt.event || '' },
+        { key: 'lane_id', val: evt.lane_id || '' },
+      ]
+    });
+  });
+
+  // Git commits
+  const git = snap.git || {};
+  (git.recent_commits || []).forEach(c => {
+    idx.push({
+      type: 'commit', data: c,
+      fields: [
+        { key: 'message', val: c.message },
+        { key: 'author', val: c.author },
+        { key: 'hash', val: c.short_hash },
+      ]
+    });
+  });
+
+  // Endpoints
+  const conn = snap.connectivity || {};
+  Object.entries(conn).forEach(([name, info]) => {
+    if (typeof info !== 'object' || !info) return;
+    idx.push({
+      type: 'endpoint', data: { name, ...info },
+      fields: [
+        { key: 'name', val: name },
+        { key: 'status', val: info.status || '' },
+      ]
+    });
+  });
+
+  S.searchIndex = idx;
+  return idx;
+}
+
+function searchIndex(query) {
+  const results = [];
+  const q = query.trim().toLowerCase();
+  if (!q) return results;
+
+  for (const entry of S.searchIndex) {
+    let bestScore = 0;
+    let bestField = '';
+    for (const f of entry.fields) {
+      const score = fuzzyScore(q, f.val || '');
+      if (score > bestScore) {
+        bestScore = score;
+        bestField = f.key;
+      }
+    }
+    if (bestScore > 0) {
+      results.push({ ...entry, score: bestScore, matchedField: bestField });
+    }
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, 50);
+}
+
+// =====================================================================
+// DATA FETCHING
+// =====================================================================
+async function fetchJSON(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+async function fetchAll() {
+  try {
+    const snap = await fetchJSON('/api/v2/snapshot');
+    S.snapshot = snap;
+    S.connected = true;
+    S.error = null;
+    S.lastRefresh = Date.now();
+    buildSearchIndex();
+    updateStatusLine();
+    // If there's a current query, re-run it
+    if (S.currentQuery) executeQuery(S.currentQuery);
+  } catch (e) {
+    S.connected = false;
+    S.error = e.message;
+    updateStatusLine();
+  }
+}
+
+async function fetchSecondary() {
+  const jobs = [
+    fetchJSON('/api/v2/report').then(d => S.report = d).catch(() => {}),
+    fetchJSON('/api/v2/cost-series').then(d => S.costSeries = d).catch(() => {}),
+    fetchJSON('/api/v2/privileges').then(d => S.privileges = d).catch(() => {}),
+    fetchJSON('/api/v2/policies').then(d => S.policies = d).catch(() => {}),
+    fetchJSON('/api/v2/task-backlog').then(d => S.backlog = d).catch(() => {}),
+    fetchJSON('/api/v2/response-stream').then(d => S.responseStream = d).catch(() => {}),
+  ];
+  await Promise.allSettled(jobs);
+}
+
+// Polling
+let primaryTimer = null;
+let secondaryTimer = null;
+
+function startPolling() {
+  fetchAll();
+  fetchSecondary();
+  primaryTimer = setInterval(fetchAll, 10000);
+  secondaryTimer = setInterval(fetchSecondary, 30000);
+}
+
+// =====================================================================
+// ACTIONS API
+// =====================================================================
+const Actions = {
+  catalog: null,
+  async loadCatalog() {
+    try {
+      const r = await fetch('/api/v2/actions');
+      if (r.ok) this.catalog = await r.json();
+    } catch(e) {}
+    return this.catalog;
+  },
+  async execute(actionId, params = {}, { dryRun = false, confirmToken = '' } = {}) {
+    const r = await fetch('/api/v2/actions/' + actionId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ params, dry_run: dryRun, confirm_token: confirmToken }),
+    });
+    return r.json();
+  }
+};
+
+// =====================================================================
+// STATUS LINE
+// =====================================================================
+function updateStatusLine() {
+  const el = document.getElementById('status-line');
+  const age = S.lastRefresh ? Math.round((Date.now() - S.lastRefresh) / 1000) : 0;
+  const ageStr = age < 5 ? 'just now' : age + 's ago';
+  if (S.connected) {
+    el.innerHTML = '\u2500\u2500\u2500 signal <span class="sep">\u00b7</span> <span class="conn-ok">connected</span> <span class="sep">\u00b7</span> refreshed ' + esc(ageStr) + ' \u2500\u2500\u2500';
+  } else {
+    el.innerHTML = '\u2500\u2500\u2500 signal <span class="sep">\u00b7</span> <span class="conn-err">disconnected</span>' + (S.error ? ' <span class="sep">\u00b7</span> ' + esc(S.error) : '') + ' \u2500\u2500\u2500';
+  }
+}
+
+// Keep refreshing status line age
+setInterval(updateStatusLine, 5000);
+
+// =====================================================================
+// FORMATTING HELPERS
+// =====================================================================
+function fmtTokens(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return String(n);
+}
+
+function fmtCost(n) {
+  n = Number(n) || 0;
+  return '$' + n.toFixed(2);
+}
+
+function fmtPct(n) {
+  n = Number(n) || 0;
+  return (n * 100).toFixed(0) + '%';
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts).substring(0, 19);
+    const now = Date.now();
+    const diffSec = Math.floor((now - d.getTime()) / 1000);
+    if (diffSec < 60) return diffSec + 's ago';
+    if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+    if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
+    return Math.floor(diffSec / 86400) + 'd ago';
+  } catch (e) {
+    return String(ts).substring(0, 19);
+  }
+}
+
+function fmtTimeShort(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch (e) {
+    return '';
+  }
+}
+
+function statusBadge(status) {
+  const cls = 'status-' + (status || 'unknown').replace(/\s/g, '_');
+  return '<span class="badge ' + cls + '">' + esc(status || 'unknown') + '</span>';
+}
+
+function ownerBadge(owner) {
+  const o = (owner || 'unknown').toLowerCase();
+  const cls = 'owner-' + (['codex', 'gemini', 'claude'].includes(o) ? o : 'unknown');
+  return '<span class="badge badge-owner ' + cls + '">' + esc(owner || 'unknown') + '</span>';
+}
+
+function severityBadge(severity) {
+  const map = { high: 'badge-critical', medium: 'badge-warning', low: 'badge-info' };
+  return '<span class="badge ' + (map[severity] || 'badge-muted') + '">' + esc(severity) + '</span>';
+}
+
+function cardIcon(type) {
+  const icons = {
+    status: '\u25c8', lane: '\u25cf', alert: '\u26a0', event: '\u25b8',
+    commit: '\u25cb', metric: '\u25a0', health: '\u2713', task: '\u25aa',
+    endpoint: '\u25c9', owner: '\u25c6', help: '\u003f', privilege: '\u26bf',
+    policy: '\u25a3', backlog: '\u2630', response: '\u25b7', cost: '\u25b2',
+  };
+  return icons[type] || '\u25cf';
+}
+
+// =====================================================================
+// COMMAND EXECUTION
+// =====================================================================
+function executeQuery(raw) {
+  const q = raw.trim();
+  if (!q) {
+    clearResults();
+    return;
+  }
+  S.currentQuery = q;
+
+  // Add to history
+  if (!S.commandHistory.length || S.commandHistory[S.commandHistory.length - 1] !== q) {
+    S.commandHistory.push(q);
+  }
+  S.historyPos = -1;
+
+  // Parse command
+  if (q.startsWith('/')) {
+    const parts = q.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const arg = parts.slice(1).join(' ');
+    executeCommand(cmd, arg);
+  } else {
+    executeFuzzySearch(q);
+  }
+}
+
+function executeCommand(cmd, arg) {
+  // Resolve aliases
+  const entry = COMMANDS.find(c => c.cmd === cmd || c.aliases.includes(cmd));
+  const resolved = entry ? entry.cmd : cmd;
+
+  switch (resolved) {
+    case '/status': renderStatus(); break;
+    case '/blocked': renderBlocked(); break;
+    case '/alerts': renderAlerts(); break;
+    case '/cost': renderCost(); break;
+    case '/lanes': renderLanes(); break;
+    case '/lane': renderLane(arg); break;
+    case '/health': renderHealth(); break;
+    case '/git': renderGit(); break;
+    case '/events': renderEvents(); break;
+    case '/owners': renderOwners(); break;
+    case '/connectivity': renderConnectivity(); break;
+    case '/privileges': renderPrivileges(); break;
+    case '/policies': renderPolicies(); break;
+    case '/backlog': renderBacklog(); break;
+    case '/metrics': renderMetrics(); break;
+    case '/responses': renderResponses(); break;
+    case '/help': renderHelp(); break;
+    case '/unblock': handleUnblock(arg); break;
+    case '/reprioritize': handleReprioritize(arg); break;
+    case '/grant': handleGrant(arg); break;
+    case '/revoke': handleRevoke(arg); break;
+    case '/heal': executeAction('git.heal-locks'); break;
+    case '/stop': executeAction('runner.stop'); break;
+    case '/start': executeAction('runner.start'); break;
+    case '/ensure': executeAction('runner.ensure'); break;
+    case '/release-lock': executeAction('runner.release-lock'); break;
+    case '/audit': renderAudit(); break;
+    case '/actions': renderActionsCatalog(); break;
+    default:
+      showResults([{ html: noDataCard('Unknown command: ' + esc(cmd), 'Try /help for available commands') }], 'Unknown Command');
+  }
+}
+
+function executeFuzzySearch(query) {
+  const results = searchIndex(query);
+  if (!results.length) {
+    showResults([{ html: noDataCard('No results for "' + esc(query) + '"', 'Try a different search term or use /help') }], '0 Results');
+    return;
+  }
+
+  const cards = results.map((r, i) => {
+    switch (r.type) {
+      case 'lane': return { html: laneCardHTML(r.data, query), id: 'search-' + i };
+      case 'task': return { html: taskSearchCardHTML(r.data, query), id: 'search-' + i };
+      case 'alert': return { html: alertCardHTML(r.data, query), id: 'search-' + i };
+      case 'event': return { html: eventCardHTML(r.data, query), id: 'search-' + i };
+      case 'commit': return { html: commitCardHTML(r.data, query), id: 'search-' + i };
+      case 'endpoint': return { html: endpointCardHTML(r.data, query), id: 'search-' + i };
+      default: return { html: genericCardHTML(r), id: 'search-' + i };
+    }
+  });
+
+  showResults(cards, results.length + ' Result' + (results.length === 1 ? '' : 's'));
+}
+
+// =====================================================================
+// RESULT RENDERING
+// =====================================================================
+function showResults(cards, title) {
+  const root = document.getElementById('root');
+  const wrap = document.getElementById('results-wrap');
+  const countEl = document.getElementById('results-count');
+  const listEl = document.getElementById('results-list');
+
+  root.classList.add('has-results');
+  wrap.style.display = '';
+  countEl.textContent = title || '';
+
+  S.currentResults = cards;
+  S.focusedCard = -1;
+  S.expandedCards.clear();
+
+  listEl.innerHTML = cards.map((c, i) =>
+    '<div class="card" data-idx="' + i + '" id="card-' + i + '">' + c.html + '</div>'
+  ).join('');
+
+  // Add click handlers
+  listEl.querySelectorAll('.card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      // Don't toggle if clicking inside expanded body links etc
+      if (e.target.closest('.card-body-inner a')) return;
+      const idx = parseInt(card.dataset.idx);
+      toggleCard(idx);
+    });
+  });
+
+  // Scroll to top
+  wrap.scrollTop = 0;
+}
+
+function clearResults() {
+  const root = document.getElementById('root');
+  const wrap = document.getElementById('results-wrap');
+  root.classList.remove('has-results');
+  wrap.style.display = 'none';
+  S.currentQuery = '';
+  S.currentResults = [];
+  S.focusedCard = -1;
+  S.expandedCards.clear();
+}
+
+function toggleCard(idx) {
+  const card = document.getElementById('card-' + idx);
+  if (!card) return;
+  if (S.expandedCards.has(idx)) {
+    S.expandedCards.delete(idx);
+    card.classList.remove('expanded');
+  } else {
+    S.expandedCards.add(idx);
+    card.classList.add('expanded');
+  }
+}
+
+function focusCard(idx) {
+  // Remove old focus
+  if (S.focusedCard >= 0) {
+    const old = document.getElementById('card-' + S.focusedCard);
+    if (old) old.classList.remove('focused');
+  }
+  S.focusedCard = idx;
+  if (idx >= 0) {
+    const el = document.getElementById('card-' + idx);
+    if (el) {
+      el.classList.add('focused');
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+}
+
+// =====================================================================
+// CARD HTML BUILDERS
+// =====================================================================
+function noDataCard(title, hint) {
+  return '<div class="card-header"><span class="card-icon">\u2014</span>' +
+    '<span class="card-title" style="color:#555">' + title + '</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' +
+    (hint ? '<div style="color:#333;font-size:11px;padding-top:8px">' + hint + '</div>' : '') +
+    '</div></div>';
+}
+
+// ── Status ──
+function renderStatus() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data available', 'Waiting for snapshot...') }], 'Status'); return; }
+  const s = snap.summary || {};
+  const sc = s.status_counts || {};
+  const alerts = snap.alerts || [];
+
+  const metricGrid =
+    '<div class="metric-grid">' +
+    metricCell('Lanes', s.lanes_total || 0, '') +
+    metricCell('Done', sc.done || 0, 'ok') +
+    metricCell('Active', sc.in_progress || 0, 'info') +
+    metricCell('Blocked', sc.blocked || 0, (sc.blocked || 0) > 0 ? 'crit' : '') +
+    metricCell('Cost', fmtCost(s.total_cost_usd || 0), '') +
+    metricCell('Tokens', fmtTokens(s.total_tokens || 0), '') +
+    metricCell('Responses', s.total_responses || 0, '') +
+    metricCell('Alerts', s.alerts_count || 0, (s.alerts_count || 0) > 0 ? 'warn' : '') +
+    '</div>';
+
+  const ownersHTML = Object.entries(s.owner_counts || {}).map(([owner, count]) =>
+    '<span style="margin-right:12px">' + ownerBadge(owner) + ' <span style="color:#888;font-size:11px">' + esc(count) + ' lanes</span></span>'
+  ).join('');
+
+  const body = metricGrid +
+    '<div class="detail-section"><div class="detail-section-title">Owners</div>' +
+    '<div style="padding:6px 0">' + (ownersHTML || '<span style="color:#444">None</span>') + '</div></div>' +
+    (alerts.length > 0 ?
+      '<div class="detail-section"><div class="detail-section-title">Active Alerts (' + alerts.length + ')</div>' +
+      alerts.slice(0, 5).map(a =>
+        '<div class="detail-row"><span>' + severityBadge(a.severity) + ' <span style="color:#999;font-size:11px;margin-left:6px">' + esc(a.message) + '</span></span></div>'
+      ).join('') + '</div>' : '');
+
+  const card = '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('status') + '</span>' +
+    '<span class="card-title">Swarm Status Overview</span>' +
+    '<span class="card-stat">' + esc(s.lanes_total || 0) + ' lanes</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+
+  showResults([{ html: card }], 'Status');
+  // Auto-expand
+  setTimeout(() => toggleCard(0), 50);
+}
+
+function metricCell(label, value, cls) {
+  return '<div class="metric-cell"><div class="metric-label">' + esc(label) + '</div>' +
+    '<div class="metric-value ' + cls + '">' + esc(value) + '</div></div>';
+}
+
+// ── Blocked ──
+function renderBlocked() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Blocked'); return; }
+  const blocked = (snap.lanes || []).filter(l => l.status === 'blocked');
+  if (!blocked.length) {
+    showResults([{ html: noDataCard('No blocked lanes', 'All lanes are running smoothly') }], 'Blocked Lanes (0)');
+    return;
+  }
+  const cards = blocked.map(lane => ({ html: laneCardHTML(lane) }));
+  showResults(cards, 'Blocked Lanes (' + blocked.length + ')');
+}
+
+// ── Alerts ──
+function renderAlerts() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Alerts'); return; }
+  const alerts = snap.alerts || [];
+  if (!alerts.length) {
+    showResults([{ html: noDataCard('No active alerts', 'All systems nominal') }], 'Alerts (0)');
+    return;
+  }
+  const cards = alerts.map(a => ({ html: alertCardHTML(a) }));
+  showResults(cards, 'Active Alerts (' + alerts.length + ')');
+}
+
+// ── Cost ──
+function renderCost() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Cost'); return; }
+  const s = snap.summary || {};
+  const cs = S.costSeries || {};
+
+  // Total cost metric
+  const totalCard = buildCostOverviewCard(s, cs);
+
+  // Per-owner breakdown
+  const ownerCards = [];
+  const lanes = snap.lanes || [];
+  const byOwner = {};
+  lanes.forEach(l => {
+    const o = l.owner || 'unknown';
+    if (!byOwner[o]) byOwner[o] = { cost: 0, tokens: 0, responses: 0, lanes: 0 };
+    byOwner[o].cost += (l.metrics || {}).cost_usd_total || 0;
+    byOwner[o].tokens += (l.metrics || {}).tokens_total || 0;
+    byOwner[o].responses += (l.metrics || {}).responses_total || 0;
+    byOwner[o].lanes++;
+  });
+
+  Object.entries(byOwner).sort((a, b) => b[1].cost - a[1].cost).forEach(([owner, data]) => {
+    ownerCards.push({ html: costOwnerCardHTML(owner, data) });
+  });
+
+  // Per-provider if available
+  const providerCards = [];
+  if (cs.by_provider) {
+    Object.entries(cs.by_provider).sort((a, b) => (b[1] || 0) - (a[1] || 0)).forEach(([prov, cost]) => {
+      providerCards.push({ html: costProviderCardHTML(prov, cost) });
+    });
+  }
+
+  showResults([{ html: totalCard }, ...ownerCards, ...providerCards], 'Cost Breakdown');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+function buildCostOverviewCard(s, cs) {
+  const windows = cs.windows || {};
+  const grid = '<div class="metric-grid">' +
+    metricCell('Total', fmtCost(s.total_cost_usd || 0), '') +
+    metricCell('1h', fmtCost(windows['1h'] || 0), '') +
+    metricCell('6h', fmtCost(windows['6h'] || 0), '') +
+    metricCell('24h', fmtCost(windows['24h'] || 0), '') +
+    '</div>';
+
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('cost') + '</span>' +
+    '<span class="card-title">Cost Overview</span>' +
+    '<span class="card-stat">' + fmtCost(s.total_cost_usd || 0) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + grid + '</div></div>';
+}
+
+function costOwnerCardHTML(owner, data) {
+  const body = '<div class="metric-grid">' +
+    metricCell('Cost', fmtCost(data.cost), '') +
+    metricCell('Tokens', fmtTokens(data.tokens), '') +
+    metricCell('Responses', data.responses, '') +
+    metricCell('Lanes', data.lanes, '') +
+    '</div>';
+
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('owner') + '</span>' +
+    '<span class="card-title">' + ownerBadge(owner) + '</span>' +
+    '<span class="card-stat">' + fmtCost(data.cost) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+}
+
+function costProviderCardHTML(provider, cost) {
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('endpoint') + '</span>' +
+    '<span class="card-title" style="color:#888">Provider: ' + esc(provider) + '</span>' +
+    '<span class="card-stat">' + fmtCost(cost || 0) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' +
+    '<div class="detail-row"><span class="detail-key">30d cost</span><span class="detail-val">' + fmtCost(cost || 0) + '</span></div>' +
+    '</div></div>';
+}
+
+// ── Lanes ──
+function renderLanes() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Lanes'); return; }
+  const lanes = snap.lanes || [];
+  if (!lanes.length) {
+    showResults([{ html: noDataCard('No lanes discovered') }], 'Lanes (0)');
+    return;
+  }
+
+  // Group by status
+  const groups = { blocked: [], in_progress: [], pending: [], done: [], idle: [] };
+  lanes.forEach(l => {
+    const g = groups[l.status] || groups.idle;
+    g.push(l);
+  });
+
+  const cards = [];
+  for (const [status, group] of Object.entries(groups)) {
+    if (!group.length) continue;
+    group.forEach(lane => cards.push({ html: laneCardHTML(lane) }));
+  }
+
+  showResults(cards, 'All Lanes (' + lanes.length + ')');
+}
+
+// ── Lane detail ──
+function renderLane(arg) {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Lane'); return; }
+  if (!arg) {
+    showResults([{ html: noDataCard('Specify a lane name', 'Usage: /lane <name>') }], 'Lane');
+    return;
+  }
+  const lanes = snap.lanes || [];
+  // Fuzzy match
+  let best = null, bestScore = 0;
+  for (const l of lanes) {
+    const score = fuzzyScore(arg, l.lane_id);
+    if (score > bestScore) { bestScore = score; best = l; }
+  }
+  if (!best) {
+    showResults([{ html: noDataCard('No lane matching "' + esc(arg) + '"') }], 'Lane');
+    return;
+  }
+  showResults([{ html: laneCardHTML(best, arg) }], 'Lane: ' + esc(best.lane_id));
+  setTimeout(() => toggleCard(0), 50);
+}
+
+function laneCardHTML(lane, query) {
+  const tc = lane.task_counts || {};
+  const total = (tc.done || 0) + (tc.in_progress || 0) + (tc.blocked || 0) + (tc.pending || 0);
+  const done = tc.done || 0;
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+  const cost = (lane.metrics || {}).cost_usd_total || 0;
+
+  const header = '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('lane') + '</span>' +
+    '<span class="card-title">' + (query ? highlightMatch(lane.lane_id, query) : esc(lane.lane_id)) + '</span>' +
+    '<span class="card-stat">' + statusBadge(lane.status) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>';
+
+  // Collapsed subtitle
+  const subtitle = '<div style="padding:0 16px 10px;font-size:11px;color:#555;display:flex;gap:12px;flex-wrap:wrap">' +
+    ownerBadge(lane.owner) +
+    '<span>' + done + '/' + total + ' tasks</span>' +
+    '<span>' + fmtCost(cost) + '</span>' +
+    (lane.heartbeat && lane.heartbeat.age_sec >= 0 ? '<span>' + fmtTime(lane.heartbeat.timestamp) + '</span>' : '') +
+    '</div>';
+
+  // Expanded body
+  const grid = '<div class="metric-grid">' +
+    metricCell('Done', tc.done || 0, 'ok') +
+    metricCell('Active', tc.in_progress || 0, 'info') +
+    metricCell('Blocked', tc.blocked || 0, (tc.blocked || 0) > 0 ? 'crit' : '') +
+    metricCell('Pending', tc.pending || 0, (tc.pending || 0) > 0 ? 'warn' : '') +
+    '</div>';
+
+  const progressBar = '<div class="progress"><div class="progress-fill ' +
+    (lane.status === 'blocked' ? 'crit' : lane.status === 'done' ? 'ok' : 'info') +
+    '" style="width:' + pct + '%"></div></div>';
+
+  const metricsSection = '<div class="detail-section"><div class="detail-section-title">Metrics</div>' +
+    '<div class="detail-row"><span class="detail-key">Cost</span><span class="detail-val">' + fmtCost(cost) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Tokens</span><span class="detail-val">' + fmtTokens((lane.metrics || {}).tokens_total || 0) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Responses</span><span class="detail-val">' + ((lane.metrics || {}).responses_total || 0) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Pass Rate</span><span class="detail-val">' + fmtPct((lane.metrics || {}).first_time_pass_rate || 0) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Avg Latency</span><span class="detail-val">' + ((lane.metrics || {}).latency_sec_avg || 0).toFixed(1) + 's</span></div>' +
+    '</div>';
+
+  const hb = lane.heartbeat || {};
+  const heartbeatSection = '<div class="detail-section"><div class="detail-section-title">Heartbeat</div>' +
+    '<div class="detail-row"><span class="detail-key">Cycle</span><span class="detail-val">' + esc(hb.cycle || 0) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Phase</span><span class="detail-val">' + esc(hb.phase || '-') + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Age</span><span class="detail-val">' + (hb.age_sec >= 0 ? hb.age_sec + 's' : 'unknown') + '</span></div>' +
+    (hb.message ? '<div class="detail-row"><span class="detail-key">Message</span><span class="detail-val" style="max-width:70%">' + esc(hb.message) + '</span></div>' : '') +
+    '</div>';
+
+  const tasks = lane.tasks || [];
+  const tasksSection = tasks.length > 0 ?
+    '<div class="detail-section"><div class="detail-section-title">Tasks (' + tasks.length + ')</div>' +
+    tasks.map(t =>
+      '<div class="task-item task-' + esc(t.status) + '">' +
+      '<span class="task-id">' + esc(t.task_id) + '</span>' +
+      '<span class="task-summary">' + esc(t.last_summary || '-') + '</span>' +
+      '<span class="task-meta">' + statusBadge(t.status) + '</span>' +
+      '</div>'
+    ).join('') + '</div>' : '';
+
+  const cfg = lane.config || {};
+  const configSection = '<div class="detail-section"><div class="detail-section-title">Config</div>' +
+    '<div class="detail-row"><span class="detail-key">Profile</span><span class="detail-val">' + esc(cfg.execution_profile || '-') + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Continuous</span><span class="detail-val">' + (cfg.continuous ? 'yes' : 'no') + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Max Cycles</span><span class="detail-val">' + (cfg.max_cycles || '-') + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Started</span><span class="detail-val">' + fmtTime(cfg.started_at) + '</span></div>' +
+    '</div>';
+
+  const body = grid + progressBar + metricsSection + heartbeatSection + tasksSection + configSection;
+
+  return header + subtitle +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+}
+
+// ── Alert card ──
+function alertCardHTML(alert, query) {
+  const header = '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('alert') + '</span>' +
+    '<span class="card-title">' + (query ? highlightMatch(alert.message, query) : esc(alert.message)) + '</span>' +
+    '<span class="card-stat">' + severityBadge(alert.severity) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>';
+
+  const body = '<div class="detail-row"><span class="detail-key">Severity</span><span class="detail-val">' + severityBadge(alert.severity) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">' + esc(alert.type) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Message</span><span class="detail-val" style="max-width:70%">' + esc(alert.message) + '</span></div>' +
+    (alert.lane_id ? '<div class="detail-row"><span class="detail-key">Lane</span><span class="detail-val" style="color:#3b82f6;cursor:pointer" onclick="event.stopPropagation();document.getElementById(\'cmd-input\').value=\'/lane ' + esc(alert.lane_id) + '\';executeQuery(\'/lane ' + esc(alert.lane_id) + '\')">' + esc(alert.lane_id) + '</span></div>' : '');
+
+  return header +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+}
+
+// ── Event card ──
+function eventCardHTML(evt, query) {
+  const msg = evt.message || evt.event || '';
+  const type = evt.type || evt.event || '';
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('event') + '</span>' +
+    '<span class="card-title">' + (query ? highlightMatch(msg, query) : esc(msg)) + '</span>' +
+    '<span class="card-stat" style="font-size:10px;color:#555">' + fmtTime(evt.timestamp) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' +
+    '<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val"><span class="badge badge-info">' + esc(type) + '</span></span></div>' +
+    '<div class="detail-row"><span class="detail-key">Lane</span><span class="detail-val">' + esc(evt.lane_id || '-') + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Time</span><span class="detail-val">' + esc(evt.timestamp || '') + '</span></div>' +
+    (evt.task_id ? '<div class="detail-row"><span class="detail-key">Task</span><span class="detail-val">' + esc(evt.task_id) + '</span></div>' : '') +
+    '</div></div>';
+}
+
+// ── Commit card ──
+function commitCardHTML(commit, query) {
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('commit') + '</span>' +
+    '<span class="card-title">' + (query ? highlightMatch(commit.message, query) : esc(commit.message)) + '</span>' +
+    '<span class="card-stat" style="font-size:10px;color:#555">' + esc(commit.relative_time || '') + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' +
+    '<div class="detail-row"><span class="detail-key">Hash</span><span class="detail-val" style="color:#3b82f6">' + esc(commit.short_hash) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Author</span><span class="detail-val">' + ownerBadge(commit.author) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Message</span><span class="detail-val" style="max-width:70%">' + esc(commit.message) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Time</span><span class="detail-val">' + esc(commit.relative_time || '') + '</span></div>' +
+    '</div></div>';
+}
+
+// ── Task search result ──
+function taskSearchCardHTML(task, query) {
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('task') + '</span>' +
+    '<span class="card-title"><span style="color:#3b82f6;font-weight:600">' + esc(task.task_id) + '</span> <span style="color:#666;font-size:11px">in ' + esc(task.lane_id) + '</span></span>' +
+    '<span class="card-stat">' + statusBadge(task.status) + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' +
+    '<div class="detail-row"><span class="detail-key">Summary</span><span class="detail-val" style="max-width:70%">' + (query ? highlightMatch(task.last_summary, query) : esc(task.last_summary || '-')) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Lane</span><span class="detail-val" style="color:#3b82f6;cursor:pointer" onclick="event.stopPropagation();document.getElementById(\'cmd-input\').value=\'/lane ' + esc(task.lane_id) + '\';executeQuery(\'/lane ' + esc(task.lane_id) + '\')">' + esc(task.lane_id) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Owner</span><span class="detail-val">' + ownerBadge(task.owner) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Attempts</span><span class="detail-val">' + (task.attempts || 0) + '</span></div>' +
+    (task.last_error ? '<div class="detail-row"><span class="detail-key">Error</span><span class="detail-val" style="color:#ef4444;max-width:70%">' + esc(task.last_error) + '</span></div>' : '') +
+    '</div></div>';
+}
+
+// ── Endpoint card ──
+function endpointCardHTML(ep, query) {
+  const status = ep.status || 'unknown';
+  const isUp = status === 'ok' || status === 'up' || status === 'available';
+  return '<div class="card-header">' +
+    '<span class="card-icon"><span class="conn-dot ' + (isUp ? 'up' : status === 'unknown' ? 'unknown' : 'down') + '" style="display:inline-block"></span></span>' +
+    '<span class="card-title">' + (query ? highlightMatch(ep.name, query) : esc(ep.name)) + '</span>' +
+    '<span class="card-stat">' + (isUp ? '<span class="badge badge-success">UP</span>' : '<span class="badge badge-critical">DOWN</span>') + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' +
+    '<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val">' + esc(status) + '</span></div>' +
+    (ep.latency_ms != null ? '<div class="detail-row"><span class="detail-key">Latency</span><span class="detail-val">' + ep.latency_ms + 'ms</span></div>' : '') +
+    (ep.model ? '<div class="detail-row"><span class="detail-key">Model</span><span class="detail-val">' + esc(ep.model) + '</span></div>' : '') +
+    '</div></div>';
+}
+
+// ── Generic search result ──
+function genericCardHTML(result) {
+  return '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon(result.type) + '</span>' +
+    '<span class="card-title">' + esc(result.matchedField) + ': ' + esc(result.fields?.find(f => f.key === result.matchedField)?.val || '') + '</span>' +
+    '<span class="card-stat"><span class="badge badge-muted">' + esc(result.type) + '</span></span></div>';
+}
+
+// ── Health ──
+function renderHealth() {
+  const snap = S.snapshot;
+  const report = S.report;
+  if (!snap && !report) { showResults([{ html: noDataCard('No data') }], 'Health'); return; }
+
+  const cards = [];
+
+  // From snapshot health
+  const health = snap?.health?.health || {};
+  const criteria = health.criteria || [];
+
+  if (criteria.length > 0) {
+    const passCount = criteria.filter(c => c.pass || c.status === 'pass').length;
+    const body = criteria.map(c => {
+      const pass = c.pass || c.status === 'pass';
+      const warn = c.status === 'warn' || c.status === 'warning';
+      return '<div class="health-row">' +
+        '<span class="health-indicator ' + (pass ? 'pass' : warn ? 'warn' : 'fail') + '"></span>' +
+        '<span class="health-name">' + esc(c.name || c.criterion || c.label || 'Unknown') + '</span>' +
+        '<span class="health-status">' + (pass ? '<span class="badge badge-success">PASS</span>' : warn ? '<span class="badge badge-warning">WARN</span>' : '<span class="badge badge-critical">FAIL</span>') + '</span>' +
+        '</div>';
+    }).join('');
+
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('health') + '</span>' +
+      '<span class="card-title">Health Criteria</span>' +
+      '<span class="card-stat">' + passCount + '/' + criteria.length + ' pass</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  // From report if available
+  const cycleReport = report?.cycle_report || {};
+  const healthChecks = cycleReport.health_checks || cycleReport.checks || [];
+  if (healthChecks.length > 0 && criteria.length === 0) {
+    const passCount = healthChecks.filter(c => c.pass || c.ok).length;
+    const body = healthChecks.map(c => {
+      const pass = c.pass || c.ok;
+      return '<div class="health-row">' +
+        '<span class="health-indicator ' + (pass ? 'pass' : 'fail') + '"></span>' +
+        '<span class="health-name">' + esc(c.name || c.check || 'Unknown') + '</span>' +
+        '<span class="health-status">' + (pass ? '<span class="badge badge-success">PASS</span>' : '<span class="badge badge-critical">FAIL</span>') + '</span>' +
+        '</div>';
+    }).join('');
+
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('health') + '</span>' +
+      '<span class="card-title">Health Checks (Report)</span>' +
+      '<span class="card-stat">' + passCount + '/' + healthChecks.length + ' pass</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  // Collaboration health
+  const collab = snap?.health?.collaboration || {};
+  if (Object.keys(collab).length > 0) {
+    const body = Object.entries(collab).map(([key, val]) =>
+      '<div class="detail-row"><span class="detail-key">' + esc(key) + '</span><span class="detail-val">' + esc(typeof val === 'object' ? JSON.stringify(val) : val) + '</span></div>'
+    ).join('');
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('health') + '</span>' +
+      '<span class="card-title">Collaboration Health</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  if (!cards.length) {
+    cards.push({ html: noDataCard('No health data available') });
+  }
+
+  showResults(cards, 'Health');
+  if (cards.length > 0) setTimeout(() => toggleCard(0), 50);
+}
+
+// ── Git ──
+function renderGit() {
+  const snap = S.snapshot;
+  if (!snap || !snap.git) { showResults([{ html: noDataCard('No git data') }], 'Git'); return; }
+  const git = snap.git;
+  const cards = [];
+
+  // Branch info
+  const branchBody = '<div class="detail-row"><span class="detail-key">Current Branch</span><span class="detail-val" style="color:#3b82f6">' + esc(git.current_branch || '-') + '</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Total Branches</span><span class="detail-val">' + (git.branch_count || 0) + '</span></div>';
+
+  cards.push({ html:
+    '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('commit') + '</span>' +
+    '<span class="card-title">Git State</span>' +
+    '<span class="card-stat" style="color:#3b82f6;font-size:11px">' + esc(git.current_branch || '') + '</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + branchBody + '</div></div>'
+  });
+
+  // Recent commits
+  const commits = git.recent_commits || [];
+  if (commits.length > 0) {
+    const body = commits.map(c =>
+      '<div class="commit-row">' +
+      '<span class="commit-hash">' + esc(c.short_hash) + '</span>' +
+      '<span class="commit-msg">' + esc(c.message) + '</span>' +
+      '<span class="commit-meta">' + ownerBadge(c.author) + ' ' + esc(c.relative_time || '') + '</span>' +
+      '</div>'
+    ).join('');
+
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('event') + '</span>' +
+      '<span class="card-title">Recent Commits</span>' +
+      '<span class="card-stat">' + commits.length + '</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  showResults(cards, 'Git');
+  setTimeout(() => toggleCard(0), 50);
+  if (cards.length > 1) setTimeout(() => toggleCard(1), 100);
+}
+
+// ── Events ──
+function renderEvents() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Events'); return; }
+  const events = snap.events || [];
+  if (!events.length) {
+    showResults([{ html: noDataCard('No recent events') }], 'Events (0)');
+    return;
+  }
+
+  // Group into a single expandable card with all events
+  const body = events.slice(0, 50).map(evt => {
+    const msg = evt.message || evt.event || '';
+    const type = evt.type || evt.event || '';
+    return '<div class="event-row">' +
+      '<span class="event-time">' + fmtTimeShort(evt.timestamp) + '</span>' +
+      '<span class="badge badge-info" style="flex-shrink:0;margin-right:6px">' + esc(type) + '</span>' +
+      '<span class="event-body">' + esc(msg) + '</span>' +
+      '<span class="event-lane">' + esc(evt.lane_id || '') + '</span>' +
+      '</div>';
+  }).join('');
+
+  const card = '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('event') + '</span>' +
+    '<span class="card-title">Event Stream</span>' +
+    '<span class="card-stat">' + events.length + ' events</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+
+  showResults([{ html: card }], 'Events (' + events.length + ')');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+// ── Owners ──
+function renderOwners() {
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data') }], 'Owners'); return; }
+  const lanes = snap.lanes || [];
+  const byOwner = {};
+  lanes.forEach(l => {
+    const o = l.owner || 'unknown';
+    if (!byOwner[o]) byOwner[o] = { lanes: [], cost: 0, tokens: 0, responses: 0, done: 0, blocked: 0, active: 0 };
+    byOwner[o].lanes.push(l);
+    byOwner[o].cost += (l.metrics || {}).cost_usd_total || 0;
+    byOwner[o].tokens += (l.metrics || {}).tokens_total || 0;
+    byOwner[o].responses += (l.metrics || {}).responses_total || 0;
+    const tc = l.task_counts || {};
+    byOwner[o].done += tc.done || 0;
+    byOwner[o].blocked += tc.blocked || 0;
+    byOwner[o].active += tc.in_progress || 0;
+  });
+
+  const cards = Object.entries(byOwner).sort((a, b) => b[1].lanes.length - a[1].lanes.length).map(([owner, data]) => {
+    const grid = '<div class="metric-grid">' +
+      metricCell('Lanes', data.lanes.length, '') +
+      metricCell('Done', data.done, 'ok') +
+      metricCell('Active', data.active, 'info') +
+      metricCell('Blocked', data.blocked, data.blocked > 0 ? 'crit' : '') +
+      metricCell('Cost', fmtCost(data.cost), '') +
+      metricCell('Tokens', fmtTokens(data.tokens), '') +
+      metricCell('Responses', data.responses, '') +
+      metricCell('Pass Rate', '-', '') +
+      '</div>';
+
+    const lanesList = '<div class="detail-section"><div class="detail-section-title">Lanes (' + data.lanes.length + ')</div>' +
+      data.lanes.map(l =>
+        '<div class="detail-row" style="cursor:pointer" onclick="event.stopPropagation();document.getElementById(\'cmd-input\').value=\'/lane ' + esc(l.lane_id) + '\';executeQuery(\'/lane ' + esc(l.lane_id) + '\')">' +
+        '<span class="detail-key" style="color:#3b82f6">' + esc(l.lane_id) + '</span>' +
+        '<span class="detail-val">' + statusBadge(l.status) + '</span></div>'
+      ).join('') + '</div>';
+
+    return { html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('owner') + '</span>' +
+      '<span class="card-title">' + ownerBadge(owner) + '</span>' +
+      '<span class="card-stat">' + data.lanes.length + ' lanes</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + grid + lanesList + '</div></div>'
+    };
+  });
+
+  showResults(cards, 'Owners (' + Object.keys(byOwner).length + ')');
+}
+
+// ── Connectivity ──
+function renderConnectivity() {
+  const snap = S.snapshot;
+  if (!snap || !snap.connectivity) { showResults([{ html: noDataCard('No connectivity data') }], 'Connectivity'); return; }
+  const conn = snap.connectivity;
+  const endpoints = [];
+
+  // Handle both flat object and nested structures
+  if (conn.endpoints && Array.isArray(conn.endpoints)) {
+    conn.endpoints.forEach(ep => endpoints.push(ep));
+  } else {
+    Object.entries(conn).forEach(([name, info]) => {
+      if (typeof info === 'object' && info !== null) {
+        endpoints.push({ name, ...info });
+      }
+    });
+  }
+
+  if (!endpoints.length) {
+    showResults([{ html: noDataCard('No endpoints found') }], 'Connectivity');
+    return;
+  }
+
+  const body = endpoints.map(ep => {
+    const status = ep.status || ep.state || 'unknown';
+    const isUp = ['ok', 'up', 'available', 'healthy'].includes(status.toLowerCase());
+    return '<div class="conn-row">' +
+      '<span class="conn-dot ' + (isUp ? 'up' : status === 'unknown' ? 'unknown' : 'down') + '"></span>' +
+      '<span class="conn-name">' + esc(ep.name || ep.endpoint || ep.model || 'Unknown') + '</span>' +
+      (ep.latency_ms != null ? '<span class="conn-latency">' + ep.latency_ms + 'ms</span>' : '') +
+      '<span style="margin-left:8px">' + (isUp ? '<span class="badge badge-success">UP</span>' : '<span class="badge badge-critical">DOWN</span>') + '</span>' +
+      '</div>';
+  }).join('');
+
+  const upCount = endpoints.filter(ep => {
+    const s = (ep.status || ep.state || '').toLowerCase();
+    return ['ok', 'up', 'available', 'healthy'].includes(s);
+  }).length;
+
+  const card = '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('endpoint') + '</span>' +
+    '<span class="card-title">Model Endpoints</span>' +
+    '<span class="card-stat">' + upCount + '/' + endpoints.length + ' up</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+
+  showResults([{ html: card }], 'Connectivity');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+// ── Privileges ──
+function renderPrivileges() {
+  const priv = S.privileges;
+  if (!priv) { showResults([{ html: noDataCard('No privilege data', 'Waiting for /api/v2/privileges...') }], 'Privileges'); return; }
+
+  const cards = [];
+  const current = priv.current || {};
+
+  if (Object.keys(current).length > 0) {
+    const body = Object.entries(current).map(([key, val]) =>
+      '<div class="priv-row">' +
+      '<span class="priv-key">' + esc(key) + '</span>' +
+      '<span class="priv-val">' + esc(typeof val === 'object' ? JSON.stringify(val) : val) + '</span>' +
+      '</div>'
+    ).join('');
+
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('privilege') + '</span>' +
+      '<span class="card-title">Current Privileges</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  const escalations = priv.recent_escalations || [];
+  if (escalations.length > 0) {
+    const body = escalations.map(e =>
+      '<div class="event-row">' +
+      '<span class="event-time">' + fmtTime(e.timestamp) + '</span>' +
+      '<span class="event-body">' + esc(e.reason || e.action || e.type || JSON.stringify(e)) + '</span>' +
+      '</div>'
+    ).join('');
+
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('event') + '</span>' +
+      '<span class="card-title">Recent Escalations</span>' +
+      '<span class="card-stat">' + escalations.length + '</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  if (!cards.length) cards.push({ html: noDataCard('No privilege data available') });
+  showResults(cards, 'Privileges');
+  if (cards.length > 0) setTimeout(() => toggleCard(0), 50);
+}
+
+// ── Policies ──
+function renderPolicies() {
+  const pol = S.policies;
+  if (!pol || !pol.policies) { showResults([{ html: noDataCard('No policy data', 'Waiting for /api/v2/policies...') }], 'Policies'); return; }
+  const policies = pol.policies;
+
+  if (!Object.keys(policies).length) {
+    showResults([{ html: noDataCard('No policies found') }], 'Policies');
+    return;
+  }
+
+  const cards = Object.entries(policies).map(([name, data]) => {
+    const isHealthy = data.healthy || data.compliant || data.ok || data.status === 'pass';
+    const body = Object.entries(data).filter(([k]) => !['timestamp'].includes(k)).map(([key, val]) =>
+      '<div class="detail-row"><span class="detail-key">' + esc(key) + '</span><span class="detail-val" style="max-width:70%">' + esc(typeof val === 'object' ? JSON.stringify(val) : val) + '</span></div>'
+    ).join('');
+
+    return { html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('policy') + '</span>' +
+      '<span class="card-title" style="text-transform:capitalize">' + esc(name.replace(/_/g, ' ')) + '</span>' +
+      '<span class="card-stat">' + (isHealthy ? '<span class="badge badge-success">COMPLIANT</span>' : '<span class="badge badge-warning">CHECK</span>') + '</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    };
+  });
+
+  showResults(cards, 'Policies (' + Object.keys(policies).length + ')');
+}
+
+// ── Backlog ──
+function renderBacklog() {
+  const bl = S.backlog;
+  if (!bl) { showResults([{ html: noDataCard('No backlog data', 'Waiting for /api/v2/task-backlog...') }], 'Backlog'); return; }
+
+  const cards = [];
+
+  // Overview
+  const grid = '<div class="metric-grid">' +
+    metricCell('Total', bl.total || 0, '') +
+    metricCell('Owners', Object.keys(bl.by_owner || {}).length, '') +
+    '</div>';
+
+  const ownerBreakdown = Object.entries(bl.by_owner || {}).map(([owner, count]) =>
+    '<div class="detail-row"><span class="detail-key">' + ownerBadge(owner) + '</span><span class="detail-val">' + count + ' tasks</span></div>'
+  ).join('');
+
+  const prioBreakdown = Object.entries(bl.by_priority || {}).map(([prio, count]) =>
+    '<div class="detail-row"><span class="detail-key">Priority ' + esc(prio) + '</span><span class="detail-val">' + count + '</span></div>'
+  ).join('');
+
+  cards.push({ html:
+    '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('backlog') + '</span>' +
+    '<span class="card-title">Backlog Overview</span>' +
+    '<span class="card-stat">' + (bl.total || 0) + ' tasks</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + grid +
+    (ownerBreakdown ? '<div class="detail-section"><div class="detail-section-title">By Owner</div>' + ownerBreakdown + '</div>' : '') +
+    (prioBreakdown ? '<div class="detail-section"><div class="detail-section-title">By Priority</div>' + prioBreakdown + '</div>' : '') +
+    '</div></div>'
+  });
+
+  // Individual tasks
+  const tasks = bl.tasks || [];
+  if (tasks.length > 0) {
+    const body = tasks.slice(0, 30).map(t => {
+      const id = t.id || t.task_id || '?';
+      const desc = t.description || t.summary || t.title || '';
+      const owner = t.owner || '?';
+      const prio = t.priority || '?';
+      return '<div class="backlog-task">' +
+        '<span class="bt-id">' + esc(id) + '</span>' +
+        (desc ? '<div class="bt-desc">' + esc(desc) + '</div>' : '') +
+        '<div class="bt-meta">' + ownerBadge(owner) + ' <span>priority: ' + esc(prio) + '</span></div>' +
+        '</div>';
+    }).join('');
+
+    cards.push({ html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('task') + '</span>' +
+      '<span class="card-title">Tasks</span>' +
+      '<span class="card-stat">' + tasks.length + '</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>'
+    });
+  }
+
+  showResults(cards, 'Backlog');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+// ── Metrics ──
+function renderMetrics() {
+  const snap = S.snapshot;
+  if (!snap || !snap.metrics) { showResults([{ html: noDataCard('No metrics data') }], 'Metrics'); return; }
+  const m = snap.metrics;
+  const g = m.global || {};
+
+  const cards = [];
+
+  const grid = '<div class="metric-grid">' +
+    metricCell('Responses', g.responses_total || 0, '') +
+    metricCell('Cost', fmtCost(g.cost_usd_total || 0), '') +
+    metricCell('Tokens', fmtTokens(g.tokens_total || 0), '') +
+    metricCell('FTP Rate', fmtPct(g.first_time_pass_rate || 0), (g.first_time_pass_rate || 0) >= 0.8 ? 'ok' : (g.first_time_pass_rate || 0) >= 0.5 ? 'warn' : 'crit') +
+    '</div>';
+
+  // By-owner metrics from global
+  const byOwner = g.by_owner || {};
+  let ownerSection = '';
+  if (Object.keys(byOwner).length > 0) {
+    ownerSection = '<div class="detail-section"><div class="detail-section-title">By Owner</div>' +
+      Object.entries(byOwner).map(([owner, data]) =>
+        '<div class="detail-row"><span class="detail-key">' + ownerBadge(owner) + '</span><span class="detail-val">' +
+        (data.responses_total || 0) + ' resp, ' + fmtCost(data.cost_usd_total || 0) +
+        (data.latency_sec_avg ? ', ' + data.latency_sec_avg.toFixed(1) + 's avg' : '') +
+        '</span></div>'
+      ).join('') + '</div>';
+  }
+
+  // Per-lane metrics
+  const perLane = m.per_lane || {};
+  let laneSection = '';
+  if (Object.keys(perLane).length > 0) {
+    laneSection = '<div class="detail-section"><div class="detail-section-title">By Lane (top 10)</div>' +
+      Object.entries(perLane)
+        .sort((a, b) => (b[1].cost_usd_total || 0) - (a[1].cost_usd_total || 0))
+        .slice(0, 10)
+        .map(([lane, data]) =>
+          '<div class="detail-row"><span class="detail-key" style="color:#3b82f6;cursor:pointer" onclick="event.stopPropagation();document.getElementById(\'cmd-input\').value=\'/lane ' + esc(lane) + '\';executeQuery(\'/lane ' + esc(lane) + '\')">' + esc(lane) + '</span>' +
+          '<span class="detail-val">' + (data.responses_total || 0) + ' resp, ' + fmtCost(data.cost_usd_total || 0) + ', FTP ' + fmtPct(data.first_time_pass_rate || 0) + '</span></div>'
+        ).join('') + '</div>';
+  }
+
+  cards.push({ html:
+    '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('metric') + '</span>' +
+    '<span class="card-title">Response Metrics</span>' +
+    '<span class="card-stat">' + (g.responses_total || 0) + ' total</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + grid + ownerSection + laneSection + '</div></div>'
+  });
+
+  showResults(cards, 'Metrics');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+// ── Responses ──
+function renderResponses() {
+  const rs = S.responseStream;
+  if (!rs || !rs.length) { showResults([{ html: noDataCard('No response data', 'Waiting for /api/v2/response-stream...') }], 'Responses'); return; }
+
+  const cards = rs.slice(0, 30).map(r => {
+    const pass = r.accepted || r.pass || r.first_time_pass;
+    const model = r.model || r.owner || '?';
+    const lane = r.lane_id || '?';
+    const latency = r.latency_sec || r.duration_sec || 0;
+    const cost = r.cost_usd || 0;
+    const tokens = r.tokens_total || r.tokens || 0;
+
+    return { html:
+      '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('response') + '</span>' +
+      '<span class="card-title"><span style="color:#888;font-size:11px">' + esc(lane) + '</span></span>' +
+      '<span class="card-stat" style="display:flex;gap:6px;align-items:center">' +
+      (pass ? '<span class="badge badge-success">PASS</span>' : '<span class="badge badge-critical">FAIL</span>') +
+      '<span style="font-size:10px;color:#555">' + fmtCost(cost) + '</span>' +
+      '</span>' +
+      '<span class="card-chevron">\u25b8</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' +
+      '<div class="detail-row"><span class="detail-key">Model</span><span class="detail-val">' + esc(model) + '</span></div>' +
+      '<div class="detail-row"><span class="detail-key">Lane</span><span class="detail-val">' + esc(lane) + '</span></div>' +
+      '<div class="detail-row"><span class="detail-key">Latency</span><span class="detail-val">' + latency.toFixed(1) + 's</span></div>' +
+      '<div class="detail-row"><span class="detail-key">Cost</span><span class="detail-val">' + fmtCost(cost) + '</span></div>' +
+      '<div class="detail-row"><span class="detail-key">Tokens</span><span class="detail-val">' + fmtTokens(tokens) + '</span></div>' +
+      '<div class="detail-row"><span class="detail-key">Time</span><span class="detail-val">' + fmtTime(r.timestamp) + '</span></div>' +
+      '</div></div>'
+    };
+  });
+
+  showResults(cards, 'Recent Responses (' + rs.length + ')');
+}
+
+// ── Help ──
+function renderHelp() {
+  const body = '<div class="help-grid">' +
+    COMMANDS.map(c =>
+      '<div class="help-item">' +
+      '<span class="help-cmd">' + esc(c.cmd) +
+      (c.aliases.length ? ' <span style="color:#444">' + c.aliases.map(a => esc(a)).join(' ') + '</span>' : '') +
+      '</span>' +
+      '<span class="help-desc">' + esc(c.desc) + '</span>' +
+      '</div>'
+    ).join('') +
+    '</div>' +
+    '<div class="detail-section" style="margin-top:16px"><div class="detail-section-title">Keyboard Shortcuts</div>' +
+    '<div class="detail-row"><span class="detail-key">Up/Down</span><span class="detail-val">Navigate results</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Enter</span><span class="detail-val">Expand/collapse card</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Escape</span><span class="detail-val">Clear results / input</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Tab</span><span class="detail-val">Accept autocomplete</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Cmd/Ctrl+K</span><span class="detail-val">Focus command bar</span></div>' +
+    '<div class="detail-row"><span class="detail-key">Up arrow (empty input)</span><span class="detail-val">Command history</span></div>' +
+    '</div>' +
+    '<div class="detail-section"><div class="detail-section-title">Free Text Search</div>' +
+    '<div style="padding:6px 0;font-size:12px;color:#777">Type any text without <span style="color:#3b82f6">/</span> to fuzzy search across lane IDs, task IDs, summaries, alert messages, events, commits, and endpoint names.</div>' +
+    '</div>';
+
+  const card = '<div class="card-header">' +
+    '<span class="card-icon">' + cardIcon('help') + '</span>' +
+    '<span class="card-title">Available Commands</span>' +
+    '<span class="card-stat">' + COMMANDS.length + ' commands</span>' +
+    '<span class="card-chevron">\u25b8</span></div>' +
+    '<div class="card-body"><div class="card-body-inner">' + body + '</div></div>';
+
+  showResults([{ html: card }], 'Help');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+// =====================================================================
+// ACTION COMMAND HANDLERS
+// =====================================================================
+async function handleUnblock(arg) {
+  if (arg) {
+    // Direct unblock with task_id argument
+    executeAction('task.clear-error', { task_id: arg });
+    return;
+  }
+  // No arg: show blocked tasks for selection
+  const snap = S.snapshot;
+  if (!snap) { showResults([{ html: noDataCard('No data available') }], 'Unblock'); return; }
+  const blockedTasks = [];
+  (snap.lanes || []).forEach(lane => {
+    (lane.tasks || []).forEach(task => {
+      if (task.status === 'blocked') {
+        blockedTasks.push({ ...task, lane_id: lane.lane_id });
+      }
+    });
+  });
+  if (!blockedTasks.length) {
+    showResults([{ html: noDataCard('No blocked tasks found', 'All tasks are running smoothly') }], 'Unblock');
+    return;
+  }
+  const cards = blockedTasks.map(t => ({
+    html: '<div class="card-header">' +
+      '<span class="card-icon">' + cardIcon('task') + '</span>' +
+      '<span class="card-title"><span style="color:#3b82f6;font-weight:600">' + esc(t.task_id) + '</span> <span style="color:#666;font-size:11px">in ' + esc(t.lane_id) + '</span></span>' +
+      '<span class="card-stat">' + statusBadge(t.status) + '</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' +
+      (t.last_error ? '<div style="color:#ef4444;font-size:11px;margin-bottom:8px">' + esc(t.last_error) + '</div>' : '') +
+      '<button class="action-confirm-btn confirm-yes" onclick="event.stopPropagation();executeAction(\'task.clear-error\',{task_id:\'' + esc(t.task_id) + '\'})">Unblock this task</button>' +
+      '</div></div>'
+  }));
+  showResults(cards, 'Blocked Tasks (' + blockedTasks.length + ') \u2014 click to unblock');
+}
+
+function handleReprioritize(arg) {
+  const parts = arg.split(/\s+/);
+  if (parts.length < 2 || !parts[0] || !parts[1]) {
+    showResults([{ html: noDataCard('Usage: /reprioritize <task_id> <priority>', 'Example: /reprioritize task-beta high') }], 'Reprioritize');
+    return;
+  }
+  const taskId = parts[0];
+  const priority = parts[1];
+  executeAction('task.reprioritize', { task_id: taskId, priority: priority });
+}
+
+function handleGrant(arg) {
+  // Show a form-like card for breakglass grant
+  const card = {
+    html: '<div class="card-header">' +
+      '<span class="card-icon">&#9888;</span>' +
+      '<span class="card-title">Issue Breakglass Grant</span>' +
+      '<span class="badge badge-warning">BREAKGLASS</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' +
+      '<div style="margin-bottom:10px">' +
+      '<label style="font-size:10px;color:#555;text-transform:uppercase;letter-spacing:0.1em;display:block;margin-bottom:4px">Reason</label>' +
+      '<input id="grant-reason" type="text" style="width:100%;background:#0e0e0e;border:1px solid #252525;border-radius:4px;padding:8px 10px;font-family:inherit;font-size:12px;color:#e0e0e0;outline:none" placeholder="Reason for breakglass access">' +
+      '</div>' +
+      '<div style="margin-bottom:10px">' +
+      '<label style="font-size:10px;color:#555;text-transform:uppercase;letter-spacing:0.1em;display:block;margin-bottom:4px">Scope</label>' +
+      '<input id="grant-scope" type="text" style="width:100%;background:#0e0e0e;border:1px solid #252525;border-radius:4px;padding:8px 10px;font-family:inherit;font-size:12px;color:#e0e0e0;outline:none" placeholder="e.g. full, read-only, lane:my-lane">' +
+      '</div>' +
+      '<div style="margin-bottom:12px">' +
+      '<label style="font-size:10px;color:#555;text-transform:uppercase;letter-spacing:0.1em;display:block;margin-bottom:4px">TTL (minutes)</label>' +
+      '<input id="grant-ttl" type="number" value="30" style="width:120px;background:#0e0e0e;border:1px solid #252525;border-radius:4px;padding:8px 10px;font-family:inherit;font-size:12px;color:#e0e0e0;outline:none">' +
+      '</div>' +
+      '<button class="action-confirm-btn confirm-yes" onclick="event.stopPropagation();submitGrant()">Issue Grant</button>' +
+      '<button class="action-confirm-btn confirm-no" style="margin-left:8px" onclick="event.stopPropagation();clearResults()">Cancel</button>' +
+      '</div></div>'
+  };
+  showResults([card], 'Breakglass Grant');
+  setTimeout(() => toggleCard(0), 50);
+}
+
+async function submitGrant() {
+  const reason = document.getElementById('grant-reason').value;
+  const scope = document.getElementById('grant-scope').value;
+  const ttl = parseInt(document.getElementById('grant-ttl').value) || 30;
+  if (!reason) {
+    showResults([{ html: noDataCard('Reason is required', 'Please provide a reason for the breakglass grant') }], 'Grant Failed');
+    return;
+  }
+  executeAction('breakglass.grant', { reason, scope, ttl_minutes: ttl });
+}
+
+function handleRevoke(arg) {
+  if (!arg) {
+    showResults([{ html: noDataCard('Usage: /revoke <grant_id>', 'Example: /revoke bg-abc123') }], 'Revoke');
+    return;
+  }
+  executeAction('breakglass.revoke', { grant_id: arg });
+}
+
+async function renderAudit() {
+  try {
+    const data = await fetchJSON('/api/v2/actions/audit');
+    const entries = data.entries || data.audit || data || [];
+    if (!Array.isArray(entries) || !entries.length) {
+      showResults([{ html: noDataCard('No audit entries found') }], 'Audit Trail');
+      return;
+    }
+    const cards = entries.slice(0, 50).map(entry => ({
+      html: '<div class="card-header">' +
+        '<span class="card-icon">' + cardIcon('event') + '</span>' +
+        '<span class="card-title">' + esc(entry.action || entry.action_id || 'unknown') + '</span>' +
+        '<span class="card-stat" style="font-size:10px;color:#555">' + fmtTime(entry.timestamp) + '</span>' +
+        '<span class="card-chevron">\u25b8</span></div>' +
+        '<div class="card-body"><div class="card-body-inner">' +
+        '<div class="detail-row"><span class="detail-key">Action</span><span class="detail-val">' + esc(entry.action || entry.action_id || '') + '</span></div>' +
+        '<div class="detail-row"><span class="detail-key">User</span><span class="detail-val">' + esc(entry.user || entry.operator || '-') + '</span></div>' +
+        '<div class="detail-row"><span class="detail-key">Result</span><span class="detail-val">' + (entry.ok || entry.success ? '<span class="badge badge-success">OK</span>' : '<span class="badge badge-critical">FAILED</span>') + '</span></div>' +
+        '<div class="detail-row"><span class="detail-key">Time</span><span class="detail-val">' + esc(entry.timestamp || '') + '</span></div>' +
+        (entry.params ? '<div class="detail-row"><span class="detail-key">Params</span><span class="detail-val" style="max-width:70%"><pre style="font-size:10px;color:#777;margin:0;white-space:pre-wrap">' + esc(JSON.stringify(entry.params, null, 2)) + '</pre></span></div>' : '') +
+        (entry.message ? '<div class="detail-row"><span class="detail-key">Message</span><span class="detail-val" style="max-width:70%">' + esc(entry.message) + '</span></div>' : '') +
+        '</div></div>'
+    }));
+    showResults(cards, 'Audit Trail (' + entries.length + ')');
+  } catch (e) {
+    showResults([{ html: noDataCard('Failed to load audit trail', esc(e.message)) }], 'Audit Trail');
+  }
+}
+
+async function renderActionsCatalog() {
+  try {
+    const catalog = await Actions.loadCatalog();
+    const actions = catalog?.actions || catalog || [];
+    if (!Array.isArray(actions) && typeof actions === 'object') {
+      // Handle object-style catalog
+      const entries = Object.entries(actions);
+      if (!entries.length) {
+        showResults([{ html: noDataCard('No actions available') }], 'Actions');
+        return;
+      }
+      const cards = entries.map(([id, info]) => ({
+        html: '<div class="card-header">' +
+          '<span class="card-icon">' + cardIcon('policy') + '</span>' +
+          '<span class="card-title" style="color:#3b82f6;font-weight:600">' + esc(id) + '</span>' +
+          '<span class="card-stat"><span class="badge badge-info">' + esc(info.risk || info.level || 'action') + '</span></span>' +
+          '<span class="card-chevron">\u25b8</span></div>' +
+          '<div class="card-body"><div class="card-body-inner">' +
+          '<div class="detail-row"><span class="detail-key">Description</span><span class="detail-val" style="max-width:70%">' + esc(info.description || info.desc || '-') + '</span></div>' +
+          (info.params ? '<div class="detail-row"><span class="detail-key">Parameters</span><span class="detail-val" style="max-width:70%"><pre style="font-size:10px;color:#777;margin:0;white-space:pre-wrap">' + esc(JSON.stringify(info.params, null, 2)) + '</pre></span></div>' : '') +
+          (info.confirm ? '<div class="detail-row"><span class="detail-key">Requires Confirm</span><span class="detail-val"><span class="badge badge-warning">YES</span></span></div>' : '') +
+          '</div></div>'
+      }));
+      showResults(cards, 'Available Actions (' + entries.length + ')');
+      return;
+    }
+    if (!actions.length) {
+      showResults([{ html: noDataCard('No actions available') }], 'Actions');
+      return;
+    }
+    const cards = actions.map(a => ({
+      html: '<div class="card-header">' +
+        '<span class="card-icon">' + cardIcon('policy') + '</span>' +
+        '<span class="card-title" style="color:#3b82f6;font-weight:600">' + esc(a.id || a.action_id || a.name || 'unknown') + '</span>' +
+        '<span class="card-stat"><span class="badge badge-info">' + esc(a.risk || a.level || 'action') + '</span></span>' +
+        '<span class="card-chevron">\u25b8</span></div>' +
+        '<div class="card-body"><div class="card-body-inner">' +
+        '<div class="detail-row"><span class="detail-key">Description</span><span class="detail-val" style="max-width:70%">' + esc(a.description || a.desc || '-') + '</span></div>' +
+        (a.params ? '<div class="detail-row"><span class="detail-key">Parameters</span><span class="detail-val" style="max-width:70%"><pre style="font-size:10px;color:#777;margin:0;white-space:pre-wrap">' + esc(JSON.stringify(a.params, null, 2)) + '</pre></span></div>' : '') +
+        (a.confirm ? '<div class="detail-row"><span class="detail-key">Requires Confirm</span><span class="detail-val"><span class="badge badge-warning">YES</span></span></div>' : '') +
+        '</div></div>'
+    }));
+    showResults(cards, 'Available Actions (' + actions.length + ')');
+  } catch (e) {
+    showResults([{ html: noDataCard('Failed to load actions catalog', esc(e.message)) }], 'Actions');
+  }
+}
+
+// =====================================================================
+// ACTION EXECUTION & CONFIRMATION
+// =====================================================================
+async function executeAction(actionId, params = {}) {
+  try {
+    const preview = await Actions.execute(actionId, params, { dryRun: true });
+    if (!preview.ok && !preview.confirm_token) {
+      showResults([makeActionResultCard(preview)], 'Action Failed');
+      return;
+    }
+    if (preview.confirm_token) {
+      // Show confirmation card
+      showResults([makeActionConfirmCard(preview, actionId, params)], 'Confirm Action');
+      setTimeout(() => toggleCard(0), 50);
+    } else {
+      // Low risk - execute directly
+      const result = await Actions.execute(actionId, params);
+      showResults([makeActionResultCard(result)], 'Action Result');
+      setTimeout(fetchAll, 1000); // refresh data
+    }
+  } catch (e) {
+    showResults([makeActionResultCard({ ok: false, message: 'Action failed: ' + e.message, detail: {} })], 'Action Failed');
+  }
+}
+
+async function confirmAction(actionId, params, token) {
+  try {
+    const result = await Actions.execute(actionId, params, { confirmToken: token });
+    showResults([makeActionResultCard(result)], 'Action Result');
+    setTimeout(fetchAll, 1000);
+  } catch (e) {
+    showResults([makeActionResultCard({ ok: false, message: 'Confirm failed: ' + e.message, detail: {} })], 'Action Failed');
+  }
+}
+
+function makeActionConfirmCard(preview, actionId, params) {
+  const paramsJson = JSON.stringify(params).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+  return {
+    html: '<div class="card-header">' +
+      '<span class="card-icon">&#9888;</span>' +
+      '<span class="card-title">' + esc(preview.message || 'Confirm action') + '</span>' +
+      '<span class="badge badge-warning">CONFIRM?</span></div>' +
+      '<div class="card-body"><div class="card-body-inner">' +
+      '<pre style="font-size:11px;color:#777;white-space:pre-wrap">' + esc(JSON.stringify(preview.detail, null, 2)) + '</pre>' +
+      '<div style="margin-top:12px;display:flex;gap:8px">' +
+      '<button class="action-confirm-btn confirm-yes" onclick="event.stopPropagation();confirmAction(\'' + esc(actionId) + '\',' + esc(JSON.stringify(params)) + ',\'' + esc(preview.confirm_token) + '\')">Confirm &amp; Execute</button>' +
+      '<button class="action-confirm-btn confirm-no" onclick="event.stopPropagation();clearResults()">Cancel</button>' +
+      '</div></div></div>'
+  };
+}
+
+function makeActionResultCard(result) {
+  const icon = result.ok ? '&#10003;' : '&#10007;';
+  const badge = result.ok ? 'success' : 'critical';
+  return {
+    html: '<div class="card-header">' +
+      '<span class="card-icon">' + icon + '</span>' +
+      '<span class="card-title">' + esc(result.message || (result.ok ? 'Action succeeded' : 'Action failed')) + '</span>' +
+      '<span class="badge badge-' + badge + '">' + (result.ok ? 'SUCCESS' : 'FAILED') + '</span></div>' +
+      (Object.keys(result.detail || {}).length ? '<div class="card-body"><div class="card-body-inner">' +
+      '<pre style="font-size:11px;color:#777;white-space:pre-wrap">' + esc(JSON.stringify(result.detail, null, 2)) + '</pre>' +
+      '</div></div>' : '')
+  };
+}
+
+// =====================================================================
+// AUTOCOMPLETE
+// =====================================================================
+let acItems = [];
+let acFocused = -1;
+
+function updateAutocomplete(value) {
+  const dropdown = document.getElementById('ac-dropdown');
+  const ghost = document.getElementById('cmd-ghost');
+
+  if (!value.startsWith('/') || value.includes(' ')) {
+    dropdown.classList.remove('open');
+    ghost.textContent = '';
+    acItems = [];
+    acFocused = -1;
+    return;
+  }
+
+  const q = value.toLowerCase();
+  const matches = [];
+
+  for (const cmd of COMMANDS) {
+    const score = fuzzyScore(q, cmd.cmd);
+    const aliasScores = cmd.aliases.map(a => fuzzyScore(q, a));
+    const maxAliasScore = aliasScores.length > 0 ? Math.max(...aliasScores) : 0;
+    const bestScore = Math.max(score, maxAliasScore);
+    if (bestScore > 0) {
+      matches.push({ ...cmd, score: bestScore });
+    }
+  }
+
+  matches.sort((a, b) => b.score - a.score);
+
+  if (!matches.length) {
+    dropdown.classList.remove('open');
+    ghost.textContent = '';
+    acItems = [];
+    acFocused = -1;
+    return;
+  }
+
+  acItems = matches;
+  acFocused = -1;
+
+  dropdown.innerHTML = matches.map((m, i) =>
+    '<div class="ac-item" data-idx="' + i + '">' +
+    '<span><span class="ac-cmd">' + esc(m.cmd) + '</span>' +
+    (m.aliases.length ? '<span class="ac-alias">' + m.aliases.map(a => esc(a)).join(' ') + '</span>' : '') +
+    '</span>' +
+    '<span class="ac-desc">' + esc(m.desc) + '</span>' +
+    '</div>'
+  ).join('');
+  dropdown.classList.add('open');
+
+  // Ghost text (autocomplete preview)
+  const topMatch = matches[0];
+  if (topMatch && topMatch.cmd.startsWith(q) && topMatch.cmd !== q) {
+    ghost.textContent = topMatch.cmd;
+  } else {
+    ghost.textContent = '';
+  }
+
+  // Click handlers
+  dropdown.querySelectorAll('.ac-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const idx = parseInt(item.dataset.idx);
+      acceptAutocomplete(idx);
+    });
+  });
+}
+
+function acceptAutocomplete(idx) {
+  const item = acItems[idx >= 0 ? idx : 0];
+  if (!item) return;
+  const input = document.getElementById('cmd-input');
+  const needsArg = ['/lane', '/unblock', '/reprioritize', '/revoke', '/release-lock'].includes(item.cmd);
+  input.value = item.cmd + (needsArg ? ' ' : '');
+  document.getElementById('ac-dropdown').classList.remove('open');
+  document.getElementById('cmd-ghost').textContent = '';
+  acItems = [];
+  acFocused = -1;
+  input.focus();
+  if (!needsArg) {
+    executeQuery(input.value);
+  }
+}
+
+function focusAcItem(idx) {
+  const dropdown = document.getElementById('ac-dropdown');
+  dropdown.querySelectorAll('.ac-item').forEach(el => el.classList.remove('focused'));
+  acFocused = idx;
+  if (idx >= 0 && idx < acItems.length) {
+    const el = dropdown.querySelector('[data-idx="' + idx + '"]');
+    if (el) {
+      el.classList.add('focused');
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+}
+
+// =====================================================================
+// KEYBOARD HANDLING
+// =====================================================================
+const input = document.getElementById('cmd-input');
+
+input.addEventListener('input', () => {
+  updateAutocomplete(input.value);
+});
+
+input.addEventListener('keydown', (e) => {
+  const dropdown = document.getElementById('ac-dropdown');
+  const isAcOpen = dropdown.classList.contains('open');
+
+  // Tab: accept autocomplete
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    if (isAcOpen && acItems.length > 0) {
+      acceptAutocomplete(acFocused >= 0 ? acFocused : 0);
+    }
+    return;
+  }
+
+  // Enter
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (isAcOpen && acFocused >= 0) {
+      acceptAutocomplete(acFocused);
+    } else if (S.currentResults.length > 0 && S.focusedCard >= 0) {
+      toggleCard(S.focusedCard);
+    } else {
+      executeQuery(input.value);
+    }
+    return;
+  }
+
+  // Escape
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (isAcOpen) {
+      dropdown.classList.remove('open');
+      document.getElementById('cmd-ghost').textContent = '';
+      acItems = [];
+      acFocused = -1;
+    } else if (S.currentResults.length > 0) {
+      clearResults();
+    } else {
+      input.value = '';
+    }
+    return;
+  }
+
+  // Arrow keys
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (isAcOpen) {
+      focusAcItem(Math.min(acFocused + 1, acItems.length - 1));
+    } else if (S.currentResults.length > 0) {
+      const next = Math.min(S.focusedCard + 1, S.currentResults.length - 1);
+      focusCard(next);
+    }
+    return;
+  }
+
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (isAcOpen) {
+      focusAcItem(Math.max(acFocused - 1, 0));
+    } else if (S.currentResults.length > 0 && S.focusedCard > 0) {
+      focusCard(S.focusedCard - 1);
+    } else if (S.currentResults.length === 0 || S.focusedCard <= 0) {
+      // Command history
+      if (S.commandHistory.length > 0) {
+        if (S.historyPos === -1) {
+          S.historyPos = S.commandHistory.length - 1;
+        } else if (S.historyPos > 0) {
+          S.historyPos--;
+        }
+        input.value = S.commandHistory[S.historyPos];
+        updateAutocomplete(input.value);
+      }
+    }
+    return;
+  }
+});
+
+// Global keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  // Cmd/Ctrl+K: focus command bar
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    input.focus();
+    input.select();
+    return;
+  }
+
+  // If not focused on input, redirect keystrokes to input
+  if (document.activeElement !== input && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (e.key.length === 1 || e.key === 'Backspace') {
+      input.focus();
+    }
+  }
+});
+
+// =====================================================================
+// INITIALIZATION
+// =====================================================================
+input.focus();
+startPolling();
+Actions.loadCatalog();
+</script>
+</body>
+</html>

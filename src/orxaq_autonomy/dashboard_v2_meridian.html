@@ -1,0 +1,1949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MERIDIAN — Swarm Intelligence Briefing</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────────── */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+
+:root{
+  --bg:#faf8f5;
+  --bg-section:#ffffff;
+  --text:#1a1a1a;
+  --muted:#666666;
+  --critical:#c41e1e;
+  --warning:#8b6914;
+  --ok:#1a6b3a;
+  --link:#1a4a7a;
+  --divider:#d4cfc7;
+  --rule-light:#e8e4de;
+  --accent-cream:#f5f1eb;
+}
+
+html{
+  scroll-behavior:smooth;
+  font-size:18px;
+  -webkit-text-size-adjust:100%;
+}
+
+body{
+  font-family:Georgia,'Times New Roman',Charter,serif;
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.7;
+  min-height:100vh;
+}
+
+/* ── Typography ───────────────────────────────────────────────────── */
+h1,h2,h3,h4,h5,h6{
+  font-family:Georgia,Charter,'Times New Roman',serif;
+  font-weight:400;
+  line-height:1.3;
+}
+
+.sans{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+}
+
+/* ── Layout Shell ─────────────────────────────────────────────────── */
+.page{
+  max-width:780px;
+  margin:0 auto;
+  padding:0 24px;
+}
+
+/* ── Masthead ─────────────────────────────────────────────────────── */
+.masthead{
+  text-align:center;
+  padding:40px 0 28px;
+  border-bottom:3px double var(--divider);
+}
+
+.masthead-title{
+  font-size:2rem;
+  letter-spacing:0.12em;
+  text-transform:uppercase;
+  font-weight:400;
+  margin-bottom:4px;
+  color:var(--text);
+}
+
+.masthead-subtitle{
+  font-size:0.85rem;
+  color:var(--muted);
+  letter-spacing:0.06em;
+  font-style:italic;
+}
+
+.masthead-meta{
+  display:flex;
+  justify-content:center;
+  gap:24px;
+  margin-top:14px;
+  font-size:0.72rem;
+  color:var(--muted);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  letter-spacing:0.02em;
+}
+
+.masthead-meta .branch{
+  color:var(--link);
+}
+
+/* ── Section styles ───────────────────────────────────────────────── */
+.briefing-section{
+  padding:28px 0 24px;
+  border-bottom:1px solid var(--rule-light);
+}
+
+.briefing-section:last-of-type{
+  border-bottom:none;
+}
+
+.section-header{
+  display:flex;
+  align-items:baseline;
+  gap:12px;
+  margin-bottom:16px;
+}
+
+.section-number{
+  font-size:0.65rem;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-weight:700;
+  color:var(--muted);
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  flex-shrink:0;
+}
+
+.section-title{
+  font-size:1.3rem;
+  font-weight:400;
+  font-style:italic;
+  color:var(--text);
+}
+
+.prose{
+  font-size:1rem;
+  line-height:1.8;
+  color:var(--text);
+}
+
+.prose+.prose{
+  margin-top:12px;
+}
+
+.prose .num{
+  font-variant-numeric:tabular-nums;
+  font-weight:600;
+}
+
+.prose .critical-text{
+  color:var(--critical);
+  font-weight:600;
+}
+
+.prose .warning-text{
+  color:var(--warning);
+  font-weight:600;
+}
+
+.prose .ok-text{
+  color:var(--ok);
+}
+
+.muted-prose{
+  color:var(--muted);
+  font-size:0.88rem;
+  line-height:1.7;
+  font-style:italic;
+}
+
+/* ── Executive Summary ────────────────────────────────────────────── */
+.executive-summary{
+  padding:32px 0 28px;
+  border-bottom:1px solid var(--divider);
+}
+
+.executive-summary .lede{
+  font-size:1.15rem;
+  line-height:1.85;
+  color:var(--text);
+}
+
+.executive-summary .lede::first-line{
+  font-variant:small-caps;
+  letter-spacing:0.02em;
+}
+
+/* ── Critical Alert Block ─────────────────────────────────────────── */
+.alert-block{
+  border-left:4px solid var(--critical);
+  background:rgba(196,30,30,0.04);
+  padding:16px 20px;
+  margin:12px 0;
+  border-radius:0 4px 4px 0;
+}
+
+.alert-block .alert-label{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.65rem;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:0.1em;
+  color:var(--critical);
+  margin-bottom:6px;
+}
+
+.alert-block .alert-prose{
+  font-size:0.95rem;
+  line-height:1.7;
+  color:var(--text);
+}
+
+.warning-block{
+  border-left:4px solid var(--warning);
+  background:rgba(139,105,20,0.04);
+  padding:16px 20px;
+  margin:12px 0;
+  border-radius:0 4px 4px 0;
+}
+
+.warning-block .alert-label{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.65rem;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:0.1em;
+  color:var(--warning);
+  margin-bottom:6px;
+}
+
+.warning-block .alert-prose{
+  font-size:0.95rem;
+  line-height:1.7;
+  color:var(--text);
+}
+
+/* ── Owner paragraphs ─────────────────────────────────────────────── */
+.owner-brief{
+  margin-bottom:18px;
+}
+
+.owner-brief .owner-name{
+  font-variant:small-caps;
+  font-size:1.05rem;
+  letter-spacing:0.04em;
+  font-weight:600;
+}
+
+/* ── Lane Dispatches (collapsible) ────────────────────────────────── */
+details.lane-dispatch{
+  margin:8px 0;
+  border:1px solid var(--rule-light);
+  border-radius:4px;
+  background:var(--bg-section);
+  overflow:hidden;
+}
+
+details.lane-dispatch[open]{
+  border-color:var(--divider);
+}
+
+details.lane-dispatch summary{
+  cursor:pointer;
+  padding:12px 16px;
+  font-size:0.9rem;
+  line-height:1.6;
+  list-style:none;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  user-select:none;
+  transition:background 0.15s;
+}
+
+details.lane-dispatch summary:hover{
+  background:var(--accent-cream);
+}
+
+details.lane-dispatch summary::-webkit-details-marker{display:none}
+
+details.lane-dispatch summary::before{
+  content:'';
+  display:inline-block;
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  flex-shrink:0;
+}
+
+details.lane-dispatch[data-status="done"] summary::before{background:var(--ok)}
+details.lane-dispatch[data-status="in_progress"] summary::before{background:#2a7abf}
+details.lane-dispatch[data-status="blocked"] summary::before{background:var(--critical)}
+details.lane-dispatch[data-status="pending"] summary::before{background:var(--warning)}
+details.lane-dispatch[data-status="idle"] summary::before{background:var(--divider)}
+
+details.lane-dispatch summary .lane-id{
+  font-weight:600;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.78rem;
+  letter-spacing:0.01em;
+}
+
+details.lane-dispatch summary .lane-oneliner{
+  flex:1;
+  color:var(--muted);
+  font-size:0.82rem;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+details.lane-dispatch summary .lane-status-tag{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.62rem;
+  font-weight:700;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  padding:2px 8px;
+  border-radius:3px;
+  flex-shrink:0;
+}
+
+.tag-done{color:var(--ok);background:rgba(26,107,58,0.08)}
+.tag-in_progress{color:#2a7abf;background:rgba(42,122,191,0.08)}
+.tag-blocked{color:var(--critical);background:rgba(196,30,30,0.08)}
+.tag-pending{color:var(--warning);background:rgba(139,105,20,0.08)}
+.tag-idle{color:var(--muted);background:rgba(102,102,102,0.08)}
+
+details.lane-dispatch .lane-body{
+  padding:0 16px 16px;
+  border-top:1px solid var(--rule-light);
+}
+
+details.lane-dispatch .lane-body .prose{
+  font-size:0.9rem;
+  line-height:1.75;
+}
+
+details.lane-dispatch .task-list{
+  margin-top:12px;
+  padding-left:0;
+  list-style:none;
+}
+
+details.lane-dispatch .task-item{
+  padding:8px 0;
+  border-bottom:1px solid var(--rule-light);
+  font-size:0.85rem;
+  line-height:1.6;
+}
+
+details.lane-dispatch .task-item:last-child{
+  border-bottom:none;
+}
+
+details.lane-dispatch .task-item .task-id{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-weight:600;
+  font-size:0.76rem;
+}
+
+/* ── Git Narrative ────────────────────────────────────────────────── */
+.commit-entry{
+  padding:10px 0;
+  border-bottom:1px solid var(--rule-light);
+  font-size:0.9rem;
+  line-height:1.7;
+}
+
+.commit-entry:last-child{
+  border-bottom:none;
+}
+
+.commit-hash{
+  font-family:'SF Mono','Fira Code',Consolas,monospace;
+  font-size:0.75rem;
+  color:var(--link);
+  letter-spacing:0.02em;
+}
+
+.commit-author{
+  font-weight:600;
+}
+
+.commit-time{
+  color:var(--muted);
+  font-size:0.82rem;
+  font-style:italic;
+}
+
+/* ── Health Criteria ──────────────────────────────────────────────── */
+.criterion{
+  display:flex;
+  align-items:baseline;
+  gap:8px;
+  padding:5px 0;
+  font-size:0.88rem;
+  line-height:1.6;
+}
+
+.criterion-dot{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  flex-shrink:0;
+  position:relative;
+  top:1px;
+}
+
+.criterion-dot.pass{background:var(--ok)}
+.criterion-dot.fail{background:var(--critical)}
+.criterion-dot.warn{background:var(--warning)}
+.criterion-dot.unknown{background:var(--divider)}
+
+/* ── Connectivity ─────────────────────────────────────────────────── */
+.endpoint-line{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:4px 0;
+  font-size:0.88rem;
+}
+
+.endpoint-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  flex-shrink:0;
+}
+
+.endpoint-dot.up{background:var(--ok)}
+.endpoint-dot.down{background:var(--critical)}
+.endpoint-dot.unknown{background:var(--divider)}
+
+/* ── Footer ───────────────────────────────────────────────────────── */
+.briefing-footer{
+  padding:28px 0 40px;
+  text-align:center;
+  border-top:3px double var(--divider);
+  margin-top:8px;
+}
+
+.footer-controls{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:20px;
+  margin-bottom:16px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.75rem;
+}
+
+.btn-refresh{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.72rem;
+  padding:6px 16px;
+  border:1px solid var(--divider);
+  border-radius:3px;
+  background:var(--bg-section);
+  color:var(--text);
+  cursor:pointer;
+  letter-spacing:0.04em;
+  text-transform:uppercase;
+  font-weight:600;
+  transition:all 0.15s;
+}
+
+.btn-refresh:hover{
+  background:var(--text);
+  color:var(--bg);
+}
+
+.auto-refresh-toggle{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:var(--muted);
+}
+
+.auto-refresh-toggle input[type="checkbox"]{
+  accent-color:var(--text);
+}
+
+.footer-colophon{
+  font-size:0.7rem;
+  color:var(--muted);
+  font-style:italic;
+  margin-top:8px;
+}
+
+/* ── Dashboard Navigation Links ───────────────────────────────────── */
+.dashboard-nav{
+  display:flex;
+  justify-content:center;
+  gap:16px;
+  margin-top:12px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.7rem;
+}
+
+.dashboard-nav a{
+  color:var(--link);
+  text-decoration:none;
+  letter-spacing:0.04em;
+  text-transform:uppercase;
+  font-weight:600;
+  padding:2px 0;
+  border-bottom:1px solid transparent;
+  transition:border-color 0.15s;
+}
+
+.dashboard-nav a:hover{
+  border-bottom-color:var(--link);
+}
+
+/* ── Loading / Error States ───────────────────────────────────────── */
+.loading-state{
+  text-align:center;
+  padding:80px 0;
+  color:var(--muted);
+  font-style:italic;
+  font-size:0.95rem;
+}
+
+.error-state{
+  text-align:center;
+  padding:60px 0;
+  color:var(--critical);
+}
+
+.error-state .error-title{
+  font-size:1.1rem;
+  margin-bottom:8px;
+}
+
+.error-state .error-detail{
+  font-size:0.85rem;
+  color:var(--muted);
+  font-style:italic;
+}
+
+/* ── Empty Placeholder ────────────────────────────────────────────── */
+.empty-note{
+  font-style:italic;
+  color:var(--muted);
+  font-size:0.9rem;
+}
+
+/* ── Refresh Pulse ────────────────────────────────────────────────── */
+.refresh-indicator{
+  display:inline-block;
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:var(--ok);
+  opacity:0;
+  transition:opacity 0.3s;
+  margin-left:8px;
+  vertical-align:middle;
+}
+
+.refresh-indicator.active{
+  opacity:1;
+  animation:pulse 0.6s ease-out;
+}
+
+@keyframes pulse{
+  0%{transform:scale(1);opacity:1}
+  100%{transform:scale(2.5);opacity:0}
+}
+
+/* ── Print Styles ─────────────────────────────────────────────────── */
+@media print{
+  html{font-size:11pt}
+  body{background:#fff}
+  .footer-controls{display:none !important}
+  .dashboard-nav{display:none !important}
+  .action-callout{display:none !important}
+  .action-btn{display:none !important}
+  .confirm-modal{display:none !important}
+  #sec-actions{display:none !important}
+  details.lane-dispatch{break-inside:avoid}
+  details.lane-dispatch[open] .lane-body{display:block}
+  .briefing-section{break-inside:avoid}
+  .alert-block,.warning-block{break-inside:avoid}
+  .page{max-width:100%;padding:0}
+  .masthead{padding:20px 0 14px}
+}
+
+/* ── Action Callouts ──────────────────────────────────────────────── */
+.action-callout{
+  background:#fef3e2;
+  border-left:3px solid #d97706;
+  padding:10px 14px;
+  margin:10px 0;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.82rem;
+}
+
+.action-label{
+  display:block;
+  font-size:0.65rem;
+  font-weight:700;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:#d97706;
+  margin-bottom:4px;
+}
+
+.action-btn{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.78rem;
+  background:none;
+  border:1px solid #d4c5a9;
+  border-radius:4px;
+  padding:3px 10px;
+  cursor:pointer;
+  color:#7c3aed;
+  transition:background 0.15s;
+}
+
+.action-btn:hover{background:#f5f0e8}
+.action-btn.danger{color:#dc2626;border-color:#fca5a5}
+.action-btn.danger:hover{background:#fef2f2}
+
+/* ── Operator Actions Section ────────────────────────────────────── */
+.actions-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+  gap:10px;
+  margin:12px 0;
+}
+
+.action-card{
+  border:1px solid var(--rule-light);
+  border-radius:4px;
+  padding:12px 14px;
+  background:var(--bg-section);
+  transition:border-color 0.15s;
+}
+
+.action-card:hover{border-color:var(--divider)}
+
+.action-card .action-card-label{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:0.65rem;
+  font-weight:700;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:var(--muted);
+  margin-bottom:4px;
+}
+
+.action-card .action-card-desc{
+  font-size:0.82rem;
+  color:var(--text);
+  margin-bottom:8px;
+  line-height:1.5;
+}
+
+.audit-trail{
+  margin-top:16px;
+}
+
+.audit-entry{
+  padding:8px 0;
+  border-bottom:1px solid var(--rule-light);
+  font-size:0.82rem;
+  line-height:1.6;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+}
+
+.audit-entry:last-child{border-bottom:none}
+
+.audit-action-id{
+  font-weight:600;
+  color:var(--link);
+}
+
+.audit-time{
+  color:var(--muted);
+  font-size:0.75rem;
+  font-style:italic;
+}
+
+.audit-result-ok{color:var(--ok);font-weight:600}
+.audit-result-fail{color:var(--critical);font-weight:600}
+
+/* ── Confirmation Modal ──────────────────────────────────────────── */
+.confirm-modal{
+  position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;
+  display:flex;align-items:center;justify-content:center;
+}
+
+.confirm-modal-inner{
+  background:#fefcf7;
+  border:1px solid #d4c5a9;
+  border-radius:8px;
+  padding:24px;
+  max-width:500px;
+  width:90%;
+  box-shadow:0 8px 24px rgba(0,0,0,0.15);
+}
+
+.confirm-title{
+  font-family:Georgia,serif;
+  font-size:1.1rem;
+  margin:0 0 12px;
+}
+
+.confirm-buttons{
+  display:flex;
+  gap:8px;
+  margin-top:16px;
+}
+
+/* ── Responsive: single column mobile ─────────────────────────────── */
+@media(max-width:640px){
+  html{font-size:16px}
+  .page{padding:0 16px}
+  .masthead{padding:24px 0 16px}
+  .masthead-title{font-size:1.5rem;letter-spacing:0.06em}
+  .masthead-meta{flex-direction:column;gap:4px}
+  .section-title{font-size:1.1rem}
+  details.lane-dispatch summary{padding:10px 12px}
+  details.lane-dispatch .lane-body{padding:0 12px 12px}
+  .briefing-section{padding:20px 0 18px}
+  .actions-grid{grid-template-columns:1fr}
+  .confirm-modal-inner{width:95%;padding:16px}
+}
+</style>
+</head>
+<body>
+
+<div class="page" id="app">
+
+  <!-- Masthead -->
+  <header class="masthead" id="masthead">
+    <h1 class="masthead-title">MERIDIAN</h1>
+    <div class="masthead-subtitle">Swarm Intelligence Briefing</div>
+    <div class="masthead-meta">
+      <span id="meta-timestamp">Loading&hellip;</span>
+      <span id="meta-branch"></span>
+      <span id="meta-refresh-indicator"><span class="refresh-indicator" id="refresh-dot"></span></span>
+    </div>
+  </header>
+
+  <!-- Loading State -->
+  <div class="loading-state" id="loading-state">
+    <p>Establishing connection to the swarm intelligence network&hellip;</p>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-state" id="error-state" style="display:none">
+    <div class="error-title">Connection Interrupted</div>
+    <div class="error-detail" id="error-detail">Unable to reach the swarm API.</div>
+  </div>
+
+  <!-- Main Content (hidden until loaded) -->
+  <main id="main-content" style="display:none">
+
+    <!-- I. Executive Summary -->
+    <section class="executive-summary" id="sec-executive">
+      <div class="lede" id="executive-summary-text"></div>
+    </section>
+
+    <!-- II. Critical Alerts -->
+    <section class="briefing-section" id="sec-alerts" style="display:none">
+      <div class="section-header">
+        <span class="section-number">II</span>
+        <h2 class="section-title">Critical Alerts</h2>
+      </div>
+      <div id="alerts-content"></div>
+    </section>
+
+    <!-- III. Fleet Status -->
+    <section class="briefing-section" id="sec-fleet">
+      <div class="section-header">
+        <span class="section-number">III</span>
+        <h2 class="section-title">Fleet Status</h2>
+      </div>
+      <div id="fleet-content"></div>
+    </section>
+
+    <!-- IV. Lane Dispatches -->
+    <section class="briefing-section" id="sec-lanes">
+      <div class="section-header">
+        <span class="section-number">IV</span>
+        <h2 class="section-title">Lane Dispatches</h2>
+      </div>
+      <div id="lanes-content"></div>
+    </section>
+
+    <!-- V. Performance Digest -->
+    <section class="briefing-section" id="sec-performance">
+      <div class="section-header">
+        <span class="section-number">V</span>
+        <h2 class="section-title">Performance Digest</h2>
+      </div>
+      <div id="performance-content"></div>
+    </section>
+
+    <!-- VI. Git Activity -->
+    <section class="briefing-section" id="sec-git">
+      <div class="section-header">
+        <span class="section-number">VI</span>
+        <h2 class="section-title">Git Activity</h2>
+      </div>
+      <div id="git-content"></div>
+    </section>
+
+    <!-- VII. Policy & Governance -->
+    <section class="briefing-section" id="sec-governance">
+      <div class="section-header">
+        <span class="section-number">VII</span>
+        <h2 class="section-title">Policy &amp; Governance</h2>
+      </div>
+      <div id="governance-content"></div>
+    </section>
+
+    <!-- VIII. Connectivity Report -->
+    <section class="briefing-section" id="sec-connectivity">
+      <div class="section-header">
+        <span class="section-number">VIII</span>
+        <h2 class="section-title">Connectivity Report</h2>
+      </div>
+      <div id="connectivity-content"></div>
+    </section>
+
+    <!-- IX. Operator Actions -->
+    <section class="briefing-section" id="sec-actions">
+      <div class="section-header">
+        <span class="section-number">IX</span>
+        <h2 class="section-title">Operator Actions</h2>
+      </div>
+      <div id="actions-content">
+        <p class="muted-prose">Loading available actions&hellip;</p>
+      </div>
+      <div class="audit-trail" id="audit-trail">
+        <p class="muted-prose" style="margin-top:16px">Loading audit trail&hellip;</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Confirmation Modal -->
+  <div id="confirmModal" class="confirm-modal" style="display:none">
+    <div class="confirm-modal-inner">
+      <h3 class="confirm-title">Confirm Action</h3>
+      <div id="confirmBody"></div>
+      <div class="confirm-buttons">
+        <button class="action-btn" onclick="confirmModalAction()">Confirm &amp; Execute</button>
+        <button class="action-btn" onclick="closeConfirmModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="briefing-footer">
+    <div class="footer-controls" id="footer-controls">
+      <button class="btn-refresh" id="btn-refresh" title="Refresh now">Refresh Briefing</button>
+      <label class="auto-refresh-toggle sans">
+        <input type="checkbox" id="auto-refresh-toggle" checked>
+        Auto-refresh (30s)
+      </label>
+    </div>
+    <div class="dashboard-nav">
+      <a href="/nexus">Nexus</a>
+      <a href="/meridian">Meridian</a>
+      <a href="/prism">Prism</a>
+      <a href="/signal">Signal</a>
+    </div>
+    <div class="footer-colophon" id="footer-colophon">
+      MERIDIAN Swarm Intelligence Briefing
+    </div>
+  </footer>
+
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   MERIDIAN — Swarm Intelligence Briefing
+   Text-first editorial dashboard. Zero external dependencies.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+(function() {
+'use strict';
+
+/* ── Utility: HTML Escaping ───────────────────────────────────────── */
+const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ESC_MAP[c]);
+}
+
+/* ── Utility: Number Formatting ───────────────────────────────────── */
+function fmtNum(n) {
+  if (n == null || isNaN(n)) return '0';
+  return Number(n).toLocaleString('en-US');
+}
+
+function fmtCost(n) {
+  if (n == null || isNaN(n)) return '$0.00';
+  return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+function fmtPct(n) {
+  if (n == null || isNaN(n)) return '0%';
+  return Number(n).toFixed(1) + '%';
+}
+
+function fmtDuration(seconds) {
+  if (seconds == null || isNaN(seconds) || seconds < 0) return 'unknown';
+  if (seconds < 60) return Math.round(seconds) + ' seconds';
+  if (seconds < 3600) return Math.round(seconds / 60) + ' minutes';
+  if (seconds < 86400) return (seconds / 3600).toFixed(1) + ' hours';
+  return (seconds / 86400).toFixed(1) + ' days';
+}
+
+function fmtTimestamp(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-US', {
+      weekday:'long', year:'numeric', month:'long', day:'numeric',
+      hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'
+    });
+  } catch(e) { return esc(iso); }
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'});
+  } catch(e) { return esc(iso); }
+}
+
+function pluralize(n, singular, plural) {
+  plural = plural || (singular + 's');
+  return n === 1 ? singular : plural;
+}
+
+/* ── Utility: Status to human-readable ────────────────────────────── */
+function statusLabel(s) {
+  const map = {
+    done:'completed', in_progress:'active', blocked:'blocked',
+    pending:'pending', idle:'idle'
+  };
+  return map[s] || s;
+}
+
+function statusCssClass(s) {
+  if (s === 'blocked') return 'critical-text';
+  if (s === 'done') return 'ok-text';
+  if (s === 'in_progress') return '';
+  if (s === 'pending') return 'warning-text';
+  return '';
+}
+
+/* ── Utility: Owner name formatting ───────────────────────────────── */
+function ownerDisplay(owner) {
+  if (!owner) return 'Unknown';
+  return owner.charAt(0).toUpperCase() + owner.slice(1);
+}
+
+/* ── Natural Language: Executive Summary ──────────────────────────── */
+function generateExecutiveSummary(snapshot) {
+  const s = snapshot.summary || {};
+  const lanes = s.lanes_total || 0;
+  const owners = Object.keys(s.owner_counts || {});
+  const ownerCount = owners.length;
+  const statusCounts = s.status_counts || {};
+  const blocked = statusCounts.blocked || 0;
+  const done = statusCounts.done || 0;
+  const active = statusCounts.in_progress || 0;
+  const pending = statusCounts.pending || 0;
+  const cost = s.total_cost_usd || 0;
+  const responses = s.total_responses || 0;
+  const alerts = s.alerts_count || 0;
+
+  const parts = [];
+
+  // Opening sentence
+  const ownerNames = owners.map(ownerDisplay).join(', ');
+  parts.push(
+    `The swarm is operating <span class="num">${fmtNum(lanes)}</span> ${pluralize(lanes,'lane')}` +
+    ` across <span class="num">${ownerCount}</span> agent ${pluralize(ownerCount,'family','families')}` +
+    (ownerCount > 0 ? ` (${esc(ownerNames)})` : '') + '.'
+  );
+
+  // Status breakdown
+  const statusParts = [];
+  if (done > 0) statusParts.push(`<span class="num">${done}</span> ${pluralize(done,'lane')} completed`);
+  if (active > 0) statusParts.push(`<span class="num">${active}</span> currently active`);
+  if (pending > 0) statusParts.push(`<span class="num">${pending}</span> pending`);
+  if (blocked > 0) statusParts.push(`<span class="num critical-text">${blocked}</span> <span class="critical-text">blocked</span>`);
+  if (statusParts.length > 0) {
+    parts.push(statusParts.join(', ') + '.');
+  }
+
+  // Cost
+  if (cost > 0 || responses > 0) {
+    parts.push(
+      `Total cost stands at <span class="num">${fmtCost(cost)}</span>` +
+      ` across <span class="num">${fmtNum(responses)}</span> ${pluralize(responses,'response')}.`
+    );
+  }
+
+  // Alerts
+  if (alerts > 0) {
+    const highAlerts = (snapshot.alerts || []).filter(a => a.severity === 'high');
+    const medAlerts = (snapshot.alerts || []).filter(a => a.severity === 'medium');
+    let alertStr = `<span class="num ${alerts > 5 ? 'warning-text' : ''}">${alerts}</span> ${pluralize(alerts,'alert')} ${pluralize(alerts,'requires','require')} attention`;
+    if (highAlerts.length > 0) {
+      alertStr += `, with <span class="num critical-text">${highAlerts.length}</span> at critical severity`;
+    }
+    parts.push(alertStr + '.');
+  } else {
+    parts.push('No alerts are pending at this time.');
+  }
+
+  return parts.join(' ');
+}
+
+/* ── Natural Language: Critical Alerts ────────────────────────────── */
+function generateAlertBlocks(alerts) {
+  if (!alerts || alerts.length === 0) return '';
+  const highAlerts = alerts.filter(a => a.severity === 'high');
+  const medAlerts = alerts.filter(a => a.severity === 'medium');
+  let html = '';
+
+  if (highAlerts.length > 0) {
+    for (const alert of highAlerts) {
+      html += `<div class="alert-block">`;
+      html += `<div class="alert-label">${esc(alert.type || 'Alert').replace(/_/g, ' ')}</div>`;
+      html += `<div class="alert-prose">${generateAlertProse(alert)}</div>`;
+      html += `</div>`;
+    }
+  }
+
+  if (medAlerts.length > 0) {
+    // Group medium alerts by type
+    const byType = {};
+    for (const a of medAlerts) {
+      const t = a.type || 'unknown';
+      if (!byType[t]) byType[t] = [];
+      byType[t].push(a);
+    }
+
+    for (const [type, group] of Object.entries(byType)) {
+      html += `<div class="warning-block">`;
+      html += `<div class="alert-label">${esc(type.replace(/_/g, ' '))} (${group.length})</div>`;
+      if (group.length <= 3) {
+        for (const a of group) {
+          html += `<div class="alert-prose">${generateAlertProse(a)}</div>`;
+        }
+      } else {
+        const lanes = group.map(a => esc(a.lane_id || 'unknown'));
+        html += `<div class="alert-prose">${fmtNum(group.length)} lanes affected: ${lanes.join(', ')}.</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  return html;
+}
+
+function generateAlertProse(alert) {
+  const laneId = esc(alert.lane_id || 'unknown');
+  const type = alert.type || '';
+
+  if (type === 'blocked_lane') {
+    return `Lane <strong>${laneId}</strong> is currently blocked and unable to make progress. Immediate investigation is required.`;
+  }
+  if (type === 'stale_heartbeat') {
+    return `Lane <strong>${laneId}</strong> has not reported a heartbeat recently. ${esc(alert.message || '')}`;
+  }
+  if (type === 'deadlock_storm') {
+    return `${esc(alert.message || '')} in lane <strong>${laneId}</strong>. The task is experiencing repeated deadlock recovery attempts.`;
+  }
+  return esc(alert.message || 'No details available.');
+}
+
+/* ── Natural Language: Fleet Status ───────────────────────────────── */
+function generateFleetStatus(snapshot) {
+  const lanes = snapshot.lanes || [];
+  const ownerCounts = snapshot.summary?.owner_counts || {};
+
+  if (Object.keys(ownerCounts).length === 0) {
+    return '<p class="empty-note">No agent families are currently registered in the fleet.</p>';
+  }
+
+  let html = '';
+  for (const [owner, count] of Object.entries(ownerCounts)) {
+    const ownerLanes = lanes.filter(l => l.owner === owner);
+    const done = ownerLanes.filter(l => l.status === 'done').length;
+    const active = ownerLanes.filter(l => l.status === 'in_progress').length;
+    const blocked = ownerLanes.filter(l => l.status === 'blocked').length;
+    const pending = ownerLanes.filter(l => l.status === 'pending').length;
+    const idle = ownerLanes.filter(l => l.status === 'idle').length;
+
+    const totalCost = ownerLanes.reduce((s,l) => s + (l.metrics?.cost_usd_total || 0), 0);
+    const totalResponses = ownerLanes.reduce((s,l) => s + (l.metrics?.responses_total || 0), 0);
+    const totalTokens = ownerLanes.reduce((s,l) => s + (l.metrics?.tokens_total || 0), 0);
+
+    html += `<div class="owner-brief"><p class="prose">`;
+    html += `<span class="owner-name">${esc(ownerDisplay(owner))}</span> commands `;
+    html += `<span class="num">${count}</span> ${pluralize(count,'lane')}: `;
+
+    const statusFragments = [];
+    if (done > 0) statusFragments.push(`<span class="num">${done}</span> completed`);
+    if (active > 0) statusFragments.push(`<span class="num">${active}</span> active`);
+    if (pending > 0) statusFragments.push(`<span class="num">${pending}</span> pending`);
+    if (blocked > 0) statusFragments.push(`<span class="num critical-text">${blocked}</span> <span class="critical-text">blocked</span>`);
+    if (idle > 0) statusFragments.push(`<span class="num">${idle}</span> idle`);
+    html += statusFragments.join(', ');
+
+    html += `. This family has accumulated <span class="num">${fmtCost(totalCost)}</span> in cost`;
+    html += ` across <span class="num">${fmtNum(totalResponses)}</span> ${pluralize(totalResponses,'response')}`;
+    if (totalTokens > 0) {
+      html += ` consuming <span class="num">${fmtNum(totalTokens)}</span> tokens`;
+    }
+    html += '.';
+    html += `</p></div>`;
+  }
+  return html;
+}
+
+/* ── Natural Language: Lane Dispatch ──────────────────────────────── */
+function generateLaneDispatches(lanes) {
+  if (!lanes || lanes.length === 0) {
+    return '<p class="empty-note">No lane dispatches to report.</p>';
+  }
+
+  // Sort: blocked first, then active, pending, idle, done
+  const order = {blocked:0, in_progress:1, pending:2, idle:3, done:4};
+  const sorted = [...lanes].sort((a,b) =>
+    (order[a.status] ?? 5) - (order[b.status] ?? 5)
+  );
+
+  let html = '';
+  html += `<p class="muted-prose" style="margin-bottom:12px">`;
+  html += `${fmtNum(lanes.length)} lanes reported. Select any lane for its full dispatch.`;
+  html += `</p>`;
+
+  for (const lane of sorted) {
+    const id = esc(lane.lane_id);
+    const status = lane.status || 'unknown';
+    const tc = lane.task_counts || {};
+    const totalTasks = (tc.done||0)+(tc.in_progress||0)+(tc.pending||0)+(tc.blocked||0);
+    const hb = lane.heartbeat || {};
+    const metrics = lane.metrics || {};
+
+    // One-liner for summary
+    const oneliner = `${tc.done||0}/${totalTasks} tasks, cycle ${hb.cycle||0}`;
+
+    html += `<details class="lane-dispatch" data-status="${esc(status)}">`;
+    html += `<summary>`;
+    html += `<span class="lane-id">${id}</span>`;
+    html += `<span class="lane-oneliner">${esc(oneliner)}</span>`;
+    html += `<span class="lane-status-tag tag-${esc(status)}">${esc(statusLabel(status))}</span>`;
+    html += `</summary>`;
+    html += `<div class="lane-body">`;
+    html += generateSingleLaneDispatch(lane);
+    html += `</div>`;
+    html += `</details>`;
+  }
+
+  return html;
+}
+
+function generateSingleLaneDispatch(lane) {
+  const id = esc(lane.lane_id);
+  const status = lane.status || 'unknown';
+  const tc = lane.task_counts || {};
+  const totalTasks = (tc.done||0)+(tc.in_progress||0)+(tc.pending||0)+(tc.blocked||0);
+  const hb = lane.heartbeat || {};
+  const metrics = lane.metrics || {};
+  const config = lane.config || {};
+
+  let html = '';
+
+  // Main dispatch prose
+  html += `<p class="prose">`;
+  html += `Lane <strong>${id}</strong> is currently <span class="${statusCssClass(status)}">${statusLabel(status)}</span>. `;
+
+  if (totalTasks > 0) {
+    html += `It has completed <span class="num">${tc.done||0}</span> of <span class="num">${totalTasks}</span> ${pluralize(totalTasks,'task')}`;
+    if (hb.cycle > 0) {
+      html += ` over <span class="num">${fmtNum(hb.cycle)}</span> ${pluralize(hb.cycle,'cycle')}`;
+    }
+    if (metrics.cost_usd_total > 0) {
+      html += ` at a cost of <span class="num">${fmtCost(metrics.cost_usd_total)}</span>`;
+    }
+    html += '. ';
+  }
+
+  if (tc.blocked > 0) {
+    html += `<span class="critical-text"><span class="num">${tc.blocked}</span> ${pluralize(tc.blocked,'task')} ${pluralize(tc.blocked,'is','are')} blocked.</span> `;
+  }
+
+  if (tc.in_progress > 0) {
+    html += `<span class="num">${tc.in_progress}</span> ${pluralize(tc.in_progress,'task')} ${pluralize(tc.in_progress,'is','are')} currently in progress. `;
+  }
+
+  // Heartbeat
+  if (hb.age_sec != null && hb.age_sec >= 0) {
+    html += `Last heartbeat was <span class="num">${fmtDuration(hb.age_sec)}</span> ago`;
+    if (hb.phase) {
+      html += ` in the <em>${esc(hb.phase)}</em> phase`;
+    }
+    html += '. ';
+  }
+
+  // Performance
+  if (metrics.responses_total > 0) {
+    html += `The lane has generated <span class="num">${fmtNum(metrics.responses_total)}</span> ${pluralize(metrics.responses_total,'response')}`;
+    if (metrics.first_time_pass_rate > 0) {
+      html += ` with a first-time pass rate of <span class="num">${fmtPct(metrics.first_time_pass_rate)}</span>`;
+    }
+    html += '. ';
+  }
+
+  // Config note
+  if (config.continuous) {
+    html += 'This is a continuous lane. ';
+  } else if (config.max_cycles > 0) {
+    html += `Configured for up to <span class="num">${config.max_cycles}</span> cycles. `;
+  }
+
+  html += `</p>`;
+
+  // Lane-level action callout for blocked lanes
+  if (status === 'blocked') {
+    html += `<div class="action-callout">`;
+    html += `<span class="action-label">Lane Blocked &mdash; Intervention Available</span>`;
+    html += `<p>Lane <strong>${id}</strong> requires operator attention. `;
+    html += `<button class="action-btn" onclick="doAction('lane.unblock',{lane_id:'${id}'})">Unblock Lane</button>`;
+    html += ` or `;
+    html += `<button class="action-btn" onclick="doAction('lane.restart',{lane_id:'${id}'})">Restart Lane</button>`;
+    html += `</p></div>`;
+  }
+
+  // Task details
+  const tasks = lane.tasks || [];
+  if (tasks.length > 0) {
+    html += `<ul class="task-list">`;
+    for (const task of tasks) {
+      html += `<li class="task-item">`;
+      html += `<span class="task-id">${esc(task.task_id)}</span>`;
+      html += ` &mdash; <span class="${statusCssClass(task.status)}">${esc(statusLabel(task.status))}</span>`;
+      if (task.attempts > 0) {
+        html += ` (${task.attempts} ${pluralize(task.attempts,'attempt')})`;
+      }
+      if (task.deadlock_recoveries > 0) {
+        html += `, <span class="warning-text">${task.deadlock_recoveries} deadlock ${pluralize(task.deadlock_recoveries,'recovery','recoveries')}</span>`;
+      }
+      if (task.last_summary) {
+        html += `<br><span style="color:var(--muted);font-size:0.82rem;font-style:italic">${esc(task.last_summary)}</span>`;
+      }
+      if (task.last_error) {
+        html += `<br><span style="color:var(--critical);font-size:0.82rem">${esc(task.last_error)}</span>`;
+      }
+      // Contextual action callouts for blocked/errored tasks
+      if (task.status === 'blocked' || task.last_error) {
+        const tid = esc(task.task_id);
+        html += `<div class="action-callout">`;
+        html += `<span class="action-label">Intervention Available</span>`;
+        html += `<p>This task has been blocked`;
+        if (task.attempts > 0) {
+          html += ` for ${task.attempts} ${pluralize(task.attempts,'attempt')}`;
+        }
+        html += `. <button class="action-btn" onclick="doAction('task.clear-error',{task_id:'${tid}'})">Clear Error &amp; Retry</button>`;
+        html += ` or `;
+        html += `<button class="action-btn" onclick="doAction('task.update-status',{task_id:'${tid}',new_status:'pending'})">Force Pending</button>`;
+        html += `</p></div>`;
+      }
+      html += `</li>`;
+    }
+    html += `</ul>`;
+  }
+
+  return html;
+}
+
+/* ── Natural Language: Performance Digest ─────────────────────────── */
+function generatePerformanceDigest(snapshot, costSeries) {
+  const metrics = snapshot.metrics?.global || {};
+  const lanes = snapshot.lanes || [];
+  const summary = snapshot.summary || {};
+
+  let html = '';
+
+  // Cost overview
+  const totalCost = summary.total_cost_usd || 0;
+  const totalResponses = summary.total_responses || 0;
+  const totalTokens = summary.total_tokens || 0;
+
+  html += `<p class="prose">`;
+  html += `The swarm has expended <span class="num">${fmtCost(totalCost)}</span> in total compute cost `;
+  html += `across <span class="num">${fmtNum(totalResponses)}</span> ${pluralize(totalResponses,'API response')}. `;
+  if (totalTokens > 0) {
+    html += `Total token consumption stands at <span class="num">${fmtNum(totalTokens)}</span>. `;
+  }
+  if (totalResponses > 0 && totalCost > 0) {
+    const avgCostPerResponse = totalCost / totalResponses;
+    html += `Average cost per response is <span class="num">${fmtCost(avgCostPerResponse)}</span>. `;
+  }
+  html += `</p>`;
+
+  // Pass rates
+  const ftpr = metrics.first_time_pass_rate;
+  const apr = metrics.acceptance_pass_rate;
+  if (ftpr != null || apr != null) {
+    html += `<p class="prose">`;
+    if (ftpr != null) {
+      const ftprClass = ftpr < 50 ? 'critical-text' : ftpr < 70 ? 'warning-text' : 'ok-text';
+      html += `First-time pass rate stands at <span class="num ${ftprClass}">${fmtPct(ftpr)}</span>`;
+      if (ftpr < 60) {
+        html += ', which falls below the 60% target';
+      }
+      html += '. ';
+    }
+    if (apr != null) {
+      html += `Acceptance pass rate is <span class="num">${fmtPct(apr)}</span>. `;
+    }
+    html += `</p>`;
+  }
+
+  // Latency
+  const latencies = lanes
+    .map(l => l.metrics?.latency_sec_avg)
+    .filter(v => v != null && v > 0);
+  if (latencies.length > 0) {
+    const avgLatency = latencies.reduce((a,b) => a+b, 0) / latencies.length;
+    const maxLatency = Math.max(...latencies);
+    html += `<p class="prose">`;
+    html += `Average response latency across the fleet is <span class="num">${avgLatency.toFixed(1)}</span> seconds. `;
+    if (maxLatency > avgLatency * 1.5) {
+      html += `The slowest lane averages <span class="num">${maxLatency.toFixed(1)}</span> seconds. `;
+    }
+    html += `</p>`;
+  }
+
+  // Cost series trends
+  if (costSeries) {
+    const windows = costSeries.windows || {};
+    const byProvider = costSeries.by_provider || {};
+    const windowParts = [];
+    if (windows.last_1h != null) windowParts.push(`<span class="num">${fmtCost(windows.last_1h)}</span> in the last hour`);
+    if (windows.last_24h != null) windowParts.push(`<span class="num">${fmtCost(windows.last_24h)}</span> in the last 24 hours`);
+    if (windows.last_7d != null) windowParts.push(`<span class="num">${fmtCost(windows.last_7d)}</span> over the past week`);
+    if (windowParts.length > 0) {
+      html += `<p class="prose">Cost breakdown by window: ${windowParts.join(', ')}.</p>`;
+    }
+    const providerEntries = Object.entries(byProvider);
+    if (providerEntries.length > 0) {
+      html += `<p class="prose">By provider: `;
+      html += providerEntries.map(([k,v]) => `${esc(k)} at ${fmtCost(v)}`).join(', ');
+      html += '.</p>';
+    }
+  }
+
+  if (html === '') {
+    html = '<p class="empty-note">No performance data is currently available.</p>';
+  }
+
+  return html;
+}
+
+/* ── Natural Language: Git Activity ───────────────────────────────── */
+function generateGitActivity(git) {
+  if (!git || (!git.recent_commits?.length && !git.current_branch)) {
+    return '<p class="empty-note">No git activity data is available at this time.</p>';
+  }
+
+  let html = '';
+
+  // Branch context
+  if (git.current_branch) {
+    html += `<p class="prose">The repository is currently on branch <strong>${esc(git.current_branch)}</strong>`;
+    if (git.branch_count > 0) {
+      html += ` (one of <span class="num">${fmtNum(git.branch_count)}</span> total ${pluralize(git.branch_count,'branch','branches')})`;
+    }
+    html += `.</p>`;
+  }
+
+  // Commits
+  const commits = git.recent_commits || [];
+  if (commits.length > 0) {
+    // Group by author
+    const byAuthor = {};
+    for (const c of commits) {
+      const a = c.author || 'Unknown';
+      if (!byAuthor[a]) byAuthor[a] = [];
+      byAuthor[a].push(c);
+    }
+
+    const authorCount = Object.keys(byAuthor).length;
+    html += `<p class="prose">The most recent <span class="num">${commits.length}</span> ${pluralize(commits.length,'commit')} `;
+    html += `span <span class="num">${authorCount}</span> ${pluralize(authorCount,'author')}.</p>`;
+
+    // Individual commits
+    for (const commit of commits) {
+      html += `<div class="commit-entry">`;
+      html += `<span class="commit-hash">${esc(commit.short_hash)}</span> `;
+      html += `<span class="commit-author">${esc(commit.author)}</span>: `;
+      html += `${esc(commit.message)} `;
+      html += `<span class="commit-time">&mdash; ${esc(commit.relative_time)}</span>`;
+      html += `</div>`;
+    }
+  } else {
+    html += '<p class="empty-note">No recent commits found.</p>';
+  }
+
+  return html;
+}
+
+/* ── Natural Language: Policy & Governance ─────────────────────────── */
+function generateGovernance(report, policies, privileges) {
+  let html = '';
+
+  // Health criteria from report
+  const cycleReport = report?.cycle_report || {};
+  const criteria = cycleReport.criteria || cycleReport.health_criteria || [];
+  const fullReport = report?.full_report || {};
+  const fullCriteria = fullReport.criteria || fullReport.health_criteria || [];
+  const allCriteria = criteria.length > 0 ? criteria : fullCriteria;
+
+  if (allCriteria.length > 0) {
+    const passed = allCriteria.filter(c => c.passed || c.status === 'pass').length;
+    const failed = allCriteria.filter(c => c.passed === false || c.status === 'fail').length;
+    const total = allCriteria.length;
+
+    html += `<p class="prose">`;
+    html += `Of <span class="num">${total}</span> health ${pluralize(total,'criterion','criteria')}, `;
+    html += `<span class="num ok-text">${passed}</span> ${pluralize(passed,'passes','pass')} and `;
+    if (failed > 0) {
+      html += `<span class="num critical-text">${failed}</span> ${pluralize(failed,'fails','fail')}`;
+    } else {
+      html += `none fail`;
+    }
+    html += '.</p>';
+
+    for (const c of allCriteria) {
+      const pass = c.passed || c.status === 'pass';
+      const dotClass = pass ? 'pass' : (c.status === 'warn' ? 'warn' : 'fail');
+      html += `<div class="criterion">`;
+      html += `<span class="criterion-dot ${dotClass}"></span>`;
+      html += `<span>${esc(c.name || c.label || c.id || 'Unnamed criterion')}`;
+      if (c.detail || c.message) {
+        html += ` &mdash; <span style="color:var(--muted);font-style:italic">${esc(c.detail || c.message)}</span>`;
+      }
+      html += `</span>`;
+      html += `</div>`;
+    }
+  } else {
+    // Try to extract from other structure
+    const healthData = fullReport.health || cycleReport.health;
+    if (healthData && typeof healthData === 'object') {
+      html += '<p class="prose">Health criteria summary:</p>';
+      for (const [key, val] of Object.entries(healthData)) {
+        const pass = val === true || val === 'pass' || val?.passed === true;
+        const dotClass = pass ? 'pass' : 'fail';
+        html += `<div class="criterion">`;
+        html += `<span class="criterion-dot ${dotClass}"></span>`;
+        html += `<span>${esc(key.replace(/_/g, ' '))}</span>`;
+        html += `</div>`;
+      }
+    } else {
+      html += '<p class="empty-note">No health criteria data available in the current report.</p>';
+    }
+  }
+
+  // Policies
+  const policyData = policies?.policies || {};
+  const policyKeys = Object.keys(policyData);
+  if (policyKeys.length > 0) {
+    html += `<p class="prose" style="margin-top:16px">`;
+    html += `<span class="num">${policyKeys.length}</span> ${pluralize(policyKeys.length,'policy','policies')} are under active monitoring: `;
+    const policyDescs = [];
+    for (const key of policyKeys) {
+      const p = policyData[key];
+      const compliant = p.compliant || p.healthy || p.status === 'ok' || p.status === 'pass';
+      const label = esc(key.replace(/_/g, ' '));
+      if (compliant) {
+        policyDescs.push(`${label} (<span class="ok-text">compliant</span>)`);
+      } else {
+        policyDescs.push(`${label} (<span class="critical-text">non-compliant</span>)`);
+      }
+    }
+    html += policyDescs.join(', ') + '.</p>';
+  }
+
+  // Privileges
+  if (privileges) {
+    const current = privileges.current || {};
+    const escalations = privileges.recent_escalations || [];
+    if (Object.keys(current).length > 0 || escalations.length > 0) {
+      html += `<p class="prose" style="margin-top:16px">`;
+      const level = current.level || current.privilege_level || 'standard';
+      html += `Current privilege level: <strong>${esc(level)}</strong>. `;
+      if (escalations.length > 0) {
+        html += `There have been <span class="num">${escalations.length}</span> recent privilege ${pluralize(escalations.length,'escalation')}.`;
+      }
+      html += `</p>`;
+    }
+  }
+
+  if (html === '') {
+    html = '<p class="empty-note">No governance data is currently available.</p>';
+  }
+
+  return html;
+}
+
+/* ── Natural Language: Connectivity Report ─────────────────────────── */
+function generateConnectivity(connectivity) {
+  if (!connectivity || Object.keys(connectivity).length === 0) {
+    return '<p class="empty-note">No connectivity data is available at this time.</p>';
+  }
+
+  let html = '';
+
+  // Try to find endpoint data
+  const endpoints = connectivity.endpoints || connectivity.models || connectivity;
+  if (typeof endpoints === 'object' && !Array.isArray(endpoints)) {
+    const entries = Object.entries(endpoints).filter(([k]) =>
+      k !== 'timestamp' && k !== 'checked_at'
+    );
+
+    if (entries.length === 0) {
+      return '<p class="empty-note">No model endpoints registered for monitoring.</p>';
+    }
+
+    const upCount = entries.filter(([,v]) => {
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'object') return v.status === 'up' || v.reachable === true || v.ok === true;
+      return v === 'up';
+    }).length;
+    const downCount = entries.length - upCount;
+
+    html += `<p class="prose">`;
+    html += `Monitoring <span class="num">${entries.length}</span> model ${pluralize(entries.length,'endpoint')}: `;
+    html += `<span class="num ok-text">${upCount}</span> reachable`;
+    if (downCount > 0) {
+      html += `, <span class="num critical-text">${downCount}</span> unreachable`;
+    }
+    html += '.</p>';
+
+    for (const [name, val] of entries) {
+      let isUp = false;
+      let detail = '';
+      if (typeof val === 'boolean') {
+        isUp = val;
+      } else if (typeof val === 'object' && val !== null) {
+        isUp = val.status === 'up' || val.reachable === true || val.ok === true;
+        if (val.latency_ms != null) detail = `${val.latency_ms}ms`;
+        if (val.error) detail = esc(val.error);
+      } else {
+        isUp = val === 'up';
+      }
+
+      html += `<div class="endpoint-line">`;
+      html += `<span class="endpoint-dot ${isUp ? 'up' : 'down'}"></span>`;
+      html += `<span>${esc(name)}`;
+      if (detail) {
+        html += ` <span style="color:var(--muted);font-size:0.8rem;font-style:italic">(${detail})</span>`;
+      }
+      html += `</span>`;
+      html += `</div>`;
+    }
+  } else {
+    html = '<p class="empty-note">Connectivity data format is not recognized.</p>';
+  }
+
+  return html;
+}
+
+/* ── Operator Actions: Execution & UI ─────────────────────────────── */
+let pendingConfirm = null;
+
+async function doAction(actionId, params = {}) {
+  const def = Actions.catalog?.find(a => a.action_id === actionId);
+  if (def && def.requires_confirmation) {
+    // Two-phase: preview first
+    const preview = await Actions.execute(actionId, params, { dryRun: true });
+    if (!preview.ok && !preview.confirm_token) {
+      alert('Action failed: ' + preview.message);
+      return;
+    }
+    pendingConfirm = { actionId, params, token: preview.confirm_token };
+    document.getElementById('confirmBody').innerHTML =
+      '<p>' + esc(preview.message) + '</p>' +
+      '<pre style="font-size:0.75rem;background:#f5f0e8;padding:8px;border-radius:4px;overflow:auto;max-height:200px">' +
+      esc(JSON.stringify(preview.detail, null, 2)) + '</pre>';
+    document.getElementById('confirmModal').style.display = 'flex';
+  } else {
+    // Low risk - execute directly
+    const result = await Actions.execute(actionId, params);
+    if (result.ok) {
+      // Show brief success indicator, refresh data
+      fetchAll().then(render);
+      renderAuditTrail();
+    } else {
+      alert('Action failed: ' + result.message);
+    }
+  }
+}
+
+async function confirmModalAction() {
+  if (!pendingConfirm) return;
+  const result = await Actions.execute(
+    pendingConfirm.actionId, pendingConfirm.params,
+    { confirmToken: pendingConfirm.token });
+  closeConfirmModal();
+  if (result.ok) {
+    fetchAll().then(render);
+    renderAuditTrail();
+  } else {
+    alert('Action failed: ' + result.message);
+  }
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirmModal').style.display = 'none';
+  pendingConfirm = null;
+}
+
+/* ── Operator Actions: Section Rendering ─────────────────────────── */
+function renderOperatorActions() {
+  const el = document.getElementById('actions-content');
+  if (!Actions.catalog || !Array.isArray(Actions.catalog) || Actions.catalog.length === 0) {
+    el.innerHTML = '<p class="empty-note">No operator actions are currently available from the catalog.</p>';
+    return;
+  }
+
+  let html = '';
+  html += '<p class="prose">There ' +
+    (Actions.catalog.length === 1 ? 'is' : 'are') +
+    ' <span class="num">' + Actions.catalog.length + '</span> ' +
+    pluralize(Actions.catalog.length, 'action') +
+    ' available in the operator catalog.</p>';
+
+  // Quick-access buttons for common operations
+  const quickActions = [
+    { id: 'git.heal-locks', label: 'Heal Git Locks', desc: 'Clear stale git lock files across the workspace' },
+    { id: 'runner.ensure', label: 'Ensure Runner', desc: 'Verify and restart the task runner if needed' },
+    { id: 'lane.rebalance', label: 'Rebalance Lanes', desc: 'Redistribute tasks across available lanes' },
+    { id: 'task.clear-all-errors', label: 'Clear All Errors', desc: 'Reset error state on all blocked tasks', danger: true },
+  ];
+
+  const availableQuick = quickActions.filter(qa =>
+    Actions.catalog.some(a => a.action_id === qa.id)
+  );
+
+  if (availableQuick.length > 0) {
+    html += '<div class="actions-grid">';
+    for (const qa of availableQuick) {
+      html += '<div class="action-card">';
+      html += '<div class="action-card-label">' + esc(qa.label) + '</div>';
+      html += '<div class="action-card-desc">' + esc(qa.desc) + '</div>';
+      html += '<button class="action-btn' + (qa.danger ? ' danger' : '') +
+        '" onclick="doAction(\'' + esc(qa.id) + '\')">' + esc(qa.label) + '</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // Full catalog listing
+  html += '<details style="margin-top:12px"><summary style="cursor:pointer;font-size:0.82rem;color:var(--muted);font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;letter-spacing:0.02em">View full action catalog</summary>';
+  html += '<div style="padding:8px 0">';
+  for (const action of Actions.catalog) {
+    const risk = action.risk_level || 'low';
+    const riskClass = risk === 'high' ? 'critical-text' : risk === 'medium' ? 'warning-text' : '';
+    html += '<div style="padding:6px 0;border-bottom:1px solid var(--rule-light);font-size:0.82rem">';
+    html += '<strong class="sans" style="font-size:0.78rem">' + esc(action.action_id) + '</strong>';
+    if (riskClass) {
+      html += ' <span class="' + riskClass + '" style="font-size:0.7rem;text-transform:uppercase">[' + esc(risk) + ']</span>';
+    }
+    if (action.description) {
+      html += ' &mdash; ' + esc(action.description);
+    }
+    html += ' <button class="action-btn' + (risk === 'high' ? ' danger' : '') +
+      '" onclick="doAction(\'' + esc(action.action_id) + '\')">Execute</button>';
+    html += '</div>';
+  }
+  html += '</div></details>';
+
+  el.innerHTML = html;
+}
+
+async function renderAuditTrail() {
+  const el = document.getElementById('audit-trail');
+  try {
+    const r = await fetch('/api/v2/actions/audit');
+    if (!r.ok) {
+      el.innerHTML = '<p class="muted-prose" style="margin-top:16px"><em>Audit trail unavailable.</em></p>';
+      return;
+    }
+    const entries = await r.json();
+    if (!Array.isArray(entries) || entries.length === 0) {
+      el.innerHTML = '<p class="muted-prose" style="margin-top:16px">No actions have been executed recently.</p>';
+      return;
+    }
+
+    const recent = entries.slice(0, 5);
+    let html = '<div style="margin-top:16px">';
+    html += '<div class="section-header" style="margin-bottom:8px">';
+    html += '<span class="section-number">Audit Trail</span>';
+    html += '</div>';
+    for (const entry of recent) {
+      html += '<div class="audit-entry">';
+      html += '<span class="audit-action-id">' + esc(entry.action_id || entry.action) + '</span>';
+      if (entry.timestamp || entry.executed_at) {
+        html += ' <span class="audit-time">' + fmtTime(entry.timestamp || entry.executed_at) + '</span>';
+      }
+      const ok = entry.success !== false && entry.result !== 'error';
+      html += ' &mdash; <span class="' + (ok ? 'audit-result-ok' : 'audit-result-fail') + '">' +
+        (ok ? 'success' : 'failed') + '</span>';
+      if (entry.operator || entry.user) {
+        html += ' by ' + esc(entry.operator || entry.user);
+      }
+      if (entry.message) {
+        html += '<br><span style="color:var(--muted);font-size:0.75rem;font-style:italic">' + esc(entry.message) + '</span>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<p class="muted-prose" style="margin-top:16px"><em>Audit trail unavailable.</em></p>';
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Data Fetching & Rendering
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const API = {
+  snapshot:     '/api/v2/snapshot',
+  report:       '/api/v2/report',
+  costSeries:   '/api/v2/cost-series',
+  privileges:   '/api/v2/privileges',
+  policies:     '/api/v2/policies',
+  taskBacklog:  '/api/v2/task-backlog',
+};
+
+/* ── Actions API Helper ──────────────────────────────────────────── */
+const Actions = {
+  catalog: null,
+  async loadCatalog() {
+    try { const r = await fetch('/api/v2/actions'); if (r.ok) this.catalog = await r.json(); } catch(e) {}
+    return this.catalog;
+  },
+  async execute(actionId, params = {}, { dryRun = false, confirmToken = '' } = {}) {
+    const r = await fetch('/api/v2/actions/' + actionId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ params, dry_run: dryRun, confirm_token: confirmToken }),
+    });
+    return r.json();
+  }
+};
+
+let state = {
+  snapshot: null,
+  report: null,
+  costSeries: null,
+  privileges: null,
+  policies: null,
+  taskBacklog: null,
+  lastRefresh: null,
+  error: null,
+};
+
+let refreshTimer = null;
+const REFRESH_INTERVAL = 30000;
+
+/* ── Fetch all data ───────────────────────────────────────────────── */
+async function fetchAll() {
+  const results = await Promise.allSettled([
+    fetch(API.snapshot).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }),
+    fetch(API.report).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(API.costSeries).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(API.privileges).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(API.policies).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(API.taskBacklog).then(r => r.ok ? r.json() : null).catch(() => null),
+  ]);
+
+  // The snapshot is required; others are optional enrichments
+  if (results[0].status === 'rejected') {
+    throw results[0].reason;
+  }
+
+  state.snapshot = results[0].value;
+  state.report = results[1].status === 'fulfilled' ? results[1].value : null;
+  state.costSeries = results[2].status === 'fulfilled' ? results[2].value : null;
+  state.privileges = results[3].status === 'fulfilled' ? results[3].value : null;
+  state.policies = results[4].status === 'fulfilled' ? results[4].value : null;
+  state.taskBacklog = results[5].status === 'fulfilled' ? results[5].value : null;
+  state.lastRefresh = new Date();
+  state.error = null;
+}
+
+/* ── Render ────────────────────────────────────────────────────────── */
+function render() {
+  const snap = state.snapshot;
+  if (!snap) return;
+
+  const loadingEl = document.getElementById('loading-state');
+  const errorEl = document.getElementById('error-state');
+  const mainEl = document.getElementById('main-content');
+
+  loadingEl.style.display = 'none';
+  errorEl.style.display = 'none';
+  mainEl.style.display = 'block';
+
+  // Masthead
+  document.getElementById('meta-timestamp').textContent = fmtTimestamp(snap.timestamp);
+  const branchEl = document.getElementById('meta-branch');
+  if (snap.git?.current_branch) {
+    branchEl.textContent = snap.git.current_branch;
+    branchEl.className = 'branch';
+  }
+
+  // Pulse the refresh indicator
+  const dot = document.getElementById('refresh-dot');
+  dot.classList.remove('active');
+  void dot.offsetWidth; // trigger reflow
+  dot.classList.add('active');
+
+  // I. Executive Summary
+  document.getElementById('executive-summary-text').innerHTML =
+    generateExecutiveSummary(snap);
+
+  // II. Critical Alerts
+  const alerts = snap.alerts || [];
+  const alertSection = document.getElementById('sec-alerts');
+  const alertContent = document.getElementById('alerts-content');
+  if (alerts.length > 0) {
+    alertSection.style.display = 'block';
+    alertContent.innerHTML = generateAlertBlocks(alerts);
+  } else {
+    alertSection.style.display = 'none';
+  }
+
+  // III. Fleet Status
+  document.getElementById('fleet-content').innerHTML =
+    generateFleetStatus(snap);
+
+  // IV. Lane Dispatches
+  document.getElementById('lanes-content').innerHTML =
+    generateLaneDispatches(snap.lanes || []);
+
+  // V. Performance Digest
+  document.getElementById('performance-content').innerHTML =
+    generatePerformanceDigest(snap, state.costSeries);
+
+  // VI. Git Activity
+  document.getElementById('git-content').innerHTML =
+    generateGitActivity(snap.git);
+
+  // VII. Policy & Governance
+  document.getElementById('governance-content').innerHTML =
+    generateGovernance(state.report, state.policies, state.privileges);
+
+  // VIII. Connectivity Report
+  document.getElementById('connectivity-content').innerHTML =
+    generateConnectivity(snap.connectivity);
+
+  // IX. Operator Actions
+  renderOperatorActions();
+  renderAuditTrail();
+
+  // Footer timestamp
+  const colophon = document.getElementById('footer-colophon');
+  colophon.textContent =
+    'MERIDIAN Swarm Intelligence Briefing \u2014 Last updated ' +
+    (state.lastRefresh ? state.lastRefresh.toLocaleTimeString() : 'never');
+}
+
+function showError(err) {
+  const loadingEl = document.getElementById('loading-state');
+  const errorEl = document.getElementById('error-state');
+  const mainEl = document.getElementById('main-content');
+
+  loadingEl.style.display = 'none';
+  errorEl.style.display = 'block';
+
+  document.getElementById('error-detail').textContent =
+    err?.message || 'Unable to reach the swarm API. Retrying...';
+
+  // Keep main visible if we had previous data
+  if (state.snapshot) {
+    mainEl.style.display = 'block';
+  }
+}
+
+/* ── Refresh Cycle ────────────────────────────────────────────────── */
+async function refresh() {
+  try {
+    await fetchAll();
+    render();
+  } catch(err) {
+    state.error = err;
+    showError(err);
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  refreshTimer = setInterval(refresh, REFRESH_INTERVAL);
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+/* ── Event Bindings ───────────────────────────────────────────────── */
+document.getElementById('btn-refresh').addEventListener('click', () => {
+  refresh();
+});
+
+document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
+  if (e.target.checked) {
+    startAutoRefresh();
+  } else {
+    stopAutoRefresh();
+  }
+});
+
+// Expose action functions to global scope for onclick handlers
+window.doAction = doAction;
+window.confirmModalAction = confirmModalAction;
+window.closeConfirmModal = closeConfirmModal;
+
+/* ── Initialize ───────────────────────────────────────────────────── */
+Actions.loadCatalog().then(() => {
+  return refresh();
+}).then(() => {
+  startAutoRefresh();
+});
+
+})();
+</script>
+</body>
+</html>

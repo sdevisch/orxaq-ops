@@ -1,0 +1,1865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PRISM — Spatial Overview</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   PRISM — Bento Glassmorphism Spatial Overview
+   Zero dependencies. Pure CSS Grid + vanilla JS.
+   ═══════════════════════════════════════════════════════════════════ */
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+@font-face{font-family:'Inter';font-display:swap;src:local('Inter'),local('SF Pro Display'),local('Segoe UI'),local('Helvetica Neue')}
+
+:root{
+  --bg-start:#0a0e17;
+  --bg-end:#111827;
+  --glass:rgba(20,25,35,0.6);
+  --glass-hover:rgba(25,32,48,0.7);
+  --glass-border:rgba(255,255,255,0.08);
+  --glass-border-hover:rgba(255,255,255,0.14);
+  --glass-blur:20px;
+  --radius:16px;
+  --shadow:0 8px 32px rgba(0,0,0,0.2);
+  --shadow-hover:0 16px 48px rgba(0,0,0,0.3);
+  --text:#e2e8f0;
+  --text-secondary:#94a3b8;
+  --muted:#64748b;
+  --accent:#3b82f6;
+  --success:#10b981;
+  --warning:#f59e0b;
+  --critical:#ef4444;
+  --codex-tint:rgba(56,189,248,0.08);
+  --gemini-tint:rgba(251,146,60,0.08);
+  --claude-tint:rgba(168,85,247,0.08);
+  --codex:#38bdf8;
+  --gemini:#fb923c;
+  --claude:#a855f7;
+}
+
+html,body{
+  height:100%;
+  background:linear-gradient(135deg,var(--bg-start) 0%,var(--bg-end) 100%);
+  font-family:'Inter','SF Pro Display','Segoe UI','Helvetica Neue',system-ui,-apple-system,sans-serif;
+  color:var(--text);
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+/* ── Background noise texture ── */
+body::before{
+  content:'';
+  position:fixed;
+  top:0;left:0;right:0;bottom:0;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  background-repeat:repeat;
+  pointer-events:none;
+  z-index:0;
+}
+
+/* ── Ambient glow ── */
+body::after{
+  content:'';
+  position:fixed;
+  top:-50%;left:-50%;
+  width:200%;height:200%;
+  background:radial-gradient(ellipse at 30% 20%,rgba(59,130,246,0.04) 0%,transparent 50%),
+             radial-gradient(ellipse at 70% 80%,rgba(168,85,247,0.03) 0%,transparent 50%);
+  pointer-events:none;
+  z-index:0;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(100,116,139,0.3);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:rgba(100,116,139,0.5)}
+
+/* ── Top Bar ── */
+.top-bar{
+  position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 24px;
+  background:rgba(10,14,23,0.8);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  border-bottom:1px solid rgba(255,255,255,0.04);
+}
+.top-bar-left{display:flex;align-items:center;gap:12px}
+.logo{font-size:13px;font-weight:700;letter-spacing:0.1em;color:var(--accent)}
+.logo span{color:var(--muted);font-weight:400;margin-left:6px;font-size:11px;letter-spacing:0.02em}
+.top-bar-right{display:flex;align-items:center;gap:16px}
+.clock{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;letter-spacing:0.04em}
+.refresh-indicator{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:0;transition:opacity 0.3s}
+.refresh-indicator.active{opacity:1}
+
+/* ── Bento Grid ── */
+.bento-grid{
+  position:relative;z-index:1;
+  display:grid;
+  grid-template-columns:repeat(6,1fr);
+  grid-auto-rows:minmax(160px,auto);
+  gap:16px;
+  padding:20px 24px 40px;
+  max-width:1600px;
+  margin:0 auto;
+}
+
+/* ── Glass Tile ── */
+.tile{
+  background:var(--glass);
+  backdrop-filter:blur(var(--glass-blur));
+  -webkit-backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--glass-border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  padding:20px;
+  cursor:pointer;
+  transition:transform 0.3s ease,box-shadow 0.3s ease,border-color 0.3s ease,background 0.3s ease;
+  position:relative;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+.tile:hover{
+  transform:translateY(-2px);
+  box-shadow:var(--shadow-hover);
+  border-color:var(--glass-border-hover);
+  background:var(--glass-hover);
+}
+.tile::before{
+  content:'';
+  position:absolute;
+  top:0;left:0;right:0;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.06),transparent);
+}
+.tile-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:12px;
+}
+.tile-label{
+  font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);
+}
+.tile-icon{font-size:12px;color:var(--muted)}
+.tile-body{flex:1;display:flex;flex-direction:column;justify-content:center}
+.tile-footer{margin-top:auto;padding-top:8px}
+
+/* ── Grid placements ── */
+.tile-health       {grid-column:span 1;grid-row:span 1}
+.tile-fleet        {grid-column:span 2;grid-row:span 1}
+.tile-cost         {grid-column:span 1;grid-row:span 1}
+.tile-alerts       {grid-column:span 1;grid-row:span 2}
+.tile-timeline     {grid-column:span 2;grid-row:span 1}
+.tile-git          {grid-column:span 1;grid-row:span 1}
+.tile-quality      {grid-column:span 1;grid-row:span 1}
+.tile-connectivity {grid-column:span 1;grid-row:span 1}
+.tile-active-lanes {grid-column:span 2;grid-row:span 1}
+.tile-tokens       {grid-column:span 1;grid-row:span 1}
+.tile-actions      {grid-column:span 2;grid-row:span 1}
+
+/* ── Health Orb ── */
+.health-orb-wrap{
+  display:flex;align-items:center;justify-content:center;flex:1;
+}
+.health-orb{
+  width:90px;height:90px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;flex-direction:column;
+  transition:all 0.6s ease;position:relative;
+}
+.health-orb.green{
+  background:radial-gradient(circle,rgba(16,185,129,0.15) 0%,rgba(16,185,129,0.03) 70%);
+  border:2px solid rgba(16,185,129,0.35);
+  box-shadow:0 0 40px rgba(16,185,129,0.1),inset 0 0 20px rgba(16,185,129,0.05);
+}
+.health-orb.amber{
+  background:radial-gradient(circle,rgba(245,158,11,0.15) 0%,rgba(245,158,11,0.03) 70%);
+  border:2px solid rgba(245,158,11,0.35);
+  box-shadow:0 0 40px rgba(245,158,11,0.1),inset 0 0 20px rgba(245,158,11,0.05);
+}
+.health-orb.red{
+  background:radial-gradient(circle,rgba(239,68,68,0.15) 0%,rgba(239,68,68,0.03) 70%);
+  border:2px solid rgba(239,68,68,0.35);
+  box-shadow:0 0 40px rgba(239,68,68,0.1),inset 0 0 20px rgba(239,68,68,0.05);
+}
+.health-orb.pulse{animation:orbPulse 2s ease-in-out infinite}
+@keyframes orbPulse{
+  0%,100%{transform:scale(1);filter:brightness(1)}
+  50%{transform:scale(1.05);filter:brightness(1.15)}
+}
+.health-orb .orb-count{font-size:28px;font-weight:700;line-height:1}
+.health-orb .orb-sub{font-size:9px;font-weight:500;opacity:0.7;margin-top:2px;text-transform:uppercase;letter-spacing:0.06em}
+.health-orb.green .orb-count{color:var(--success)}
+.health-orb.amber .orb-count{color:var(--warning)}
+.health-orb.red .orb-count{color:var(--critical)}
+.health-orb.green .orb-sub{color:var(--success)}
+.health-orb.amber .orb-sub{color:var(--warning)}
+.health-orb.red .orb-sub{color:var(--critical)}
+
+/* ── Fleet stacked bars ── */
+.fleet-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.fleet-owner{font-size:11px;font-weight:600;width:56px;text-align:right;flex-shrink:0}
+.fleet-bar-wrap{flex:1;height:20px;border-radius:4px;background:rgba(255,255,255,0.03);overflow:hidden;display:flex;position:relative}
+.fleet-bar-seg{height:100%;transition:width 0.6s ease;position:relative;min-width:1px}
+.fleet-counts{font-size:9px;color:var(--muted);width:48px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums}
+
+/* ── Cost ── */
+.cost-big{font-size:32px;font-weight:700;color:var(--text);line-height:1;margin-bottom:8px}
+.cost-big .cost-symbol{font-size:20px;font-weight:400;color:var(--muted)}
+.budget-arc-wrap{position:relative;width:100%;height:36px;margin-bottom:8px}
+.budget-arc-track{width:100%;height:6px;border-radius:3px;background:rgba(255,255,255,0.04);overflow:hidden;position:relative}
+.budget-arc-fill{height:100%;border-radius:3px;transition:width 0.8s ease}
+.budget-label{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:4px}
+.sparkline-wrap{height:28px;display:flex;align-items:flex-end;gap:1px;margin-top:4px}
+.sparkline-bar{flex:1;border-radius:1px 1px 0 0;background:var(--accent);opacity:0.5;transition:height 0.4s ease,opacity 0.2s;min-width:2px}
+.sparkline-bar:hover{opacity:1}
+
+/* ── Alert Stack ── */
+.alert-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+.alert-card{
+  padding:10px 12px;border-radius:10px;
+  background:rgba(255,255,255,0.02);
+  border-left:3px solid;
+  font-size:11px;line-height:1.4;
+  transition:background 0.2s;
+}
+.alert-card:hover{background:rgba(255,255,255,0.04)}
+.alert-card.high{border-color:var(--critical);color:rgba(239,68,68,0.9)}
+.alert-card.medium{border-color:var(--warning);color:rgba(245,158,11,0.9)}
+.alert-card.low{border-color:var(--accent);color:rgba(59,130,246,0.9)}
+.alert-type{font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;opacity:0.7;margin-bottom:3px}
+.alert-lane{font-size:9px;color:var(--muted);margin-top:4px}
+.alert-empty{display:flex;align-items:center;justify-content:center;flex:1;font-size:12px;color:var(--muted);opacity:0.5}
+
+/* ── Timeline ── */
+.timeline-scroll{display:flex;align-items:center;gap:0;overflow-x:auto;flex:1;padding:12px 0;position:relative}
+.timeline-line{position:absolute;top:50%;left:0;right:0;height:1px;background:rgba(255,255,255,0.06);transform:translateY(-50%)}
+.tl-event{
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  min-width:40px;position:relative;z-index:1;
+  cursor:default;
+}
+.tl-dot{
+  width:10px;height:10px;border-radius:50%;
+  border:2px solid;transition:transform 0.2s;
+  flex-shrink:0;
+}
+.tl-event:hover .tl-dot{transform:scale(1.4)}
+.tl-time{font-size:7px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.tl-label{font-size:7px;color:var(--text-secondary);max-width:60px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Git Pulse ── */
+.git-stat{display:flex;gap:12px;margin-bottom:10px}
+.git-stat-item{text-align:center}
+.git-stat-val{font-size:20px;font-weight:700;color:var(--text)}
+.git-stat-label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em}
+.git-commit-latest{
+  font-size:10px;color:var(--text-secondary);
+  padding:8px 10px;border-radius:8px;
+  background:rgba(255,255,255,0.02);
+  line-height:1.4;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.git-commit-hash{color:var(--accent);font-weight:600;margin-right:4px}
+.git-author-dots{display:flex;gap:3px;margin-top:6px}
+.git-author-dot{width:8px;height:8px;border-radius:50%;transition:transform 0.2s}
+.git-author-dot:hover{transform:scale(1.5)}
+
+/* ── Response Quality ── */
+.quality-big{font-size:48px;font-weight:700;line-height:1;margin-bottom:4px;display:flex;align-items:baseline;gap:4px}
+.quality-pct{font-size:18px;font-weight:400;color:var(--muted)}
+.quality-trend{font-size:14px;margin-left:4px}
+.quality-trend.up{color:var(--success)}
+.quality-trend.down{color:var(--critical)}
+.quality-trend.flat{color:var(--muted)}
+.quality-label{font-size:10px;color:var(--muted)}
+
+/* ── Connectivity ── */
+.conn-list{display:flex;flex-direction:column;gap:8px}
+.conn-item{display:flex;align-items:center;gap:8px;font-size:11px}
+.conn-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;transition:box-shadow 0.3s}
+.conn-dot.ok{background:var(--success);box-shadow:0 0 8px rgba(16,185,129,0.3)}
+.conn-dot.fail{background:var(--critical);box-shadow:0 0 8px rgba(239,68,68,0.3)}
+.conn-name{color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conn-latency{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ── Active Lanes ── */
+.active-lanes-grid{display:flex;gap:10px;flex:1;overflow-x:auto}
+.active-lane-card{
+  min-width:180px;max-width:220px;flex:1;
+  padding:12px;border-radius:12px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid rgba(255,255,255,0.04);
+  display:flex;flex-direction:column;gap:6px;
+  transition:border-color 0.2s;
+}
+.active-lane-card:hover{border-color:rgba(255,255,255,0.1)}
+.al-header{display:flex;align-items:center;gap:6px}
+.al-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.al-name{font-size:11px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.al-progress-wrap{height:4px;border-radius:2px;background:rgba(255,255,255,0.04);overflow:hidden}
+.al-progress{height:100%;border-radius:2px;transition:width 0.6s ease}
+.al-meta{display:flex;justify-content:space-between;font-size:9px;color:var(--muted)}
+.al-empty{display:flex;align-items:center;justify-content:center;flex:1;font-size:12px;color:var(--muted);opacity:0.5}
+
+/* ── Token Counter ── */
+.token-big{font-size:28px;font-weight:700;color:var(--text);line-height:1;margin-bottom:4px;font-variant-numeric:tabular-nums}
+.token-rate{font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:4px}
+.token-rate-arrow{font-size:12px}
+
+/* ── Action Chips ── */
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  background: rgba(59,130,246,0.1);
+  border: 1px solid rgba(59,130,246,0.2);
+  border-radius: 6px;
+  color: var(--accent, #3b82f6);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.action-chip:hover {
+  background: rgba(59,130,246,0.2);
+  border-color: rgba(59,130,246,0.3);
+  transform: translateY(-1px);
+}
+.action-chip.danger {
+  background: rgba(239,68,68,0.1);
+  border-color: rgba(239,68,68,0.2);
+  color: var(--critical, #ef4444);
+}
+.action-chip.danger:hover {
+  background: rgba(239,68,68,0.2);
+}
+.action-chip.success {
+  background: rgba(34,197,94,0.1);
+  border-color: rgba(34,197,94,0.2);
+  color: var(--success, #22c55e);
+}
+.audit-entry {
+  font-size: 10px;
+  color: var(--muted, #888);
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+/* ── Confirmation Overlay ── */
+#confirmOverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.confirm-glass {
+  background: rgba(30,30,50,0.9);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 450px;
+  width: 90%;
+  backdrop-filter: blur(20px);
+}
+.confirm-header {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text, #fff);
+}
+.confirm-actions { display: flex; gap: 8px; margin-top: 16px; }
+
+/* ── Skeleton Loading ── */
+.skeleton{position:relative;overflow:hidden}
+.skeleton::after{
+  content:'';position:absolute;top:0;left:-100%;width:100%;height:100%;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.03),transparent);
+  animation:shimmer 1.5s infinite;
+}
+@keyframes shimmer{to{left:100%}}
+.skel-line{height:12px;border-radius:4px;background:rgba(255,255,255,0.04);margin-bottom:8px}
+.skel-circle{width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,0.03);margin:auto}
+.skel-bar{height:20px;border-radius:4px;background:rgba(255,255,255,0.03);margin-bottom:8px}
+
+/* ── Expanded Overlay ── */
+.overlay{
+  position:fixed;top:0;left:0;right:0;bottom:0;
+  z-index:200;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(10,14,23,0);
+  backdrop-filter:blur(0px);
+  -webkit-backdrop-filter:blur(0px);
+  pointer-events:none;
+  opacity:0;
+  transition:background 0.4s ease,backdrop-filter 0.4s ease,-webkit-backdrop-filter 0.4s ease,opacity 0.4s ease;
+}
+.overlay.open{
+  background:rgba(10,14,23,0.6);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  pointer-events:auto;
+  opacity:1;
+}
+.overlay-panel{
+  background:rgba(20,25,35,0.85);
+  backdrop-filter:blur(30px);
+  -webkit-backdrop-filter:blur(30px);
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:20px;
+  box-shadow:0 24px 80px rgba(0,0,0,0.4);
+  width:90%;max-width:700px;max-height:80vh;
+  overflow-y:auto;
+  padding:28px;
+  transform:scale(0.95) translateY(10px);
+  transition:transform 0.4s ease;
+}
+.overlay.open .overlay-panel{transform:scale(1) translateY(0)}
+.overlay-close{
+  position:absolute;top:16px;right:20px;
+  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);
+  color:var(--muted);font-size:14px;
+  width:32px;height:32px;border-radius:8px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background 0.2s,color 0.2s;
+}
+.overlay-close:hover{background:rgba(255,255,255,0.1);color:var(--text)}
+.overlay-title{font-size:16px;font-weight:700;margin-bottom:20px;color:var(--text);padding-right:40px}
+.overlay-section{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.12em;margin:20px 0 10px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.04)}
+.overlay-section:first-of-type{margin-top:0;padding-top:0;border-top:none}
+
+/* Detail grids */
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:12px}
+.detail-card{background:rgba(255,255,255,0.03);border-radius:10px;padding:12px;text-align:center}
+.detail-card-label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px}
+.detail-card-val{font-size:18px;font-weight:700}
+.detail-list{display:flex;flex-direction:column;gap:4px}
+.detail-list-item{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 10px;border-radius:8px;
+  background:rgba(255,255,255,0.02);
+  font-size:11px;
+}
+.detail-list-item:hover{background:rgba(255,255,255,0.04)}
+.health-check{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:11px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.health-check:last-child{border-bottom:none}
+.check-icon{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0}
+.check-icon.pass{background:rgba(16,185,129,0.12);color:var(--success)}
+.check-icon.fail{background:rgba(239,68,68,0.12);color:var(--critical)}
+.check-name{flex:1;color:var(--text-secondary)}
+.check-value{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+
+/* Cost chart */
+.cost-chart{display:flex;align-items:flex-end;gap:2px;height:80px;margin-top:8px}
+.cost-chart-bar{flex:1;border-radius:2px 2px 0 0;background:var(--accent);opacity:0.6;transition:opacity 0.2s;min-width:4px;position:relative}
+.cost-chart-bar:hover{opacity:1}
+.cost-chart-bar .bar-tooltip{
+  display:none;position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);
+  background:rgba(10,14,23,0.95);border:1px solid rgba(255,255,255,0.1);border-radius:6px;
+  padding:4px 8px;font-size:9px;color:var(--text);white-space:nowrap;z-index:10;
+}
+.cost-chart-bar:hover .bar-tooltip{display:block}
+
+/* Fleet detail bar */
+.fleet-detail-bar{display:flex;gap:2px;height:24px;border-radius:4px;overflow:hidden;margin:4px 0}
+.fleet-detail-seg{height:100%;transition:width 0.4s;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:600;color:rgba(255,255,255,0.7);overflow:hidden}
+
+/* Timeline detail */
+.tl-detail-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.03)}
+.tl-detail-dot{width:8px;height:8px;border-radius:50%;margin-top:4px;flex-shrink:0}
+.tl-detail-content{flex:1;font-size:11px}
+.tl-detail-time{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+.tl-detail-lane{font-size:9px;color:var(--muted)}
+.tl-detail-body{color:var(--text-secondary);margin-top:2px}
+
+/* ── Responsive ── */
+@media(max-width:1200px){
+  .bento-grid{grid-template-columns:repeat(4,1fr)}
+  .tile-fleet,.tile-timeline,.tile-active-lanes,.tile-actions{grid-column:span 2}
+}
+@media(max-width:800px){
+  .bento-grid{grid-template-columns:repeat(2,1fr);gap:12px;padding:12px 16px 32px}
+  .tile-fleet,.tile-timeline,.tile-active-lanes,.tile-actions{grid-column:span 2}
+  .tile-alerts{grid-row:span 1}
+  .tile{padding:16px}
+}
+@media(max-width:480px){
+  .bento-grid{grid-template-columns:1fr;gap:10px;padding:10px 12px 28px}
+  .tile-fleet,.tile-timeline,.tile-active-lanes,.tile-actions{grid-column:span 1}
+  .top-bar{padding:10px 16px}
+}
+
+/* ── Number count-up ── */
+.anim-val{transition:none}
+
+/* ── Tooltip ── */
+.tt{
+  position:fixed;z-index:300;
+  background:rgba(10,14,23,0.95);
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:8px;
+  padding:8px 12px;font-size:10px;color:var(--text);
+  pointer-events:none;
+  box-shadow:0 8px 24px rgba(0,0,0,0.3);
+  max-width:260px;
+  opacity:0;transition:opacity 0.15s;
+}
+.tt.visible{opacity:1}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="top-bar">
+  <div class="top-bar-left">
+    <div class="logo">PRISM<span>Spatial Overview</span></div>
+  </div>
+  <div class="top-bar-right">
+    <div class="refresh-indicator" id="refreshDot"></div>
+    <div class="clock" id="clock"></div>
+  </div>
+</div>
+
+<!-- Bento Grid -->
+<div class="bento-grid" id="bentoGrid">
+
+  <!-- 1. Health Orb (1x1) -->
+  <div class="tile tile-health" data-tile="health" id="tileHealth">
+    <div class="tile-header">
+      <span class="tile-label">System Health</span>
+    </div>
+    <div class="tile-body">
+      <div class="health-orb-wrap">
+        <div class="health-orb green" id="healthOrb">
+          <span class="orb-count" id="healthCount">0</span>
+          <span class="orb-sub" id="healthSub">alerts</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Fleet Overview (2x1) -->
+  <div class="tile tile-fleet" data-tile="fleet" id="tileFleet">
+    <div class="tile-header">
+      <span class="tile-label">Fleet Overview</span>
+      <span class="tile-icon" id="fleetTotal"></span>
+    </div>
+    <div class="tile-body" id="fleetBody">
+      <div class="skeleton"><div class="skel-bar"></div><div class="skel-bar"></div><div class="skel-bar"></div></div>
+    </div>
+  </div>
+
+  <!-- 3. Cost Tracker (1x1) -->
+  <div class="tile tile-cost" data-tile="cost" id="tileCost">
+    <div class="tile-header">
+      <span class="tile-label">Cost Tracker</span>
+    </div>
+    <div class="tile-body">
+      <div class="cost-big"><span class="cost-symbol">$</span><span id="costValue">0.00</span></div>
+      <div class="budget-arc-wrap">
+        <div class="budget-arc-track"><div class="budget-arc-fill" id="budgetFill" style="width:0%;background:var(--success)"></div></div>
+        <div class="budget-label"><span id="budgetSpent">$0</span><span id="budgetCap">$100</span></div>
+      </div>
+      <div class="sparkline-wrap" id="costSparkline"></div>
+    </div>
+  </div>
+
+  <!-- 4. Alert Stack (1x2) -->
+  <div class="tile tile-alerts" data-tile="alerts" id="tileAlerts">
+    <div class="tile-header">
+      <span class="tile-label">Alerts</span>
+      <span class="tile-icon" id="alertCount" style="font-weight:700"></span>
+    </div>
+    <div class="alert-list" id="alertList">
+      <div class="alert-empty">No active alerts</div>
+    </div>
+  </div>
+
+  <!-- 5. Timeline (2x1) -->
+  <div class="tile tile-timeline" data-tile="timeline" id="tileTimeline">
+    <div class="tile-header">
+      <span class="tile-label">Timeline</span>
+      <span class="tile-icon" id="timelineCount"></span>
+    </div>
+    <div class="tile-body" style="position:relative;overflow:hidden">
+      <div class="timeline-line"></div>
+      <div class="timeline-scroll" id="timelineScroll"></div>
+    </div>
+  </div>
+
+  <!-- 6. Git Pulse (1x1) -->
+  <div class="tile tile-git" data-tile="git" id="tileGit">
+    <div class="tile-header">
+      <span class="tile-label">Git Pulse</span>
+    </div>
+    <div class="tile-body">
+      <div class="git-stat">
+        <div class="git-stat-item"><div class="git-stat-val" id="gitBranches">0</div><div class="git-stat-label">Branches</div></div>
+        <div class="git-stat-item"><div class="git-stat-val" id="gitCommits">0</div><div class="git-stat-label">Commits</div></div>
+      </div>
+      <div class="git-commit-latest" id="gitLatest">
+        <span class="skeleton"><span class="skel-line" style="width:80%"></span></span>
+      </div>
+      <div class="git-author-dots" id="gitAuthors"></div>
+    </div>
+  </div>
+
+  <!-- 7. Response Quality (1x1) -->
+  <div class="tile tile-quality" data-tile="quality" id="tileQuality">
+    <div class="tile-header">
+      <span class="tile-label">Response Quality</span>
+    </div>
+    <div class="tile-body">
+      <div class="quality-big">
+        <span id="qualityValue" style="color:var(--muted)">--</span>
+        <span class="quality-pct">%</span>
+        <span class="quality-trend flat" id="qualityTrend"></span>
+      </div>
+      <div class="quality-label">First-time pass rate</div>
+    </div>
+  </div>
+
+  <!-- 8. Connectivity (1x1) -->
+  <div class="tile tile-connectivity" data-tile="connectivity" id="tileConnectivity">
+    <div class="tile-header">
+      <span class="tile-label">Connectivity</span>
+    </div>
+    <div class="tile-body">
+      <div class="conn-list" id="connList">
+        <div class="skeleton"><div class="skel-line" style="width:60%"></div><div class="skel-line" style="width:80%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 9. Active Lanes (2x1) -->
+  <div class="tile tile-active-lanes" data-tile="activeLanes" id="tileActiveLanes">
+    <div class="tile-header">
+      <span class="tile-label">Active Lanes</span>
+      <span class="tile-icon" id="activeCount"></span>
+    </div>
+    <div class="tile-body">
+      <div class="active-lanes-grid" id="activeLanesGrid">
+        <div class="al-empty">No active lanes</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 10. Token Counter (1x1) -->
+  <div class="tile tile-tokens" data-tile="tokens" id="tileTokens">
+    <div class="tile-header">
+      <span class="tile-label">Tokens</span>
+    </div>
+    <div class="tile-body">
+      <div class="token-big" id="tokenValue">0</div>
+      <div class="token-rate">
+        <span class="token-rate-arrow" id="tokenRateArrow"></span>
+        <span id="tokenRate">-- tok/min</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 11. Actions (2x1) -->
+  <div class="tile tile-actions" onclick="openExpanded('actions')" style="grid-column: span 2;">
+    <div class="tile-header">
+      <span class="tile-label">ACTIONS</span>
+      <span class="tile-icon">&#9881;</span>
+    </div>
+    <div class="tile-body" id="actionsBody">
+      <!-- Dynamically populated -->
+    </div>
+  </div>
+
+</div>
+
+<!-- Expanded Overlay -->
+<div class="overlay" id="overlay">
+  <div class="overlay-panel" id="overlayPanel" style="position:relative">
+    <button class="overlay-close" id="overlayClose">&times;</button>
+    <div class="overlay-title" id="overlayTitle"></div>
+    <div id="overlayBody"></div>
+  </div>
+</div>
+
+<!-- Tooltip -->
+<div class="tt" id="tooltip"></div>
+
+<!-- Confirmation Overlay -->
+<div id="confirmOverlay" style="display:none">
+  <div class="confirm-glass">
+    <div class="confirm-header">Confirm Action</div>
+    <div id="confirmContent"></div>
+    <div class="confirm-actions">
+      <button class="action-chip" onclick="confirmPendingAction()">Confirm</button>
+      <button class="action-chip" style="color:var(--muted);border-color:rgba(255,255,255,0.1)" onclick="closeConfirm()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   PRISM — Dashboard Logic
+   ═══════════════════════════════════════════════════════════════════ */
+
+// ── State ──
+let DATA = null;
+let COST_DATA = null;
+let REPORT_DATA = null;
+let expandedTile = null;
+let firstLoad = true;
+let previousPassRate = null;
+const POLL_MS = 8000;
+const OWNER_COLORS = {codex:'#38bdf8',gemini:'#fb923c',claude:'#a855f7'};
+const STATUS_COLORS = {done:'#10b981',in_progress:'#3b82f6',blocked:'#ef4444',pending:'#f59e0b',idle:'#64748b'};
+const EVT_COLORS = {
+  task_selected:'#3b82f6',task_done:'#10b981',task_blocked:'#ef4444',
+  routing_decision:'#a855f7',agent_error:'#f59e0b',prompt:'#64748b',
+  conversation_start:'#3b82f6',conversation_end:'#10b981',
+};
+
+// ── Utilities ──
+function esc(s){
+  if(s==null) return '';
+  const d=document.createElement('div');
+  d.textContent=String(s);
+  return d.innerHTML;
+}
+function formatTokens(n){
+  if(n>=1e6) return (n/1e6).toFixed(1)+'M';
+  if(n>=1e3) return (n/1e3).toFixed(0)+'K';
+  return String(n);
+}
+function formatCost(n){return n.toFixed(2)}
+function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
+
+// ── Animate number count-up ──
+function animateValue(el,start,end,duration,formatter){
+  if(!el) return;
+  const startTime=performance.now();
+  const delta=end-start;
+  function tick(now){
+    const elapsed=now-startTime;
+    const progress=clamp(elapsed/duration,0,1);
+    const eased=1-Math.pow(1-progress,3); // ease-out cubic
+    const current=start+delta*eased;
+    el.textContent=formatter?formatter(current):Math.round(current).toString();
+    if(progress<1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+// ── Actions API ──
+const Actions = {
+  catalog: null,
+  async loadCatalog() {
+    try { const r = await fetch('/api/v2/actions'); if (r.ok) this.catalog = await r.json(); } catch(e) {}
+    return this.catalog;
+  },
+  async execute(actionId, params = {}, { dryRun = false, confirmToken = '' } = {}) {
+    const r = await fetch('/api/v2/actions/' + actionId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ params, dry_run: dryRun, confirm_token: confirmToken }),
+    });
+    return r.json();
+  }
+};
+
+let pendingAction = null;
+
+async function doAction(actionId, params = {}, evt) {
+  if (evt) evt.stopPropagation();
+  const def = Actions.catalog?.find(a => a.action_id === actionId);
+  if (def && def.requires_confirmation) {
+    const preview = await Actions.execute(actionId, params, { dryRun: true });
+    if (!preview.ok && !preview.confirm_token) {
+      showToast('Action failed: ' + preview.message, 'error');
+      return;
+    }
+    pendingAction = { actionId, params, token: preview.confirm_token };
+    document.getElementById('confirmContent').innerHTML =
+      '<p style="font-size:12px;margin:0 0 8px">' + esc(preview.message) + '</p>' +
+      '<pre style="font-size:10px;color:var(--muted);background:rgba(0,0,0,0.3);padding:8px;border-radius:6px;overflow:auto;max-height:150px">' +
+      esc(JSON.stringify(preview.detail, null, 2)) + '</pre>';
+    document.getElementById('confirmOverlay').style.display = 'flex';
+  } else {
+    const result = await Actions.execute(actionId, params);
+    showToast(result.ok ? result.message : ('Failed: ' + result.message), result.ok ? 'success' : 'error');
+    if (result.ok) setTimeout(refreshData, 800);
+  }
+}
+
+async function confirmPendingAction() {
+  if (!pendingAction) return;
+  const result = await Actions.execute(
+    pendingAction.actionId, pendingAction.params,
+    { confirmToken: pendingAction.token });
+  closeConfirm();
+  showToast(result.ok ? result.message : ('Failed: ' + result.message), result.ok ? 'success' : 'error');
+  if (result.ok) setTimeout(refreshData, 800);
+}
+
+function closeConfirm() {
+  document.getElementById('confirmOverlay').style.display = 'none';
+  pendingAction = null;
+}
+
+function showToast(msg, type = 'info') {
+  let toast = document.getElementById('actionToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'actionToast';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;padding:10px 18px;border-radius:8px;font-size:12px;font-weight:600;z-index:3000;transition:opacity 0.3s;backdrop-filter:blur(12px);';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.background = type === 'success' ? 'rgba(34,197,94,0.2)' : type === 'error' ? 'rgba(239,68,68,0.2)' : 'rgba(59,130,246,0.2)';
+  toast.style.border = '1px solid ' + (type === 'success' ? 'rgba(34,197,94,0.3)' : type === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(59,130,246,0.3)');
+  toast.style.color = type === 'success' ? '#22c55e' : type === 'error' ? '#ef4444' : '#3b82f6';
+  toast.style.opacity = '1';
+  setTimeout(() => { toast.style.opacity = '0'; }, 3000);
+}
+
+// ── Clock ──
+function updateClock(){
+  const el=document.getElementById('clock');
+  if(el) el.textContent=new Date().toISOString().slice(11,19)+'Z';
+}
+setInterval(updateClock,1000);
+updateClock();
+
+// ── Data Fetching ──
+async function fetchJSON(url){
+  try{
+    const r=await fetch(url);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){return null;}
+}
+
+async function refreshData(){
+  const dot=document.getElementById('refreshDot');
+  dot.classList.add('active');
+
+  const [snapshot,costSeries,report]=await Promise.all([
+    fetchJSON('/api/v2/snapshot'),
+    fetchJSON('/api/v2/cost-series'),
+    fetchJSON('/api/v2/report'),
+  ]);
+
+  if(snapshot) DATA=snapshot;
+  if(costSeries) COST_DATA=costSeries;
+  if(report) REPORT_DATA=report;
+
+  if(DATA) render();
+  if(expandedTile) renderExpanded(expandedTile);
+
+  setTimeout(()=>dot.classList.remove('active'),500);
+  firstLoad=false;
+}
+
+// ── Main Render ──
+function render(){
+  if(!DATA) return;
+  renderHealth();
+  renderFleet();
+  renderCost();
+  renderAlerts();
+  renderTimeline();
+  renderGit();
+  renderQuality();
+  renderConnectivity();
+  renderActiveLanes();
+  renderTokens();
+  renderActionsTile();
+}
+
+// ── 1. Health Orb ──
+function renderHealth(){
+  const alerts=DATA.alerts||[];
+  const hasCrit=alerts.some(a=>a.severity==='high');
+  const orb=document.getElementById('healthOrb');
+  const count=document.getElementById('healthCount');
+  const sub=document.getElementById('healthSub');
+
+  if(alerts.length===0){
+    orb.className='health-orb green';
+    count.textContent='\u2713';
+    sub.textContent='healthy';
+  }else if(hasCrit){
+    orb.className='health-orb red pulse';
+    if(firstLoad) animateValue(count,0,alerts.length,600);
+    else count.textContent=alerts.length;
+    sub.textContent=alerts.length===1?'alert':'alerts';
+  }else{
+    orb.className='health-orb amber pulse';
+    if(firstLoad) animateValue(count,0,alerts.length,600);
+    else count.textContent=alerts.length;
+    sub.textContent=alerts.length===1?'alert':'alerts';
+  }
+}
+
+// ── 2. Fleet Overview ──
+function renderFleet(){
+  const lanes=DATA.lanes||[];
+  const grouped={};
+  lanes.forEach(l=>{
+    const o=l.owner||'unknown';
+    if(!grouped[o]) grouped[o]={done:0,in_progress:0,pending:0,blocked:0,idle:0,total:0};
+    const g=grouped[o];
+    g.total++;
+    const st=l.status||'idle';
+    if(g[st]!==undefined) g[st]++;
+  });
+
+  document.getElementById('fleetTotal').textContent=lanes.length+' lanes';
+
+  const body=document.getElementById('fleetBody');
+  let html='';
+  Object.entries(grouped).sort().forEach(([owner,counts])=>{
+    const color=OWNER_COLORS[owner]||'#64748b';
+    const total=counts.total||1;
+    const segments=[
+      {status:'done',count:counts.done},
+      {status:'in_progress',count:counts.in_progress},
+      {status:'pending',count:counts.pending},
+      {status:'blocked',count:counts.blocked},
+      {status:'idle',count:counts.idle},
+    ].filter(s=>s.count>0);
+
+    html+=`<div class="fleet-row">
+      <div class="fleet-owner" style="color:${color}">${esc(owner)}</div>
+      <div class="fleet-bar-wrap">
+        ${segments.map(s=>{
+          const w=(s.count/total*100).toFixed(1);
+          const c=STATUS_COLORS[s.status]||'#64748b';
+          return `<div class="fleet-bar-seg" style="width:${w}%;background:${c}" title="${s.count} ${s.status}"></div>`;
+        }).join('')}
+      </div>
+      <div class="fleet-counts">${counts.done}/${total}</div>
+    </div>`;
+  });
+  body.innerHTML=html;
+}
+
+// ── 3. Cost Tracker ──
+function renderCost(){
+  const s=DATA.summary||{};
+  const cost=s.total_cost_usd||0;
+  const health=DATA.health?.health||{};
+  const cap=health.budget_daily_cap||100;
+  const pct=clamp(cost/cap,0,1);
+
+  const costEl=document.getElementById('costValue');
+  if(firstLoad) animateValue(costEl,0,cost,800,v=>formatCost(v));
+  else costEl.textContent=formatCost(cost);
+
+  const fill=document.getElementById('budgetFill');
+  fill.style.width=(pct*100).toFixed(1)+'%';
+  fill.style.background=pct>0.8?'var(--critical)':pct>0.5?'var(--warning)':'var(--success)';
+
+  document.getElementById('budgetSpent').textContent='$'+formatCost(cost);
+  document.getElementById('budgetCap').textContent='$'+cap;
+
+  // Sparkline from cost series
+  const wrap=document.getElementById('costSparkline');
+  if(COST_DATA&&COST_DATA.hourly_series&&COST_DATA.hourly_series.length>0){
+    const series=COST_DATA.hourly_series;
+    const maxVal=Math.max(...series.map(d=>d.cost||d.value||0),0.01);
+    wrap.innerHTML=series.map(d=>{
+      const v=d.cost||d.value||0;
+      const h=Math.max(2,(v/maxVal)*28);
+      return `<div class="sparkline-bar" style="height:${h}px" title="$${v.toFixed(4)}"></div>`;
+    }).join('');
+  }else{
+    wrap.innerHTML='';
+  }
+}
+
+// ── 4. Alert Stack ──
+function renderAlerts(){
+  const alerts=DATA.alerts||[];
+  document.getElementById('alertCount').textContent=alerts.length||'';
+  document.getElementById('alertCount').style.color=alerts.length>0?'var(--critical)':'var(--muted)';
+
+  const list=document.getElementById('alertList');
+  if(alerts.length===0){
+    list.innerHTML='<div class="alert-empty">No active alerts</div>';
+    return;
+  }
+  list.innerHTML=alerts.map(a=>`
+    <div class="alert-card ${esc(a.severity||'medium')}">
+      <div class="alert-type">${esc(a.type||'')}</div>
+      <div>${esc(a.message||'')}</div>
+      ${a.lane_id?`<div class="alert-lane">${esc(a.lane_id)}</div>`:''}
+    </div>
+  `).join('');
+}
+
+// ── 5. Timeline ──
+function renderTimeline(){
+  const events=(DATA.events||[]).slice(0,20);
+  document.getElementById('timelineCount').textContent=events.length?events.length+' events':'';
+
+  const scroll=document.getElementById('timelineScroll');
+  if(events.length===0){
+    scroll.innerHTML='<div style="text-align:center;font-size:11px;color:var(--muted);width:100%">No events</div>';
+    return;
+  }
+  scroll.innerHTML=events.map(evt=>{
+    const type=evt.type||evt.event_type||'';
+    const color=EVT_COLORS[type]||'#64748b';
+    const ts=evt.timestamp?evt.timestamp.slice(11,19):'';
+    const body=(evt.message||evt.summary||evt.body||type).slice(0,30);
+    return `<div class="tl-event" title="${esc(String(evt.message||evt.summary||evt.body||type).slice(0,100))}">
+      <div class="tl-time">${esc(ts)}</div>
+      <div class="tl-dot" style="border-color:${color};background:${color}30"></div>
+      <div class="tl-label">${esc(body)}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── 6. Git Pulse ──
+function renderGit(){
+  const git=DATA.git||{};
+  const commits=git.recent_commits||[];
+  const branchEl=document.getElementById('gitBranches');
+  const commitEl=document.getElementById('gitCommits');
+
+  if(firstLoad){
+    animateValue(branchEl,0,git.branch_count||0,600);
+    animateValue(commitEl,0,commits.length,600);
+  }else{
+    branchEl.textContent=git.branch_count||0;
+    commitEl.textContent=commits.length;
+  }
+
+  const latest=document.getElementById('gitLatest');
+  if(commits.length>0){
+    const c=commits[0];
+    latest.innerHTML=`<span class="git-commit-hash">${esc((c.short_hash||c.hash||'').slice(0,7))}</span>${esc((c.message||'').slice(0,50))}`;
+  }else{
+    latest.innerHTML='<span style="color:var(--muted)">No recent commits</span>';
+  }
+
+  // Author dots
+  const authorMap={};
+  commits.forEach(c=>{if(c.author) authorMap[c.author]=(authorMap[c.author]||0)+1;});
+  const dots=document.getElementById('gitAuthors');
+  dots.innerHTML=Object.entries(authorMap).map(([a,n])=>{
+    const color=OWNER_COLORS[a]||'#64748b';
+    return `<div class="git-author-dot" style="background:${color};box-shadow:0 0 6px ${color}40" title="${esc(a)} (${n})"></div>`;
+  }).join('');
+}
+
+// ── 7. Response Quality ──
+function renderQuality(){
+  const lanes=DATA.lanes||[];
+  let totalPass=0,totalResp=0;
+  lanes.forEach(l=>{
+    const m=l.metrics||{};
+    const r=m.responses_total||0;
+    const p=m.first_time_pass_rate||0;
+    totalPass+=p*r;
+    totalResp+=r;
+  });
+  const rate=totalResp>0?(totalPass/totalResp):0;
+  const pct=Math.round(rate*100);
+  const valEl=document.getElementById('qualityValue');
+
+  if(firstLoad){
+    animateValue(valEl,0,pct,800);
+  }else{
+    valEl.textContent=pct;
+  }
+
+  // Color
+  if(pct>=60) valEl.style.color='var(--success)';
+  else if(pct>=40) valEl.style.color='var(--warning)';
+  else valEl.style.color='var(--critical)';
+
+  // Trend
+  const trend=document.getElementById('qualityTrend');
+  if(previousPassRate!==null){
+    if(pct>previousPassRate){trend.textContent='\u2191';trend.className='quality-trend up';}
+    else if(pct<previousPassRate){trend.textContent='\u2193';trend.className='quality-trend down';}
+    else{trend.textContent='\u2192';trend.className='quality-trend flat';}
+  }
+  previousPassRate=pct;
+}
+
+// ── 8. Connectivity ──
+function renderConnectivity(){
+  const conn=DATA.connectivity||{};
+  const list=document.getElementById('connList');
+  const endpoints=conn.endpoints||[];
+  if(!Array.isArray(endpoints)||endpoints.length===0){
+    list.innerHTML='<div style="font-size:11px;color:var(--muted);opacity:0.5">No endpoint data</div>';
+    return;
+  }
+  list.innerHTML=endpoints.slice(0,5).map(ep=>{
+    const ok=ep.ok||ep.status==='ok';
+    const lat=ep.latency!=null?(ep.latency+'ms'):'';
+    return `<div class="conn-item">
+      <div class="conn-dot ${ok?'ok':'fail'}"></div>
+      <div class="conn-name">${esc(ep.id||ep.name||'')}</div>
+      <div class="conn-latency">${esc(lat)}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── 9. Active Lanes ──
+function renderActiveLanes(){
+  const lanes=(DATA.lanes||[]).filter(l=>l.status==='in_progress');
+  document.getElementById('activeCount').textContent=lanes.length?lanes.length+' active':'';
+
+  const grid=document.getElementById('activeLanesGrid');
+  if(lanes.length===0){
+    grid.innerHTML='<div class="al-empty">No active lanes</div>';
+    return;
+  }
+  grid.innerHTML=lanes.map(lane=>{
+    const tc=lane.task_counts||{};
+    const total=(tc.done||0)+(tc.in_progress||0)+(tc.pending||0)+(tc.blocked||0);
+    const done=tc.done||0;
+    const pct=total>0?(done/total*100):0;
+    const ownerColor=OWNER_COLORS[lane.owner]||'#64748b';
+    const hb=lane.heartbeat||{};
+    const hbAge=hb.age_sec!=null&&hb.age_sec>=0?hb.age_sec+'s':'--';
+    return `<div class="active-lane-card">
+      <div class="al-header">
+        <div class="al-dot" style="background:${ownerColor};box-shadow:0 0 6px ${ownerColor}40"></div>
+        <div class="al-name">${esc(lane.lane_id)}</div>
+      </div>
+      <div class="al-progress-wrap"><div class="al-progress" style="width:${pct.toFixed(1)}%;background:${ownerColor}"></div></div>
+      <div class="al-meta"><span>${done}/${total} tasks</span><span>${esc(hbAge)} ago</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ── 10. Token Counter ──
+function renderTokens(){
+  const s=DATA.summary||{};
+  const tokens=s.total_tokens||0;
+  const el=document.getElementById('tokenValue');
+
+  if(firstLoad){
+    animateValue(el,0,tokens,1000,v=>formatTokens(Math.round(v)));
+  }else{
+    el.textContent=formatTokens(tokens);
+  }
+
+  // Estimate rate from metrics
+  const metrics=DATA.metrics?.global||{};
+  const rate=metrics.token_rate_per_minute||0;
+  const rateEl=document.getElementById('tokenRate');
+  const arrowEl=document.getElementById('tokenRateArrow');
+  if(rate>0){
+    rateEl.textContent=Math.round(rate)+' tok/min';
+    arrowEl.textContent='\u2191';
+    arrowEl.style.color='var(--success)';
+  }else{
+    rateEl.textContent='-- tok/min';
+    arrowEl.textContent='';
+  }
+}
+
+// ── 11. Actions Tile ──
+function renderActionsTile() {
+  const body = document.getElementById('actionsBody');
+  if (!body) return;
+  let html = '';
+
+  // Contextual: blocked tasks
+  const blockedLanes = (DATA.lanes || []).filter(l => l.status === 'blocked');
+  for (const lane of blockedLanes.slice(0, 3)) {
+    for (const task of (lane.tasks || []).filter(t => t.status === 'blocked').slice(0, 2)) {
+      html += '<div style="margin-bottom:6px">';
+      html += '<span style="font-size:10px;color:var(--muted)">' + esc(task.task_id) + '</span> ';
+      html += '<button class="action-chip" onclick="doAction(\'task.clear-error\',{task_id:\'' + esc(task.task_id) + '\'},event)">Clear & Retry</button>';
+      html += '</div>';
+    }
+  }
+
+  // Quick actions
+  html += '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">';
+  html += '<button class="action-chip" onclick="doAction(\'git.heal-locks\',{},event)">Heal Git Locks</button>';
+  html += '<button class="action-chip" onclick="doAction(\'runner.ensure\',{},event)">Ensure Runner</button>';
+  html += '<button class="action-chip" onclick="doAction(\'runner.release-lock\',{},event)">Release Lock</button>';
+  html += '<button class="action-chip danger" onclick="doAction(\'runner.stop\',{reason:\'Dashboard operator\'},event)">Stop Runner</button>';
+  html += '</div>';
+
+  body.innerHTML = html || '<span style="font-size:11px;color:var(--muted)">No actions needed</span>';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EXPANDED DETAIL VIEWS
+// ═══════════════════════════════════════════════════════════════════
+
+function openExpanded(tileId){
+  expandedTile=tileId;
+  renderExpanded(tileId);
+  const overlay=document.getElementById('overlay');
+  overlay.classList.add('open');
+}
+
+function closeExpanded(){
+  expandedTile=null;
+  document.getElementById('overlay').classList.remove('open');
+}
+
+function renderExpanded(tileId){
+  if(!DATA) return;
+  const title=document.getElementById('overlayTitle');
+  const body=document.getElementById('overlayBody');
+  switch(tileId){
+    case 'health': renderExpandedHealth(title,body); break;
+    case 'fleet': renderExpandedFleet(title,body); break;
+    case 'cost': renderExpandedCost(title,body); break;
+    case 'alerts': renderExpandedAlerts(title,body); break;
+    case 'timeline': renderExpandedTimeline(title,body); break;
+    case 'git': renderExpandedGit(title,body); break;
+    case 'quality': renderExpandedQuality(title,body); break;
+    case 'connectivity': renderExpandedConnectivity(title,body); break;
+    case 'activeLanes': renderExpandedActiveLanes(title,body); break;
+    case 'tokens': renderExpandedTokens(title,body); break;
+    case 'actions': renderExpandedActions(title,body); break;
+    default: title.textContent='Details'; body.innerHTML='';
+  }
+}
+
+// ── Health Expanded ──
+function renderExpandedHealth(title,body){
+  title.textContent='System Health — Criteria';
+  const report=REPORT_DATA?.cycle_report||REPORT_DATA?.full_report||{};
+  const health=DATA.health?.health||{};
+  const collab=DATA.health?.collaboration||{};
+
+  // Try to find health criteria from report or health data
+  const criteria=report.criteria||report.health_criteria||health.criteria||[];
+  let html='';
+
+  if(Array.isArray(criteria)&&criteria.length>0){
+    html+='<div class="detail-list">';
+    criteria.forEach(c=>{
+      const pass=c.pass||c.status==='pass'||c.ok;
+      html+=`<div class="health-check">
+        <div class="check-icon ${pass?'pass':'fail'}">${pass?'\u2713':'\u2717'}</div>
+        <div class="check-name">${esc(c.name||c.criterion||c.label||'')}</div>
+        <div class="check-value">${esc(c.value||c.detail||'')}</div>
+      </div>`;
+    });
+    html+='</div>';
+  }else{
+    // Fallback: build from health + summary data
+    const alerts=DATA.alerts||[];
+    const s=DATA.summary||{};
+    const sc=s.status_counts||{};
+    const checks=[
+      {name:'Blocked Lanes',pass:(sc.blocked||0)===0,value:(sc.blocked||0)+' blocked'},
+      {name:'Active Lanes',pass:(sc.in_progress||0)>0,value:(sc.in_progress||0)+' active'},
+      {name:'Alert Count',pass:alerts.length===0,value:alerts.length+' alerts'},
+      {name:'High Severity Alerts',pass:!alerts.some(a=>a.severity==='high'),value:alerts.filter(a=>a.severity==='high').length+' high'},
+      {name:'Budget Utilization',pass:true,value:'$'+(s.total_cost_usd||0).toFixed(2)},
+      {name:'Total Lanes',pass:(s.lanes_total||0)>0,value:s.lanes_total||0},
+      {name:'Responses Generated',pass:(s.total_responses||0)>0,value:s.total_responses||0},
+    ];
+
+    // Add connectivity checks
+    const conn=DATA.connectivity||{};
+    const endpoints=conn.endpoints||[];
+    if(Array.isArray(endpoints)){
+      endpoints.forEach(ep=>{
+        const ok=ep.ok||ep.status==='ok';
+        checks.push({name:'Endpoint: '+(ep.id||ep.name||'?'),pass:ok,value:ok?'Connected':'Offline'});
+      });
+    }
+
+    // Add heartbeat checks for active lanes
+    (DATA.lanes||[]).filter(l=>l.status==='in_progress').forEach(l=>{
+      const age=l.heartbeat?.age_sec;
+      const stale=age!=null&&age>300;
+      checks.push({name:'Heartbeat: '+l.lane_id,pass:!stale,value:age!=null?age+'s':'N/A'});
+    });
+
+    html+='<div class="detail-list">';
+    checks.forEach(c=>{
+      html+=`<div class="health-check">
+        <div class="check-icon ${c.pass?'pass':'fail'}">${c.pass?'\u2713':'\u2717'}</div>
+        <div class="check-name">${esc(c.name)}</div>
+        <div class="check-value">${esc(String(c.value))}</div>
+      </div>`;
+    });
+    html+='</div>';
+  }
+
+  // Collaboration health
+  if(collab&&Object.keys(collab).length>0){
+    html+=`<div class="overlay-section">Collaboration Health</div>`;
+    html+='<div class="detail-grid">';
+    Object.entries(collab).forEach(([k,v])=>{
+      if(typeof v==='object') return;
+      html+=`<div class="detail-card"><div class="detail-card-label">${esc(k)}</div><div class="detail-card-val" style="font-size:14px;color:var(--text-secondary)">${esc(String(v))}</div></div>`;
+    });
+    html+='</div>';
+  }
+
+  body.innerHTML=html;
+}
+
+// ── Fleet Expanded ──
+function renderExpandedFleet(title,body){
+  title.textContent='Fleet Overview — Per-Owner Breakdown';
+  const lanes=DATA.lanes||[];
+  const grouped={};
+  lanes.forEach(l=>{
+    const o=l.owner||'unknown';
+    if(!grouped[o]) grouped[o]=[];
+    grouped[o].push(l);
+  });
+
+  let html='';
+  Object.entries(grouped).sort().forEach(([owner,ownerLanes])=>{
+    const color=OWNER_COLORS[owner]||'#64748b';
+    const counts={done:0,in_progress:0,pending:0,blocked:0,idle:0};
+    ownerLanes.forEach(l=>{if(counts[l.status]!==undefined)counts[l.status]++;});
+    const total=ownerLanes.length;
+
+    html+=`<div class="overlay-section" style="color:${color}">${esc(owner.toUpperCase())} \u2014 ${total} lanes</div>`;
+
+    // Summary bar
+    const segments=[
+      {status:'done',count:counts.done,label:'Done'},
+      {status:'in_progress',count:counts.in_progress,label:'Active'},
+      {status:'pending',count:counts.pending,label:'Pending'},
+      {status:'blocked',count:counts.blocked,label:'Blocked'},
+      {status:'idle',count:counts.idle,label:'Idle'},
+    ].filter(s=>s.count>0);
+
+    html+=`<div class="fleet-detail-bar">`;
+    segments.forEach(s=>{
+      const w=(s.count/total*100).toFixed(1);
+      const c=STATUS_COLORS[s.status]||'#64748b';
+      html+=`<div class="fleet-detail-seg" style="width:${w}%;background:${c}" title="${s.count} ${s.label}">${s.count>0?s.count:''}</div>`;
+    });
+    html+=`</div>`;
+
+    // Lane list
+    html+='<div class="detail-list">';
+    ownerLanes.forEach(l=>{
+      const sc=STATUS_COLORS[l.status]||'#64748b';
+      const tc=l.task_counts||{};
+      const total2=(tc.done||0)+(tc.in_progress||0)+(tc.pending||0)+(tc.blocked||0);
+      html+=`<div class="detail-list-item">
+        <div style="width:6px;height:6px;border-radius:50%;background:${sc};flex-shrink:0"></div>
+        <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.lane_id)}</div>
+        <div style="font-size:9px;color:var(--muted)">${tc.done||0}/${total2}</div>
+        <div style="font-size:9px;color:${sc};text-transform:uppercase;font-weight:600">${esc(l.status)}</div>
+      </div>`;
+    });
+    html+='</div>';
+  });
+
+  body.innerHTML=html;
+}
+
+// ── Cost Expanded ──
+function renderExpandedCost(title,body){
+  title.textContent='Cost Tracker — Detailed Breakdown';
+  const s=DATA.summary||{};
+  let html='';
+
+  html+='<div class="detail-grid">';
+  html+=`<div class="detail-card"><div class="detail-card-label">Total Cost</div><div class="detail-card-val" style="color:var(--text)">$${formatCost(s.total_cost_usd||0)}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Total Responses</div><div class="detail-card-val" style="color:var(--text)">${s.total_responses||0}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Total Tokens</div><div class="detail-card-val" style="color:var(--text)">${formatTokens(s.total_tokens||0)}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Active Lanes</div><div class="detail-card-val" style="color:var(--accent)">${(s.status_counts||{}).in_progress||0}</div></div>`;
+  html+='</div>';
+
+  // Hourly chart
+  if(COST_DATA&&COST_DATA.hourly_series&&COST_DATA.hourly_series.length>0){
+    html+=`<div class="overlay-section">Hourly Cost (24h)</div>`;
+    const series=COST_DATA.hourly_series;
+    const maxVal=Math.max(...series.map(d=>d.cost||d.value||0),0.01);
+    html+='<div class="cost-chart">';
+    series.forEach(d=>{
+      const v=d.cost||d.value||0;
+      const h=Math.max(2,(v/maxVal)*80);
+      const label=d.hour||d.label||'';
+      html+=`<div class="cost-chart-bar" style="height:${h}px"><div class="bar-tooltip">${esc(label)}: $${v.toFixed(4)}</div></div>`;
+    });
+    html+='</div>';
+  }
+
+  // By provider
+  if(COST_DATA&&COST_DATA.by_provider&&Object.keys(COST_DATA.by_provider).length>0){
+    html+=`<div class="overlay-section">By Provider</div>`;
+    html+='<div class="detail-list">';
+    Object.entries(COST_DATA.by_provider).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
+      html+=`<div class="detail-list-item"><div style="flex:1">${esc(k)}</div><div style="font-variant-numeric:tabular-nums">$${typeof v==='number'?v.toFixed(4):esc(String(v))}</div></div>`;
+    });
+    html+='</div>';
+  }
+
+  // By model
+  if(COST_DATA&&COST_DATA.by_model&&Object.keys(COST_DATA.by_model).length>0){
+    html+=`<div class="overlay-section">By Model</div>`;
+    html+='<div class="detail-list">';
+    Object.entries(COST_DATA.by_model).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
+      html+=`<div class="detail-list-item"><div style="flex:1;font-size:10px">${esc(k)}</div><div style="font-variant-numeric:tabular-nums">$${typeof v==='number'?v.toFixed(4):esc(String(v))}</div></div>`;
+    });
+    html+='</div>';
+  }
+
+  // Per-lane cost
+  const lanes=DATA.lanes||[];
+  const laneCosts=lanes.map(l=>({id:l.lane_id,cost:l.metrics?.cost_usd_total||0})).filter(l=>l.cost>0).sort((a,b)=>b.cost-a.cost);
+  if(laneCosts.length>0){
+    html+=`<div class="overlay-section">Per-Lane Cost</div>`;
+    html+='<div class="detail-list">';
+    laneCosts.forEach(l=>{
+      html+=`<div class="detail-list-item"><div style="flex:1;font-size:10px">${esc(l.id)}</div><div style="font-variant-numeric:tabular-nums">$${formatCost(l.cost)}</div></div>`;
+    });
+    html+='</div>';
+  }
+
+  body.innerHTML=html;
+}
+
+// ── Alerts Expanded ──
+function renderExpandedAlerts(title,body){
+  title.textContent='Alert Stack — Full Details';
+  const alerts=DATA.alerts||[];
+  if(alerts.length===0){
+    body.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">No active alerts</div>';
+    return;
+  }
+  let html='<div class="detail-list">';
+  alerts.forEach(a=>{
+    const color=a.severity==='high'?'var(--critical)':a.severity==='medium'?'var(--warning)':'var(--accent)';
+    html+=`<div class="detail-list-item" style="border-left:3px solid ${color};flex-direction:column;align-items:flex-start;gap:4px">
+      <div style="display:flex;align-items:center;gap:8px;width:100%">
+        <span style="font-size:8px;font-weight:700;text-transform:uppercase;color:${color};letter-spacing:0.06em">${esc(a.severity||'')}</span>
+        <span style="font-size:9px;color:var(--muted);text-transform:uppercase">${esc(a.type||'')}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-secondary)">${esc(a.message||'')}</div>
+      ${a.lane_id?`<div style="font-size:9px;color:var(--muted)">Lane: ${esc(a.lane_id)}</div>`:''}
+    </div>`;
+  });
+  html+='</div>';
+  body.innerHTML=html;
+}
+
+// ── Timeline Expanded ──
+function renderExpandedTimeline(title,body){
+  title.textContent='Event Timeline — Full Feed';
+  const events=DATA.events||[];
+  if(events.length===0){
+    body.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">No events</div>';
+    return;
+  }
+
+  // Type filter
+  const types=new Set();
+  events.forEach(e=>{const t=e.type||e.event_type||'';if(t)types.add(t);});
+
+  let html=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">`;
+  html+=`<button class="tl-filter-btn active" data-filter="all" style="font-size:9px;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--text);cursor:pointer">All</button>`;
+  types.forEach(t=>{
+    const c=EVT_COLORS[t]||'#64748b';
+    html+=`<button class="tl-filter-btn" data-filter="${esc(t)}" style="font-size:9px;padding:4px 10px;border-radius:6px;border:1px solid ${c}30;background:${c}10;color:${c};cursor:pointer">${esc(t)}</button>`;
+  });
+  html+=`</div>`;
+
+  html+='<div id="tlDetailList">';
+  events.forEach(evt=>{
+    const type=evt.type||evt.event_type||'';
+    const color=EVT_COLORS[type]||'#64748b';
+    const ts=evt.timestamp?evt.timestamp.slice(11,19):'';
+    const laneId=evt.lane_id||'';
+    const msgBody=evt.message||evt.summary||evt.body||type;
+    html+=`<div class="tl-detail-item" data-type="${esc(type)}">
+      <div class="tl-detail-dot" style="background:${color}"></div>
+      <div class="tl-detail-content">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="tl-detail-lane">${esc(laneId)}</div>
+          <div class="tl-detail-time">${esc(ts)}</div>
+        </div>
+        <div class="tl-detail-body">${esc(String(msgBody).slice(0,200))}</div>
+      </div>
+    </div>`;
+  });
+  html+='</div>';
+
+  body.innerHTML=html;
+
+  // Filter logic
+  body.querySelectorAll('.tl-filter-btn').forEach(btn=>{
+    btn.addEventListener('click',function(){
+      body.querySelectorAll('.tl-filter-btn').forEach(b=>b.classList.remove('active'));
+      this.classList.add('active');
+      const filter=this.getAttribute('data-filter');
+      body.querySelectorAll('.tl-detail-item').forEach(item=>{
+        if(filter==='all'||item.getAttribute('data-type')===filter){
+          item.style.display='';
+        }else{
+          item.style.display='none';
+        }
+      });
+    });
+  });
+}
+
+// ── Git Expanded ──
+function renderExpandedGit(title,body){
+  title.textContent='Git Pulse — Repository Details';
+  const git=DATA.git||{};
+  const commits=git.recent_commits||[];
+  const branches=git.branches||[];
+
+  let html='<div class="detail-grid">';
+  html+=`<div class="detail-card"><div class="detail-card-label">Current Branch</div><div class="detail-card-val" style="font-size:12px;color:var(--accent)">${esc(git.current_branch||'--')}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Total Branches</div><div class="detail-card-val" style="color:var(--text)">${git.branch_count||0}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Recent Commits</div><div class="detail-card-val" style="color:var(--text)">${commits.length}</div></div>`;
+  html+='</div>';
+
+  if(commits.length>0){
+    html+=`<div class="overlay-section">Recent Commits</div>`;
+    html+='<div class="detail-list">';
+    commits.forEach(c=>{
+      const authorColor=OWNER_COLORS[c.author]||'#64748b';
+      html+=`<div class="detail-list-item" style="flex-direction:column;align-items:flex-start;gap:3px">
+        <div style="display:flex;align-items:center;gap:8px;width:100%">
+          <span style="font-size:10px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums">${esc((c.short_hash||c.hash||'').slice(0,7))}</span>
+          <span style="flex:1;font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((c.message||'').slice(0,80))}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:9px;padding:1px 6px;border-radius:3px;background:${authorColor}15;color:${authorColor};font-weight:600">${esc(c.author||'')}</span>
+          <span style="font-size:9px;color:var(--muted)">${esc(c.relative_time||'')}</span>
+        </div>
+      </div>`;
+    });
+    html+='</div>';
+  }
+
+  if(branches.length>0){
+    html+=`<div class="overlay-section">Branches (${branches.length})</div>`;
+    html+='<div style="display:flex;flex-wrap:wrap;gap:4px">';
+    branches.slice(0,30).forEach(b=>{
+      const isCurrent=b===git.current_branch;
+      html+=`<span style="font-size:9px;padding:3px 8px;border-radius:4px;background:${isCurrent?'rgba(59,130,246,0.12)':'rgba(255,255,255,0.03)'};border:1px solid ${isCurrent?'rgba(59,130,246,0.3)':'rgba(255,255,255,0.04)'};color:${isCurrent?'var(--accent)':'var(--muted)'}">${esc(b)}</span>`;
+    });
+    if(branches.length>30) html+=`<span style="font-size:9px;padding:3px 8px;color:var(--muted)">+${branches.length-30} more</span>`;
+    html+='</div>';
+  }
+
+  body.innerHTML=html;
+}
+
+// ── Quality Expanded ──
+function renderExpandedQuality(title,body){
+  title.textContent='Response Quality — Per-Lane Breakdown';
+  const lanes=DATA.lanes||[];
+
+  let html='<div class="detail-list">';
+  lanes.filter(l=>(l.metrics?.responses_total||0)>0).sort((a,b)=>(b.metrics?.first_time_pass_rate||0)-(a.metrics?.first_time_pass_rate||0)).forEach(l=>{
+    const m=l.metrics||{};
+    const rate=m.first_time_pass_rate||0;
+    const pct=Math.round(rate*100);
+    const color=pct>=60?'var(--success)':pct>=40?'var(--warning)':'var(--critical)';
+    const ownerColor=OWNER_COLORS[l.owner]||'#64748b';
+    html+=`<div class="detail-list-item">
+      <div style="width:6px;height:6px;border-radius:50%;background:${ownerColor};flex-shrink:0"></div>
+      <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.lane_id)}</div>
+      <div style="font-size:10px;color:var(--muted)">${m.responses_total||0} resp</div>
+      <div style="font-size:13px;font-weight:700;color:${color};font-variant-numeric:tabular-nums;min-width:40px;text-align:right">${pct}%</div>
+    </div>`;
+  });
+  html+='</div>';
+
+  // Global metrics
+  const gm=DATA.metrics?.global||{};
+  if(Object.keys(gm).length>0){
+    html+=`<div class="overlay-section">Global Metrics</div>`;
+    html+='<div class="detail-grid">';
+    const metricKeys=[
+      ['responses_total','Responses'],
+      ['first_time_pass_rate','Pass Rate'],
+      ['acceptance_pass_rate','Accept Rate'],
+      ['latency_sec_avg','Avg Latency'],
+      ['token_rate_per_minute','Token Rate'],
+      ['routing_routellm_rate','RouteLLM Rate'],
+      ['routing_fallback_rate','Fallback Rate'],
+    ];
+    metricKeys.forEach(([k,label])=>{
+      let v=gm[k];
+      if(v==null) return;
+      let display;
+      if(typeof v==='number'){
+        if(k.includes('rate')) display=(v*100).toFixed(1)+'%';
+        else if(k.includes('latency')) display=v.toFixed(1)+'s';
+        else if(k.includes('token_rate')) display=Math.round(v)+'/min';
+        else display=v.toLocaleString();
+      }else{
+        display=String(v);
+      }
+      html+=`<div class="detail-card"><div class="detail-card-label">${esc(label)}</div><div class="detail-card-val" style="font-size:14px;color:var(--text)">${esc(display)}</div></div>`;
+    });
+    html+='</div>';
+  }
+
+  body.innerHTML=html;
+}
+
+// ── Connectivity Expanded ──
+function renderExpandedConnectivity(title,body){
+  title.textContent='Connectivity — Endpoint Status';
+  const conn=DATA.connectivity||{};
+  const endpoints=conn.endpoints||[];
+
+  if(!Array.isArray(endpoints)||endpoints.length===0){
+    body.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">No endpoint data</div>';
+    return;
+  }
+
+  let html='<div class="detail-list">';
+  endpoints.forEach(ep=>{
+    const ok=ep.ok||ep.status==='ok';
+    html+=`<div class="detail-list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <div style="display:flex;align-items:center;gap:8px;width:100%">
+        <div class="conn-dot ${ok?'ok':'fail'}"></div>
+        <div style="font-weight:600;flex:1">${esc(ep.id||ep.name||'')}</div>
+        <div style="font-size:10px;font-weight:600;color:${ok?'var(--success)':'var(--critical)'}">${ok?'ONLINE':'OFFLINE'}</div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:10px;color:var(--muted);padding-left:15px">
+        ${ep.latency!=null?`<span>Latency: ${ep.latency}ms</span>`:''}
+        ${ep.models!=null?`<span>Models: ${ep.models}</span>`:''}
+        ${ep.provider?`<span>Provider: ${esc(ep.provider)}</span>`:''}
+        ${ep.error?`<span style="color:var(--critical)">Error: ${esc(ep.error)}</span>`:''}
+      </div>
+    </div>`;
+  });
+  html+='</div>';
+
+  body.innerHTML=html;
+}
+
+// ── Active Lanes Expanded ──
+function renderExpandedActiveLanes(title,body){
+  title.textContent='Active Lanes — In-Progress Details';
+  const lanes=(DATA.lanes||[]).filter(l=>l.status==='in_progress');
+
+  if(lanes.length===0){
+    body.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">No active lanes</div>';
+    return;
+  }
+
+  let html='';
+  lanes.forEach(lane=>{
+    const ownerColor=OWNER_COLORS[lane.owner]||'#64748b';
+    const tc=lane.task_counts||{};
+    const total=(tc.done||0)+(tc.in_progress||0)+(tc.pending||0)+(tc.blocked||0);
+    const done=tc.done||0;
+    const pct=total>0?(done/total*100):0;
+    const hb=lane.heartbeat||{};
+    const m=lane.metrics||{};
+
+    html+=`<div class="overlay-section" style="color:${ownerColor}">${esc(lane.lane_id)}</div>`;
+
+    html+='<div class="detail-grid">';
+    html+=`<div class="detail-card"><div class="detail-card-label">Progress</div><div class="detail-card-val" style="color:${ownerColor}">${done}/${total}</div></div>`;
+    html+=`<div class="detail-card"><div class="detail-card-label">Heartbeat</div><div class="detail-card-val" style="color:${(hb.age_sec||0)>120?'var(--warning)':'var(--text)'}">${hb.age_sec!=null&&hb.age_sec>=0?hb.age_sec+'s':'N/A'}</div></div>`;
+    html+=`<div class="detail-card"><div class="detail-card-label">Cost</div><div class="detail-card-val" style="color:var(--text)">$${formatCost(m.cost_usd_total||0)}</div></div>`;
+    html+=`<div class="detail-card"><div class="detail-card-label">Cycle</div><div class="detail-card-val" style="color:var(--text)">${hb.cycle||0}</div></div>`;
+    html+='</div>';
+
+    // Tasks
+    const tasks=lane.tasks||[];
+    if(tasks.length>0){
+      html+='<div class="detail-list">';
+      tasks.forEach(t=>{
+        const tsc=STATUS_COLORS[t.status]||'#64748b';
+        html+=`<div class="detail-list-item" style="border-left:2px solid ${tsc};flex-direction:column;align-items:flex-start;gap:2px">
+          <div style="display:flex;align-items:center;gap:6px;width:100%">
+            <span style="font-size:9px;font-weight:700;text-transform:uppercase;color:${tsc}">${esc(t.status)}</span>
+            <span style="font-size:10px;flex:1">${esc(t.task_id)}</span>
+            <span style="font-size:9px;color:var(--muted)">Attempts: ${t.attempts||0}</span>
+          </div>
+          ${t.last_summary?`<div style="font-size:10px;color:var(--text-secondary)">${esc(t.last_summary)}</div>`:''}
+          ${t.last_error?`<div style="font-size:10px;color:var(--critical)">${esc(t.last_error)}</div>`:''}
+        </div>`;
+      });
+      html+='</div>';
+    }
+
+    // Heartbeat message
+    if(hb.phase||hb.message){
+      html+=`<div style="font-size:10px;color:var(--text-secondary);padding:8px 10px;margin-top:8px;border-radius:8px;background:rgba(255,255,255,0.02)">`;
+      if(hb.phase) html+=`Phase: <span style="color:var(--accent)">${esc(hb.phase)}</span> &middot; `;
+      if(hb.message) html+=esc(hb.message);
+      html+=`</div>`;
+    }
+  });
+
+  body.innerHTML=html;
+}
+
+// ── Tokens Expanded ──
+function renderExpandedTokens(title,body){
+  title.textContent='Token Usage — Breakdown';
+  const s=DATA.summary||{};
+  const gm=DATA.metrics?.global||{};
+  const perLane=DATA.metrics?.per_lane||{};
+
+  let html='<div class="detail-grid">';
+  html+=`<div class="detail-card"><div class="detail-card-label">Total Tokens</div><div class="detail-card-val" style="color:var(--text)">${formatTokens(s.total_tokens||0)}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Token Rate</div><div class="detail-card-val" style="color:var(--text)">${gm.token_rate_per_minute?Math.round(gm.token_rate_per_minute)+'/min':'--'}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Total Responses</div><div class="detail-card-val" style="color:var(--text)">${s.total_responses||0}</div></div>`;
+  html+=`<div class="detail-card"><div class="detail-card-label">Avg Tokens/Response</div><div class="detail-card-val" style="color:var(--text)">${(s.total_responses||0)>0?formatTokens(Math.round((s.total_tokens||0)/(s.total_responses||1))):'--'}</div></div>`;
+  html+='</div>';
+
+  // Per-lane token usage
+  const laneTokens=Object.entries(perLane).map(([id,m])=>({id,tokens:m.tokens_total||0,responses:m.responses_total||0})).filter(l=>l.tokens>0).sort((a,b)=>b.tokens-a.tokens);
+
+  if(laneTokens.length>0){
+    html+=`<div class="overlay-section">Per-Lane Token Usage</div>`;
+    const maxTok=laneTokens[0].tokens||1;
+    html+='<div class="detail-list">';
+    laneTokens.forEach(l=>{
+      const pct=(l.tokens/maxTok*100).toFixed(1);
+      html+=`<div class="detail-list-item" style="flex-direction:column;gap:4px;align-items:stretch">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:10px">${esc(l.id)}</span>
+          <span style="font-size:10px;font-variant-numeric:tabular-nums;color:var(--text)">${formatTokens(l.tokens)}</span>
+        </div>
+        <div style="height:3px;border-radius:2px;background:rgba(255,255,255,0.04);overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--accent);border-radius:2px"></div></div>
+      </div>`;
+    });
+    html+='</div>';
+  }
+
+  body.innerHTML=html;
+}
+
+// ── Actions Expanded ──
+function renderExpandedActions(title,body){
+  title.textContent='Actions — Operator Controls & Audit Trail';
+  let html='';
+
+  // Blocked tasks section
+  const blockedLanes = (DATA.lanes || []).filter(l => l.status === 'blocked');
+  const blockedTasks = [];
+  blockedLanes.forEach(l => {
+    (l.tasks || []).filter(t => t.status === 'blocked').forEach(t => {
+      blockedTasks.push({ lane_id: l.lane_id, task: t });
+    });
+  });
+
+  if (blockedTasks.length > 0) {
+    html += '<div class="overlay-section">Blocked Tasks</div>';
+    html += '<div class="detail-list">';
+    blockedTasks.forEach(({ lane_id, task }) => {
+      html += '<div class="detail-list-item" style="border-left:3px solid var(--critical);flex-direction:column;align-items:flex-start;gap:4px">';
+      html += '<div style="display:flex;align-items:center;gap:8px;width:100%">';
+      html += '<span style="font-size:10px;font-weight:600;color:var(--text)">' + esc(task.task_id) + '</span>';
+      html += '<span style="font-size:9px;color:var(--muted)">Lane: ' + esc(lane_id) + '</span>';
+      html += '<span style="margin-left:auto"><button class="action-chip" onclick="doAction(\'task.clear-error\',{task_id:\'' + esc(task.task_id) + '\'},event)">Clear & Retry</button></span>';
+      html += '</div>';
+      if (task.last_error) html += '<div style="font-size:10px;color:var(--critical)">' + esc(task.last_error) + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // All available actions
+  html += '<div class="overlay-section">Quick Actions</div>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+  html += '<button class="action-chip" onclick="doAction(\'git.heal-locks\',{},event)">Heal Git Locks</button>';
+  html += '<button class="action-chip" onclick="doAction(\'runner.ensure\',{},event)">Ensure Runner</button>';
+  html += '<button class="action-chip" onclick="doAction(\'runner.release-lock\',{},event)">Release Lock</button>';
+  html += '<button class="action-chip danger" onclick="doAction(\'runner.stop\',{reason:\'Dashboard operator\'},event)">Stop Runner</button>';
+  html += '</div>';
+
+  // Action catalog
+  if (Actions.catalog && Actions.catalog.length > 0) {
+    html += '<div class="overlay-section">Action Catalog</div>';
+    html += '<div class="detail-list">';
+    Actions.catalog.forEach(a => {
+      const confirm = a.requires_confirmation ? '<span style="font-size:8px;color:var(--warning);margin-left:4px">CONFIRM</span>' : '';
+      html += '<div class="detail-list-item">';
+      html += '<div style="flex:1"><span style="font-size:11px;font-weight:600;color:var(--text)">' + esc(a.action_id) + '</span>' + confirm + '';
+      if (a.description) html += '<div style="font-size:10px;color:var(--muted)">' + esc(a.description) + '</div>';
+      html += '</div>';
+      html += '<button class="action-chip" onclick="doAction(\'' + esc(a.action_id) + '\',{},event)">Run</button>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Audit trail placeholder
+  html += '<div class="overlay-section">Audit Trail</div>';
+  html += '<div id="auditTrailList" style="font-size:11px;color:var(--muted)">Loading audit trail...</div>';
+
+  body.innerHTML = html;
+
+  // Fetch audit trail asynchronously
+  fetchJSON('/api/v2/audit-trail').then(data => {
+    const el = document.getElementById('auditTrailList');
+    if (!el) return;
+    const entries = Array.isArray(data) ? data : (data?.entries || []);
+    if (entries.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);opacity:0.5">No audit entries</div>';
+      return;
+    }
+    el.innerHTML = entries.slice(0, 50).map(e => {
+      const ts = e.timestamp ? e.timestamp.slice(11, 19) : '';
+      const ok = e.ok !== false;
+      return '<div class="audit-entry">' +
+        '<span style="color:var(--muted);font-variant-numeric:tabular-nums">' + esc(ts) + '</span> ' +
+        '<span style="color:' + (ok ? 'var(--success)' : 'var(--critical)') + ';font-weight:600">' + esc(e.action_id || e.action || '') + '</span> ' +
+        '<span style="color:var(--text-secondary)">' + esc((e.message || e.result || '').slice(0, 80)) + '</span>' +
+        '</div>';
+    }).join('');
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EVENT BINDING
+// ═══════════════════════════════════════════════════════════════════
+
+// Tile clicks → expand
+document.querySelectorAll('.tile[data-tile]').forEach(tile=>{
+  tile.addEventListener('click',function(e){
+    const tileId=this.getAttribute('data-tile');
+    if(tileId) openExpanded(tileId);
+  });
+});
+
+// Overlay close
+document.getElementById('overlayClose').addEventListener('click',closeExpanded);
+document.getElementById('overlay').addEventListener('click',function(e){
+  if(e.target===this) closeExpanded();
+});
+
+// Keyboard
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') closeExpanded();
+  if(e.key==='r'&&!e.ctrlKey&&!e.metaKey&&document.activeElement===document.body){
+    refreshData();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════════════════
+
+Actions.loadCatalog();
+refreshData();
+setInterval(refreshData,POLL_MS);
+</script>
+</body>
+</html>

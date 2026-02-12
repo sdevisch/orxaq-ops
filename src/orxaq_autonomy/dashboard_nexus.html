@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEXUS — Swarm Command HUD</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#000;font-family:'SF Mono','Fira Code','Cascadia Code',monospace;color:#c0d8e8}
+canvas#bg{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0}
+
+/* ── HUD Overlay ── */
+.hud{position:fixed;z-index:10;pointer-events:none}
+.hud *{pointer-events:auto}
+
+/* Top edge: status strip */
+.hud-top{top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:8px 20px;background:linear-gradient(180deg,rgba(0,20,40,0.85) 0%,transparent 100%)}
+.hud-top .logo{font-size:11px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;color:#4dd8e8}
+.hud-top .status-cluster{display:flex;gap:16px;font-size:10px}
+.hud-top .st{display:flex;align-items:center;gap:5px}
+.hud-top .st .dot{width:6px;height:6px;border-radius:50%;animation:blink 2s ease-in-out infinite}
+.dot.green{background:#00e87b;box-shadow:0 0 6px #00e87b}.dot.amber{background:#e8a800;box-shadow:0 0 6px #e8a800}.dot.red{background:#e83030;box-shadow:0 0 6px #e83030}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.5}}
+
+/* Bottom edge: telemetry strip */
+.hud-bottom{bottom:0;left:0;right:0;display:flex;justify-content:space-between;padding:8px 20px;background:linear-gradient(0deg,rgba(0,20,40,0.85) 0%,transparent 100%);font-size:10px}
+.telem-group{display:flex;gap:20px}
+.telem{display:flex;flex-direction:column;align-items:center;gap:2px}
+.telem-label{font-size:8px;color:#4a7a8a;text-transform:uppercase;letter-spacing:0.12em}
+.telem-val{font-size:14px;font-weight:700;color:#4dd8e8}
+.telem-val.warn{color:#e8a800}
+.telem-val.crit{color:#e83030}
+
+/* Left edge: lane status */
+.hud-left{top:50px;left:0;bottom:50px;width:200px;padding:12px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.hud-left::-webkit-scrollbar{width:2px}
+.hud-left::-webkit-scrollbar-thumb{background:#1a3a4a}
+.lane-title{font-size:8px;color:#4a7a8a;text-transform:uppercase;letter-spacing:0.15em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid #0a2a3a}
+.lane{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:3px;font-size:9px;cursor:pointer;transition:background 0.15s;border-left:2px solid transparent}
+.lane:hover{background:rgba(77,216,232,0.08)}
+.lane.active{border-left-color:#4dd8e8;background:rgba(77,216,232,0.05)}
+.lane .l-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.lane .l-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#7ab0c0}
+.lane .l-stat{font-size:8px;color:#4a7a8a}
+
+/* Right edge: event feed */
+.hud-right{top:50px;right:0;bottom:50px;width:300px;padding:12px;display:flex;flex-direction:column}
+.feed-title{font-size:8px;color:#4a7a8a;text-transform:uppercase;letter-spacing:0.15em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid #0a2a3a}
+.feed{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:1px}
+.feed::-webkit-scrollbar{width:2px}
+.feed::-webkit-scrollbar-thumb{background:#1a3a4a}
+.evt{padding:4px 6px;font-size:9px;border-left:2px solid;animation:fadeSlide 0.3s ease-out}
+.evt.task_selected{border-color:#4dd8e8;color:#7ab0c0}
+.evt.task_done{border-color:#00e87b;color:#60c090}
+.evt.task_blocked{border-color:#e83030;color:#c06060}
+.evt.routing_decision{border-color:#8a60d8;color:#a080c0}
+.evt.agent_error{border-color:#e8a800;color:#c0a060}
+.evt.prompt{border-color:#2a5a7a;color:#5a8a9a}
+.evt .evt-time{font-size:7px;color:#3a6a7a}
+.evt .evt-body{margin-top:1px}
+@keyframes fadeSlide{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+/* Center: alert zone (only visible when alerts exist) */
+.hud-center{top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:8px;opacity:0;transition:opacity 0.5s}
+.hud-center.active{opacity:1}
+.center-alert{padding:8px 20px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;animation:alertPulse 3s ease-in-out infinite;cursor:pointer}
+.center-alert.high{background:rgba(232,48,48,0.15);border:1px solid rgba(232,48,48,0.4);color:#e83030}
+.center-alert.medium{background:rgba(232,168,0,0.1);border:1px solid rgba(232,168,0,0.3);color:#e8a800}
+@keyframes alertPulse{0%,100%{box-shadow:0 0 10px transparent}50%{box-shadow:0 0 20px rgba(232,48,48,0.2)}}
+
+/* Detail overlay */
+#detail-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,10,20,0.7);z-index:100;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+#detail-overlay.open{display:flex}
+#detail-panel{background:rgba(0,20,35,0.95);border:1px solid #1a3a5a;border-radius:8px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;position:relative}
+#detail-panel .close{position:absolute;top:8px;right:12px;background:none;border:none;color:#4a7a8a;font-size:18px;cursor:pointer}
+#detail-panel h3{font-size:12px;color:#4dd8e8;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px}
+.d-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0a1a2a;font-size:11px}
+.d-label{color:#4a7a8a}.d-val{color:#c0d8e8;font-weight:600}
+.d-val.green{color:#00e87b}.d-val.amber{color:#e8a800}.d-val.red{color:#e83030}.d-val.cyan{color:#4dd8e8}
+.d-bar{height:4px;background:#0a1a2a;border-radius:2px;margin-top:4px;overflow:hidden}
+.d-bar-fill{height:100%;border-radius:2px;transition:width 0.6s ease}
+.d-section{font-size:9px;color:#4a7a8a;text-transform:uppercase;letter-spacing:0.12em;margin:16px 0 8px;padding-top:8px;border-top:1px solid #0a2a3a}
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+
+<!-- Top HUD -->
+<div class="hud hud-top">
+  <div class="logo">⬡ NEXUS — Swarm Command</div>
+  <div class="status-cluster">
+    <div class="st"><span class="dot green"></span> Supervisor</div>
+    <div class="st"><span class="dot" id="runner-dot"></span> <span id="runner-label">Runner</span></div>
+    <div class="st"><span class="dot" id="heartbeat-dot"></span> <span id="heartbeat-label">Heartbeat</span></div>
+    <div class="st" style="color:#4a7a8a" id="clock"></div>
+  </div>
+</div>
+
+<!-- Bottom Telemetry -->
+<div class="hud hud-bottom">
+  <div class="telem-group">
+    <div class="telem"><span class="telem-label">Tasks Done</span><span class="telem-val" id="t-done">0</span></div>
+    <div class="telem"><span class="telem-label">In Progress</span><span class="telem-val" id="t-prog">0</span></div>
+    <div class="telem"><span class="telem-label">Pending</span><span class="telem-val" id="t-pend">0</span></div>
+    <div class="telem"><span class="telem-label">Blocked</span><span class="telem-val" id="t-block">0</span></div>
+  </div>
+  <div class="telem-group">
+    <div class="telem"><span class="telem-label">Cost (USD)</span><span class="telem-val" id="t-cost">$0.00</span></div>
+    <div class="telem"><span class="telem-label">Tokens</span><span class="telem-val" id="t-tokens">0</span></div>
+    <div class="telem"><span class="telem-label">Pass Rate</span><span class="telem-val" id="t-pass">0%</span></div>
+    <div class="telem"><span class="telem-label">Latency</span><span class="telem-val" id="t-latency">0s</span></div>
+  </div>
+  <div class="telem-group">
+    <div class="telem"><span class="telem-label">Lanes Active</span><span class="telem-val" id="t-lanes">0</span></div>
+    <div class="telem"><span class="telem-label">Responses</span><span class="telem-val" id="t-responses">0</span></div>
+    <div class="telem"><span class="telem-label">Budget Left</span><span class="telem-val" id="t-budget">$0</span></div>
+    <div class="telem"><span class="telem-label">Uptime</span><span class="telem-val" id="t-uptime">0h</span></div>
+  </div>
+</div>
+
+<!-- Left: Lane Status -->
+<div class="hud hud-left">
+  <div class="lane-title">Lane Status</div>
+  <div id="lane-list"></div>
+</div>
+
+<!-- Right: Event Feed -->
+<div class="hud hud-right">
+  <div class="feed-title">Event Stream <span id="evt-count" style="color:#4dd8e8"></span></div>
+  <div class="feed" id="event-feed"></div>
+</div>
+
+<!-- Center: Alerts -->
+<div class="hud hud-center" id="alert-zone"></div>
+
+<!-- Detail Overlay -->
+<div id="detail-overlay" onclick="if(event.target===this)closeDetail()">
+  <div id="detail-panel">
+    <button class="close" onclick="closeDetail()">×</button>
+    <div id="detail-body"></div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════
+// DATA — Simulated from real orxaq-ops artifact structures
+// ══════════════════════════════════════════════════════════════════
+const SWARM = {
+  status: {
+    supervisor_running: true, runner_running: true,
+    heartbeat_stale: false, heartbeat_age_sec: 5,
+  },
+  state_counts: { done: 19, in_progress: 3, pending: 4, blocked: 1, unknown: 0 },
+  budget: { daily_cap: 100.0, daily_spend: 1.68, remaining: 98.32 },
+  metrics: {
+    responses_total: 445,
+    cost_usd_total: 1.6818,
+    tokens_total: 1055013,
+    first_time_pass_rate: 0.481,
+    acceptance_pass_rate: 0.524,
+    latency_sec_avg: 90.26,
+    token_rate_per_minute: 1575.9,
+    routing_routellm_rate: 0.438,
+    routing_fallback_rate: 0.456,
+  },
+  lanes: [
+    { id:'codex-governance', owner:'codex', status:'done', tasks_done:4, tasks_total:4, cycles:12, cost:0.22, last_task:'governance-e2e', last_event:'Governance sweep complete', heartbeat_age:3 },
+    { id:'codex-routellm-npv', owner:'codex', status:'in_progress', tasks_done:2, tasks_total:5, cycles:38, cost:0.45, last_task:'routellm-npv-analysis', last_event:'NPV calculation cycle 38', heartbeat_age:8 },
+    { id:'codex-dashboard-todo', owner:'codex', status:'pending', tasks_done:0, tasks_total:1, cycles:8, cost:0.12, last_task:'todo-metrics-fix', last_event:'Retry cooldown 10s', heartbeat_age:5 },
+    { id:'codex-dashboard-ui', owner:'codex', status:'in_progress', tasks_done:1, tasks_total:3, cycles:15, cost:0.18, last_task:'accessibility-audit', last_event:'ARIA labels pass', heartbeat_age:2 },
+    { id:'codex-rpa-security', owner:'codex', status:'done', tasks_done:3, tasks_total:3, cycles:22, cost:0.31, last_task:'rpa-xss-hardening', last_event:'All XSS vectors patched', heartbeat_age:120 },
+    { id:'gemini-skin-regression', owner:'gemini', status:'blocked', tasks_done:2, tasks_total:4, cycles:9, cost:0.08, last_task:'skin-parity-check', last_event:'Blocked: merge conflict in skins.py', heartbeat_age:45 },
+    { id:'gemini-rln-tests', owner:'gemini', status:'done', tasks_done:5, tasks_total:5, cycles:30, cost:0.15, last_task:'semantic-validation', last_event:'All semantic tests green', heartbeat_age:200 },
+    { id:'claude-release-audit', owner:'claude', status:'in_progress', tasks_done:1, tasks_total:2, cycles:6, cost:0.09, last_task:'phase32-release-check', last_event:'Scanning signoff log integrity', heartbeat_age:15 },
+    { id:'claude-collab-health', owner:'claude', status:'done', tasks_done:2, tasks_total:2, cycles:4, cost:0.03, last_task:'collab-health-monitor', last_event:'Health report generated', heartbeat_age:300 },
+  ],
+  events: [
+    { ts:'12:55:37', type:'task_selected', lane:'codex-routellm-npv', body:'Selected task routellm-npv-analysis cycle 38' },
+    { ts:'12:55:27', type:'agent_error', lane:'codex-dashboard-todo', body:'Codex: unexpected argument --ask-for-approval' },
+    { ts:'12:55:24', type:'routing_decision', lane:'codex-routellm-npv', body:'Router → gpt-5.3-codex (static_fallback)' },
+    { ts:'12:54:58', type:'task_done', lane:'codex-governance', body:'Governance e2e sweep completed ✓' },
+    { ts:'12:54:45', type:'prompt', lane:'claude-release-audit', body:'Initiated phase32 release integrity scan' },
+    { ts:'12:54:30', type:'task_blocked', lane:'gemini-skin-regression', body:'Merge conflict in cockpit/skins.py — manual resolution needed' },
+    { ts:'12:54:12', type:'task_done', lane:'codex-rpa-security', body:'XSS vector patching complete, 3/3 tasks done' },
+    { ts:'12:53:58', type:'routing_decision', lane:'codex-dashboard-ui', body:'RouteLLM selected liquid/lfm2.5 (latency: 2.4ms)' },
+    { ts:'12:53:40', type:'task_selected', lane:'claude-release-audit', body:'Claiming phase32-release-check' },
+    { ts:'12:53:20', type:'task_done', lane:'gemini-rln-tests', body:'Semantic validation suite green ✓' },
+    { ts:'12:52:55', type:'prompt', lane:'codex-routellm-npv', body:'NPV sensitivity analysis: varying discount rate 3-12%' },
+    { ts:'12:52:30', type:'routing_decision', lane:'gemini-skin-regression', body:'Router → gemini-2.5-flash (routellm selected)' },
+    { ts:'12:52:10', type:'task_done', lane:'claude-collab-health', body:'Collaboration health report written to artifacts/' },
+    { ts:'12:51:45', type:'task_selected', lane:'codex-dashboard-ui', body:'Starting accessibility audit task 2/3' },
+    { ts:'12:51:20', type:'agent_error', lane:'codex-dashboard-todo', body:'Retry #3: git index.lock conflict (auto-resolved)' },
+  ],
+  alerts: [
+    { id:1, sev:'high', type:'BLOCKED LANE', msg:'gemini-skin-regression: merge conflict in cockpit/skins.py', lane:'gemini-skin-regression' },
+    { id:2, sev:'medium', type:'RETRY STORM', msg:'codex-dashboard-todo: 3 retries, 8 deadlock recoveries', lane:'codex-dashboard-todo' },
+    { id:3, sev:'medium', type:'STALE HEARTBEAT', msg:'claude-collab-health: 300s since last heartbeat', lane:'claude-collab-health' },
+  ],
+  git: {
+    branches_local: 63, branches_remote: 40,
+    open_prs: 22, t1_prs: 22, t1_ratio: 1.0,
+    recent_commits: [
+      { hash:'a3f2c1d', msg:'fix(dashboard): ARIA labels for metric cards', author:'codex', ago:'2m' },
+      { hash:'8b1e4f7', msg:'test(rln): add semantic regression suite', author:'gemini', ago:'5m' },
+      { hash:'c5d9a2b', msg:'chore(ops): restore swarm runtime v1', author:'codex', ago:'12m' },
+      { hash:'f7e3b08', msg:'feat(rpa): XSS vector hardening', author:'codex', ago:'18m' },
+      { hash:'2a8c1d5', msg:'docs(governance): breakglass policy v2.1', author:'codex', ago:'25m' },
+    ]
+  },
+  connectivity: {
+    endpoints: [
+      { id:'lmstudio-node-1', ok:true, latency:2.4, models:11 },
+      { id:'claude-primary', ok:false, latency:101.4, error:'401 auth' },
+      { id:'openai-codex', ok:true, latency:45.2, models:3 },
+    ]
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════
+// CANVAS GAME ENGINE — 60fps render loop
+// ══════════════════════════════════════════════════════════════════
+const canvas = document.getElementById('bg');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+let W, H, cx, cy;
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = W / 2; cy = H / 2;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Particles ──
+class Particle {
+  constructor(lane, type) {
+    this.lane = lane;
+    this.type = type; // 'task','event','error'
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 80 + Math.random() * 180;
+    this.x = cx + Math.cos(angle) * dist;
+    this.y = cy + Math.sin(angle) * dist;
+    this.vx = (Math.random() - 0.5) * 0.3;
+    this.vy = (Math.random() - 0.5) * 0.3;
+    this.life = 1;
+    this.decay = 0.001 + Math.random() * 0.003;
+    this.size = type === 'error' ? 3 : type === 'event' ? 2 : 1.5;
+    this.color = type === 'error' ? [232,48,48] : type === 'event' ? [77,216,232] : [0,232,123];
+  }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life -= this.decay;
+    // gentle drift toward center
+    this.vx += (cx - this.x) * 0.00003;
+    this.vy += (cy - this.y) * 0.00003;
+  }
+  draw(ctx) {
+    if (this.life <= 0) return;
+    const [r,g,b] = this.color;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * this.life, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${r},${g},${b},${this.life * 0.6})`;
+    ctx.fill();
+    // glow
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * 3 * this.life, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${r},${g},${b},${this.life * 0.08})`;
+    ctx.fill();
+  }
+}
+
+let particles = [];
+function spawnParticles() {
+  const types = ['task','task','task','event','event','error'];
+  particles.push(new Particle(null, types[Math.floor(Math.random() * types.length)]));
+}
+
+// ── Radar Sweep ──
+let radarAngle = 0;
+const radarSpeed = 0.008;
+
+function drawRadar() {
+  const r = Math.min(W, H) * 0.28;
+  // ring
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(77,216,232,0.06)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // inner ring
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.6, 0, Math.PI * 2);
+  ctx.stroke();
+  // inner-inner
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.3, 0, Math.PI * 2);
+  ctx.stroke();
+  // crosshairs
+  ctx.strokeStyle = 'rgba(77,216,232,0.04)';
+  ctx.beginPath();
+  ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
+  ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
+  ctx.stroke();
+
+  // sweep
+  radarAngle += radarSpeed;
+  const grad = ctx.createConicalGradient ? null : null; // fallback
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, r, radarAngle - 0.5, radarAngle);
+  ctx.closePath();
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0, 'rgba(77,216,232,0.0)');
+  g.addColorStop(0.4, 'rgba(77,216,232,0.04)');
+  g.addColorStop(1, 'rgba(77,216,232,0.12)');
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // sweep line
+  const sx = cx + Math.cos(radarAngle) * r;
+  const sy = cy + Math.sin(radarAngle) * r;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(sx, sy);
+  ctx.strokeStyle = 'rgba(77,216,232,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // lane blips on radar
+  SWARM.lanes.forEach((lane, i) => {
+    const a = (i / SWARM.lanes.length) * Math.PI * 2 - Math.PI / 2;
+    const d = r * 0.4 + (lane.cycles / 40) * r * 0.4;
+    const bx = cx + Math.cos(a) * Math.min(d, r * 0.9);
+    const by = cy + Math.sin(a) * Math.min(d, r * 0.9);
+    const color = lane.status === 'done' ? 'rgba(0,232,123,X)' :
+                  lane.status === 'in_progress' ? 'rgba(77,216,232,X)' :
+                  lane.status === 'blocked' ? 'rgba(232,48,48,X)' :
+                  'rgba(232,168,0,X)';
+    // blip glow
+    const proximity = Math.abs(((radarAngle % (Math.PI*2)) - (a % (Math.PI*2) + Math.PI*2) % (Math.PI*2)));
+    const intensity = proximity < 0.6 ? (0.6 - proximity) / 0.6 : 0;
+    const alpha = 0.3 + intensity * 0.7;
+    ctx.beginPath();
+    ctx.arc(bx, by, 3 + intensity * 3, 0, Math.PI * 2);
+    ctx.fillStyle = color.replace('X', alpha.toFixed(2));
+    ctx.fill();
+    // outer ring on active
+    if (lane.status === 'in_progress') {
+      ctx.beginPath();
+      ctx.arc(bx, by, 8 + Math.sin(Date.now()/500) * 2, 0, Math.PI * 2);
+      ctx.strokeStyle = color.replace('X', '0.2');
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  });
+}
+
+// ── Grid / Scanlines ──
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(77,216,232,0.015)';
+  ctx.lineWidth = 1;
+  const step = 40;
+  for (let x = 0; x < W; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  // scanlines
+  ctx.fillStyle = 'rgba(0,0,0,0.03)';
+  for (let y = 0; y < H; y += 3) {
+    ctx.fillRect(0, y, W, 1);
+  }
+}
+
+// ── Budget Arc ──
+function drawBudgetArc() {
+  const r = Math.min(W, H) * 0.28 + 20;
+  const startA = -Math.PI * 0.75;
+  const endA = -Math.PI * 0.25;
+  const spent = SWARM.budget.daily_spend / SWARM.budget.daily_cap;
+  const spentAngle = startA + spent * (endA - startA);
+  // background arc
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, startA, endA);
+  ctx.strokeStyle = 'rgba(77,216,232,0.06)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // spent arc
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, startA, spentAngle);
+  ctx.strokeStyle = spent > 0.8 ? 'rgba(232,48,48,0.5)' : spent > 0.5 ? 'rgba(232,168,0,0.5)' : 'rgba(0,232,123,0.4)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // label
+  ctx.font = '8px monospace';
+  ctx.fillStyle = 'rgba(77,216,232,0.3)';
+  ctx.textAlign = 'center';
+  ctx.fillText('BUDGET ' + (spent * 100).toFixed(1) + '%', cx, cy - r - 8);
+}
+
+// ── Commit Pulse Ring ──
+let commitPulses = [];
+function triggerCommitPulse() {
+  commitPulses.push({ r: 0, alpha: 0.3 });
+}
+function drawCommitPulses() {
+  commitPulses = commitPulses.filter(p => p.alpha > 0.01);
+  commitPulses.forEach(p => {
+    p.r += 1.5;
+    p.alpha *= 0.985;
+    ctx.beginPath();
+    ctx.arc(cx, cy, p.r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0,232,123,${p.alpha})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+}
+
+// ── Main Render Loop ──
+let frame = 0;
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // background gradient
+  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W,H)*0.7);
+  bg.addColorStop(0, '#020a14');
+  bg.addColorStop(1, '#000408');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  drawGrid();
+  drawRadar();
+  drawBudgetArc();
+  drawCommitPulses();
+
+  // spawn particles periodically
+  if (frame % 8 === 0) spawnParticles();
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => { p.update(); p.draw(ctx); });
+
+  // periodic commit pulse
+  if (frame % 300 === 0) triggerCommitPulse();
+
+  frame++;
+  requestAnimationFrame(render);
+}
+render();
+
+// ══════════════════════════════════════════════════════════════════
+// HUD DOM — Populate from data
+// ══════════════════════════════════════════════════════════════════
+
+// Clock
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toISOString().slice(11, 19) + 'Z';
+}, 1000);
+
+// Runner/heartbeat dots
+const rd = document.getElementById('runner-dot');
+const hd = document.getElementById('heartbeat-dot');
+rd.className = 'dot ' + (SWARM.status.runner_running ? 'green' : 'red');
+hd.className = 'dot ' + (SWARM.status.heartbeat_stale ? 'red' : 'green');
+
+// Telemetry
+document.getElementById('t-done').textContent = SWARM.state_counts.done;
+document.getElementById('t-prog').textContent = SWARM.state_counts.in_progress;
+document.getElementById('t-pend').textContent = SWARM.state_counts.pending;
+const tb = document.getElementById('t-block');
+tb.textContent = SWARM.state_counts.blocked;
+if (SWARM.state_counts.blocked > 0) tb.className = 'telem-val crit';
+
+document.getElementById('t-cost').textContent = '$' + SWARM.metrics.cost_usd_total.toFixed(2);
+document.getElementById('t-tokens').textContent = (SWARM.metrics.tokens_total / 1000).toFixed(0) + 'K';
+const tp = document.getElementById('t-pass');
+tp.textContent = (SWARM.metrics.first_time_pass_rate * 100).toFixed(0) + '%';
+if (SWARM.metrics.first_time_pass_rate < 0.5) tp.className = 'telem-val warn';
+document.getElementById('t-latency').textContent = SWARM.metrics.latency_sec_avg.toFixed(0) + 's';
+document.getElementById('t-lanes').textContent = SWARM.lanes.filter(l => l.status === 'in_progress').length + '/' + SWARM.lanes.length;
+document.getElementById('t-responses').textContent = SWARM.metrics.responses_total;
+document.getElementById('t-budget').textContent = '$' + SWARM.budget.remaining.toFixed(0);
+document.getElementById('t-uptime').textContent = '2.4h';
+
+// Lanes
+const laneList = document.getElementById('lane-list');
+SWARM.lanes.forEach(lane => {
+  const div = document.createElement('div');
+  div.className = 'lane' + (lane.status === 'in_progress' ? ' active' : '');
+  const dotColor = lane.status === 'done' ? '#00e87b' : lane.status === 'in_progress' ? '#4dd8e8' : lane.status === 'blocked' ? '#e83030' : '#e8a800';
+  div.innerHTML = `<span class="l-dot" style="background:${dotColor};box-shadow:0 0 4px ${dotColor}"></span><span class="l-name">${lane.id}</span><span class="l-stat">${lane.tasks_done}/${lane.tasks_total}</span>`;
+  div.onclick = () => showLaneDetail(lane);
+  laneList.appendChild(div);
+});
+
+// Events
+const feed = document.getElementById('event-feed');
+document.getElementById('evt-count').textContent = `[${SWARM.events.length}]`;
+SWARM.events.forEach(evt => {
+  const div = document.createElement('div');
+  div.className = 'evt ' + evt.type;
+  div.innerHTML = `<div class="evt-time">${evt.ts} · ${evt.lane}</div><div class="evt-body">${evt.body}</div>`;
+  feed.appendChild(div);
+});
+
+// Alerts
+const alertZone = document.getElementById('alert-zone');
+if (SWARM.alerts.length > 0) {
+  alertZone.classList.add('active');
+  SWARM.alerts.forEach(a => {
+    const div = document.createElement('div');
+    div.className = 'center-alert ' + a.sev;
+    div.textContent = `⚠ ${a.type}: ${a.msg}`;
+    div.onclick = () => {
+      const lane = SWARM.lanes.find(l => l.id === a.lane);
+      if (lane) showLaneDetail(lane);
+    };
+    alertZone.appendChild(div);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// DETAIL PANEL
+// ══════════════════════════════════════════════════════════════════
+function closeDetail() { document.getElementById('detail-overlay').classList.remove('open'); }
+
+function showLaneDetail(lane) {
+  const overlay = document.getElementById('detail-overlay');
+  const body = document.getElementById('detail-body');
+  const ownerColor = lane.owner === 'codex' ? 'cyan' : lane.owner === 'gemini' ? 'amber' : 'green';
+  const statusColor = lane.status === 'done' ? 'green' : lane.status === 'in_progress' ? 'cyan' : lane.status === 'blocked' ? 'red' : 'amber';
+
+  let html = `<h3>⬡ ${lane.id}</h3>`;
+  html += `<div class="d-row"><span class="d-label">Owner</span><span class="d-val ${ownerColor}">${lane.owner.toUpperCase()}</span></div>`;
+  html += `<div class="d-row"><span class="d-label">Status</span><span class="d-val ${statusColor}">${lane.status.toUpperCase()}</span></div>`;
+  html += `<div class="d-row"><span class="d-label">Progress</span><span class="d-val">${lane.tasks_done} / ${lane.tasks_total} tasks</span></div>`;
+  html += `<div class="d-bar"><div class="d-bar-fill" style="width:${(lane.tasks_done/lane.tasks_total*100)}%;background:${lane.status==='done'?'#00e87b':lane.status==='blocked'?'#e83030':'#4dd8e8'}"></div></div>`;
+  html += `<div class="d-row"><span class="d-label">Cycles</span><span class="d-val">${lane.cycles}</span></div>`;
+  html += `<div class="d-row"><span class="d-label">Cost</span><span class="d-val">$${lane.cost.toFixed(2)}</span></div>`;
+  html += `<div class="d-row"><span class="d-label">Heartbeat</span><span class="d-val ${lane.heartbeat_age > 120 ? 'amber' : ''}">${lane.heartbeat_age}s ago</span></div>`;
+  html += `<div class="d-row"><span class="d-label">Last Task</span><span class="d-val">${lane.last_task}</span></div>`;
+
+  html += `<div class="d-section">Latest Activity</div>`;
+  html += `<div style="font-size:10px;color:#7ab0c0;padding:8px;background:rgba(77,216,232,0.03);border-radius:4px;border-left:2px solid #1a3a5a">${lane.last_event}</div>`;
+
+  // Related events
+  const relEvents = SWARM.events.filter(e => e.lane === lane.id).slice(0, 5);
+  if (relEvents.length) {
+    html += `<div class="d-section">Event History</div>`;
+    relEvents.forEach(e => {
+      const c = e.type === 'task_done' ? '#00e87b' : e.type === 'agent_error' || e.type === 'task_blocked' ? '#e83030' : '#4a7a8a';
+      html += `<div style="font-size:9px;padding:3px 0;border-bottom:1px solid #0a1a2a"><span style="color:#3a6a7a">${e.ts}</span> <span style="color:${c}">${e.body}</span></div>`;
+    });
+  }
+
+  // Related alerts
+  const relAlerts = SWARM.alerts.filter(a => a.lane === lane.id);
+  if (relAlerts.length) {
+    html += `<div class="d-section">Active Alerts</div>`;
+    relAlerts.forEach(a => {
+      const c = a.sev === 'high' ? '#e83030' : '#e8a800';
+      html += `<div style="padding:6px 8px;margin:4px 0;border-radius:4px;background:${a.sev==='high'?'rgba(232,48,48,0.08)':'rgba(232,168,0,0.06)'};border-left:2px solid ${c};font-size:10px;color:${c}">${a.type}: ${a.msg}</div>`;
+    });
+  }
+
+  // Git activity for this lane
+  const relCommits = SWARM.git.recent_commits.filter(c => c.author === lane.owner).slice(0, 3);
+  if (relCommits.length) {
+    html += `<div class="d-section">Recent Commits (${lane.owner})</div>`;
+    relCommits.forEach(c => {
+      html += `<div style="font-size:9px;padding:3px 0;border-bottom:1px solid #0a1a2a"><span style="color:#4dd8e8">${c.hash.slice(0,7)}</span> <span style="color:#7ab0c0">${c.msg}</span> <span style="color:#3a6a7a">${c.ago}</span></div>`;
+    });
+  }
+
+  body.innerHTML = html;
+  overlay.classList.add('open');
+}
+
+// ── Keyboard: Escape to close ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDetail();
+});
+
+// ── Simulated live activity ──
+let simTick = 0;
+setInterval(() => {
+  simTick++;
+  // rotate heartbeat ages
+  SWARM.lanes.forEach(l => {
+    if (l.status === 'in_progress') l.heartbeat_age = Math.max(1, (l.heartbeat_age + 1) % 30);
+  });
+  // occasional commit pulse
+  if (simTick % 15 === 0) triggerCommitPulse();
+  // particle burst for events
+  if (simTick % 10 === 0) {
+    for (let i = 0; i < 5; i++) particles.push(new Particle(null, 'event'));
+  }
+}, 1000);
+</script>
+</body>
+</html>

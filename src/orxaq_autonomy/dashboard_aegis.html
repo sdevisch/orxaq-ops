@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AEGIS — Temporal Flow Navigator</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#06080c;--surface:rgba(12,18,28,0.9);--border:rgba(40,60,90,0.3);--text:#a0b8d0;--muted:#405060;--accent:#00a8ff;--codex:#00c8ff;--gemini:#ff8800;--claude:#a855f7;--ok:#00e07a;--warn:#ffaa00;--crit:#ff3050}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);font-family:'SF Pro Text','Inter','Helvetica Neue',sans-serif;color:var(--text)}
+
+/* Ambient background */
+.ambient{position:fixed;top:0;left:0;right:0;bottom:0;z-index:0;transition:background 2s ease}
+.ambient.healthy{background:radial-gradient(ellipse at 50% 30%,rgba(0,40,80,0.15) 0%,rgba(6,8,12,1) 70%)}
+.ambient.warning{background:radial-gradient(ellipse at 50% 30%,rgba(80,50,0,0.12) 0%,rgba(6,8,12,1) 70%)}
+.ambient.critical{background:radial-gradient(ellipse at 50% 30%,rgba(80,10,20,0.12) 0%,rgba(6,8,12,1) 70%)}
+
+/* Layout */
+.app{position:relative;z-index:1;height:100vh;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:260px 1fr 280px;grid-template-areas:"header header header" "sidebar river detail" "footer footer footer"}
+
+/* Header */
+.header{grid-area:header;display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--surface);backdrop-filter:blur(12px)}
+.header h1{font-size:13px;font-weight:600;letter-spacing:0.08em;color:var(--accent)}
+.header h1 span{color:var(--muted);font-weight:400;margin-left:8px;font-size:11px}
+.health-orb{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;cursor:pointer;transition:all 0.3s}
+.health-orb.green{background:rgba(0,224,122,0.12);border:2px solid rgba(0,224,122,0.4);color:var(--ok);box-shadow:0 0 12px rgba(0,224,122,0.1)}
+.health-orb.amber{background:rgba(255,170,0,0.12);border:2px solid rgba(255,170,0,0.4);color:var(--warn);box-shadow:0 0 12px rgba(255,170,0,0.1)}
+.health-orb.red{background:rgba(255,48,80,0.12);border:2px solid rgba(255,48,80,0.4);color:var(--crit);box-shadow:0 0 12px rgba(255,48,80,0.1)}
+.header-stats{display:flex;gap:20px;font-size:10px}
+.header-stat{display:flex;flex-direction:column;align-items:center;gap:1px}
+.header-stat-label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em}
+.header-stat-val{font-size:13px;font-weight:700;font-family:'SF Mono',monospace}
+
+/* Sidebar: Agent Threads */
+.sidebar{grid-area:sidebar;border-right:1px solid var(--border);padding:12px;overflow-y:auto;background:var(--surface);backdrop-filter:blur(8px)}
+.sidebar::-webkit-scrollbar{width:3px}.sidebar::-webkit-scrollbar-thumb{background:var(--border)}
+.section-title{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:0.15em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.agent-card{padding:10px;margin-bottom:6px;border-radius:6px;background:rgba(20,30,45,0.6);border:1px solid var(--border);cursor:pointer;transition:all 0.2s}
+.agent-card:hover{background:rgba(30,45,65,0.6);border-color:rgba(60,90,130,0.4)}
+.agent-card.selected{border-color:var(--accent);background:rgba(0,168,255,0.05)}
+.agent-card-header{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.agent-dot{width:8px;height:8px;border-radius:50%}
+.agent-name{font-size:11px;font-weight:600;flex:1}
+.agent-status{font-size:8px;padding:2px 6px;border-radius:3px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
+.agent-status.in_progress{background:rgba(0,168,255,0.12);color:var(--accent)}
+.agent-status.done{background:rgba(0,224,122,0.1);color:var(--ok)}
+.agent-status.blocked{background:rgba(255,48,80,0.1);color:var(--crit)}
+.agent-status.pending{background:rgba(255,170,0,0.08);color:var(--warn)}
+.agent-meta{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:9px}
+.agent-meta-item{display:flex;justify-content:space-between}
+.agent-meta-label{color:var(--muted)}
+.agent-meta-val{color:var(--text);font-family:'SF Mono',monospace}
+.progress-bar{height:3px;background:rgba(40,60,90,0.3);border-radius:2px;margin-top:6px;overflow:hidden}
+.progress-fill{height:100%;border-radius:2px;transition:width 0.6s ease}
+
+/* River: SVG Timeline */
+.river{grid-area:river;overflow-x:auto;overflow-y:hidden;position:relative;cursor:grab}
+.river:active{cursor:grabbing}
+.river svg{display:block}
+.river-label{font-family:'SF Mono',monospace;font-size:9px;fill:var(--muted)}
+.river-lane-label{font-size:10px;fill:var(--text);font-weight:600}
+.river-node{cursor:pointer;transition:opacity 0.2s}
+.river-node:hover{opacity:1 !important}
+.tooltip{position:fixed;background:rgba(8,14,24,0.95);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:10px;max-width:300px;z-index:100;pointer-events:none;backdrop-filter:blur(8px);box-shadow:0 4px 16px rgba(0,0,0,0.4)}
+.tooltip .tt-title{font-weight:600;color:var(--accent);margin-bottom:4px;font-size:11px}
+.tooltip .tt-row{display:flex;justify-content:space-between;gap:12px;padding:1px 0}
+.tooltip .tt-label{color:var(--muted)}.tooltip .tt-val{color:var(--text);font-family:'SF Mono',monospace}
+
+/* Detail panel */
+.detail{grid-area:detail;border-left:1px solid var(--border);padding:12px;overflow-y:auto;background:var(--surface);backdrop-filter:blur(8px)}
+.detail::-webkit-scrollbar{width:3px}.detail::-webkit-scrollbar-thumb{background:var(--border)}
+.detail-empty{display:flex;align-items:center;justify-content:center;height:100%;font-size:11px;color:var(--muted);text-align:center;padding:20px}
+.commit-item{padding:8px;margin:4px 0;border-radius:4px;background:rgba(20,30,45,0.4);border-left:2px solid var(--border);font-size:10px}
+.commit-hash{font-family:'SF Mono',monospace;color:var(--accent)}
+.commit-msg{color:var(--text);margin:2px 0}
+.commit-meta{font-size:8px;color:var(--muted)}
+.endpoint-item{display:flex;align-items:center;gap:8px;padding:6px 8px;margin:3px 0;border-radius:4px;background:rgba(20,30,45,0.3);font-size:10px}
+.endpoint-dot{width:6px;height:6px;border-radius:50%}
+
+/* Footer */
+.footer{grid-area:footer;display:flex;align-items:center;justify-content:space-between;padding:6px 20px;border-top:1px solid var(--border);background:var(--surface);backdrop-filter:blur(12px);font-size:9px;color:var(--muted)}
+
+/* Responsive */
+@media(max-width:1000px){.app{grid-template-columns:1fr;grid-template-areas:"header" "river" "footer"}.sidebar,.detail{display:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ═══════════════════════════════════════════════════════
+// DATA — Mirrors real orxaq-ops artifact structures
+// ═══════════════════════════════════════════════════════
+const LANES = [
+  { id:'codex-governance', owner:'codex', status:'done', tasks_done:4, tasks_total:4, cycles:12, cost:0.22, heartbeat_age:3,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:2, type:'task', label:'governance-e2e selected' },
+      { t:5, type:'routing', label:'gpt-5.3-codex (static)' },
+      { t:8, type:'commit', label:'breakglass policy v2.1' },
+      { t:11, type:'done', label:'All 4 tasks complete ✓' },
+    ]},
+  { id:'codex-routellm-npv', owner:'codex', status:'in_progress', tasks_done:2, tasks_total:5, cycles:38, cost:0.45, heartbeat_age:8,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:3, type:'task', label:'npv-sensitivity selected' },
+      { t:6, type:'routing', label:'RouteLLM → liquid/lfm2.5' },
+      { t:9, type:'commit', label:'NPV calculation engine' },
+      { t:14, type:'task', label:'discount-rate sweep' },
+      { t:18, type:'routing', label:'gpt-5.3-codex (fallback)' },
+      { t:22, type:'commit', label:'sensitivity matrices' },
+      { t:28, type:'task', label:'visualization layer' },
+      { t:33, type:'progress', label:'Cycle 38 in progress' },
+    ]},
+  { id:'codex-dashboard-todo', owner:'codex', status:'pending', tasks_done:0, tasks_total:1, cycles:8, cost:0.12, heartbeat_age:5,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:2, type:'task', label:'todo-metrics-fix selected' },
+      { t:4, type:'error', label:'--ask-for-approval unexpected' },
+      { t:6, type:'retry', label:'Retry #2 (git lock)' },
+      { t:8, type:'error', label:'Retry #3 (deadlock recovery)' },
+      { t:10, type:'wait', label:'Cooldown 10s before retry' },
+    ]},
+  { id:'codex-dashboard-ui', owner:'codex', status:'in_progress', tasks_done:1, tasks_total:3, cycles:15, cost:0.18, heartbeat_age:2,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:3, type:'task', label:'accessibility-audit' },
+      { t:7, type:'commit', label:'ARIA labels for metrics' },
+      { t:10, type:'done', label:'Task 1/3 complete' },
+      { t:13, type:'task', label:'keyboard-nav pass 2/3' },
+      { t:16, type:'progress', label:'Scanning tab order' },
+    ]},
+  { id:'codex-rpa-security', owner:'codex', status:'done', tasks_done:3, tasks_total:3, cycles:22, cost:0.31, heartbeat_age:120,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:4, type:'task', label:'xss-vector-scan' },
+      { t:8, type:'commit', label:'Input sanitization' },
+      { t:12, type:'task', label:'csrf-hardening' },
+      { t:16, type:'commit', label:'Token validation' },
+      { t:19, type:'done', label:'All XSS vectors patched ✓' },
+    ]},
+  { id:'gemini-skin-regression', owner:'gemini', status:'blocked', tasks_done:2, tasks_total:4, cycles:9, cost:0.08, heartbeat_age:45,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:3, type:'task', label:'skin-parity-check' },
+      { t:5, type:'routing', label:'gemini-2.5-flash' },
+      { t:7, type:'commit', label:'Skin test fixtures' },
+      { t:10, type:'blocked', label:'Merge conflict: skins.py' },
+    ]},
+  { id:'gemini-rln-tests', owner:'gemini', status:'done', tasks_done:5, tasks_total:5, cycles:30, cost:0.15, heartbeat_age:200,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:4, type:'task', label:'semantic-validation' },
+      { t:8, type:'commit', label:'Regression suite v1' },
+      { t:12, type:'task', label:'edge-case coverage' },
+      { t:16, type:'commit', label:'Fuzzing harness' },
+      { t:20, type:'done', label:'All semantic tests green ✓' },
+    ]},
+  { id:'claude-release-audit', owner:'claude', status:'in_progress', tasks_done:1, tasks_total:2, cycles:6, cost:0.09, heartbeat_age:15,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:3, type:'task', label:'phase32-release-check' },
+      { t:6, type:'progress', label:'Scanning signoff integrity' },
+    ]},
+  { id:'claude-collab-health', owner:'claude', status:'done', tasks_done:2, tasks_total:2, cycles:4, cost:0.03, heartbeat_age:300,
+    events: [
+      { t:0, type:'start', label:'Lane started' },
+      { t:2, type:'task', label:'collab-health-scan' },
+      { t:4, type:'done', label:'Health report generated ✓' },
+    ]},
+];
+
+const GIT_COMMITS = [
+  { hash:'a3f2c1d', msg:'fix(dashboard): ARIA labels for metric cards', author:'codex', time:2, branch:'codex/issue-13-dashboard-accessibility' },
+  { hash:'8b1e4f7', msg:'test(rln): add semantic regression suite', author:'gemini', time:5, branch:'gemini/rln-semantic-tests' },
+  { hash:'c5d9a2b', msg:'chore(ops): restore swarm runtime v1', author:'codex', time:12, branch:'codex/restore-swarm-runtime-v1' },
+  { hash:'f7e3b08', msg:'feat(rpa): XSS vector hardening', author:'codex', time:18, branch:'codex/rpa-security-fixes' },
+  { hash:'2a8c1d5', msg:'docs(governance): breakglass policy v2.1', author:'codex', time:25, branch:'codex/governance-e2e' },
+  { hash:'9d4f2e1', msg:'fix(skin): parity test fixtures', author:'gemini', time:30, branch:'gemini/skin-regression' },
+  { hash:'b7c3a90', msg:'feat(npv): discount rate sensitivity', author:'codex', time:35, branch:'codex/routellm-npv' },
+];
+
+const ENDPOINTS = [
+  { id:'lmstudio-node-1', ok:true, latency:2.4, models:11, provider:'local' },
+  { id:'claude-primary', ok:false, latency:101.4, provider:'anthropic', error:'401 auth' },
+  { id:'openai-codex', ok:true, latency:45.2, models:3, provider:'openai' },
+];
+
+const METRICS = {
+  responses:445, cost:1.68, tokens:1055013, passRate:0.481,
+  acceptRate:0.524, latency:90.26, routellmRate:0.438,
+  budget_cap:100, budget_spent:1.68,
+};
+
+const ALERTS = [
+  { sev:'high', msg:'gemini-skin-regression blocked: merge conflict' },
+  { sev:'medium', msg:'codex-dashboard-todo: 8 deadlock recoveries' },
+  { sev:'medium', msg:'claude-collab-health: stale heartbeat (300s)' },
+];
+
+const ownerColor = { codex:'#00c8ff', gemini:'#ff8800', claude:'#a855f7' };
+const statusColor = { done:'#00e07a', in_progress:'#00a8ff', blocked:'#ff3050', pending:'#ffaa00' };
+const eventColor = {
+  start:'#405060', task:'#00a8ff', routing:'#8855cc', commit:'#00e07a',
+  done:'#00e07a', error:'#ff3050', blocked:'#ff3050', retry:'#ffaa00',
+  progress:'#00a8ff', wait:'#ffaa00',
+};
+
+// ═══════════════════════════════════════════════════════
+// COMPONENTS
+// ═══════════════════════════════════════════════════════
+
+function App() {
+  const [selectedLane, setSelectedLane] = useState(null);
+  const [tooltip, setTooltip] = useState(null);
+  const [clock, setClock] = useState('');
+  const riverRef = useRef(null);
+
+  useEffect(() => {
+    const iv = setInterval(() => setClock(new Date().toISOString().slice(11,19)+'Z'), 1000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const healthStatus = ALERTS.some(a => a.sev === 'high') ? 'warning' :
+                        ALERTS.length > 0 ? 'warning' : 'healthy';
+
+  return (
+    <>
+      <div className={`ambient ${healthStatus}`} />
+      <div className="app">
+        <Header clock={clock} healthStatus={healthStatus} />
+        <Sidebar lanes={LANES} selected={selectedLane} onSelect={setSelectedLane} />
+        <River lanes={LANES} commits={GIT_COMMITS} onTooltip={setTooltip} ref={riverRef} />
+        <Detail lane={selectedLane ? LANES.find(l=>l.id===selectedLane) : null} />
+        <Footer />
+      </div>
+      {tooltip && <Tooltip {...tooltip} />}
+    </>
+  );
+}
+
+function Header({ clock, healthStatus }) {
+  const orbClass = healthStatus === 'healthy' ? 'green' : healthStatus === 'warning' ? 'amber' : 'red';
+  return (
+    <div className="header">
+      <div style={{display:'flex',alignItems:'center',gap:12}}>
+        <div className={`health-orb ${orbClass}`} title="System health">
+          {ALERTS.length || '✓'}
+        </div>
+        <h1>AEGIS<span>Temporal Flow Navigator</span></h1>
+      </div>
+      <div className="header-stats">
+        <div className="header-stat"><span className="header-stat-label">Responses</span><span className="header-stat-val" style={{color:'var(--accent)'}}>{METRICS.responses}</span></div>
+        <div className="header-stat"><span className="header-stat-label">Cost</span><span className="header-stat-val">${METRICS.cost.toFixed(2)}</span></div>
+        <div className="header-stat"><span className="header-stat-label">Tokens</span><span className="header-stat-val">{(METRICS.tokens/1000).toFixed(0)}K</span></div>
+        <div className="header-stat"><span className="header-stat-label">Pass Rate</span><span className="header-stat-val" style={{color:METRICS.passRate<0.5?'var(--warn)':'var(--ok)'}}>{(METRICS.passRate*100).toFixed(0)}%</span></div>
+        <div className="header-stat"><span className="header-stat-label">Latency</span><span className="header-stat-val">{METRICS.latency.toFixed(0)}s</span></div>
+        <div className="header-stat"><span className="header-stat-label">Budget</span><span className="header-stat-val">${(METRICS.budget_cap - METRICS.budget_spent).toFixed(0)}</span></div>
+        <div className="header-stat"><span className="header-stat-label">UTC</span><span className="header-stat-val" style={{color:'var(--muted)'}}>{clock}</span></div>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ lanes, selected, onSelect }) {
+  const grouped = { codex: [], gemini: [], claude: [] };
+  lanes.forEach(l => (grouped[l.owner] || []).push(l));
+
+  return (
+    <div className="sidebar">
+      {Object.entries(grouped).map(([owner, ownerLanes]) => (
+        <div key={owner}>
+          <div className="section-title" style={{color:ownerColor[owner]}}>{owner.toUpperCase()} — {ownerLanes.length} lanes</div>
+          {ownerLanes.map(lane => (
+            <div key={lane.id}
+              className={`agent-card ${selected === lane.id ? 'selected' : ''}`}
+              onClick={() => onSelect(selected === lane.id ? null : lane.id)}>
+              <div className="agent-card-header">
+                <div className="agent-dot" style={{background:ownerColor[owner],boxShadow:`0 0 6px ${ownerColor[owner]}`}} />
+                <div className="agent-name" style={{color:ownerColor[owner]}}>{lane.id.replace(`${owner}-`,'')}</div>
+                <div className={`agent-status ${lane.status}`}>{lane.status.replace('_',' ')}</div>
+              </div>
+              <div className="agent-meta">
+                <div className="agent-meta-item"><span className="agent-meta-label">Tasks</span><span className="agent-meta-val">{lane.tasks_done}/{lane.tasks_total}</span></div>
+                <div className="agent-meta-item"><span className="agent-meta-label">Cycles</span><span className="agent-meta-val">{lane.cycles}</span></div>
+                <div className="agent-meta-item"><span className="agent-meta-label">Cost</span><span className="agent-meta-val">${lane.cost.toFixed(2)}</span></div>
+                <div className="agent-meta-item"><span className="agent-meta-label">HB</span><span className="agent-meta-val" style={{color:lane.heartbeat_age>120?'var(--warn)':'inherit'}}>{lane.heartbeat_age}s</span></div>
+              </div>
+              <div className="progress-bar">
+                <div className="progress-fill" style={{width:`${(lane.tasks_done/lane.tasks_total)*100}%`,background:statusColor[lane.status]}} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const River = React.forwardRef(({ lanes, commits, onTooltip }, ref) => {
+  const svgRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, scrollLeft: 0 });
+
+  const rowH = 56;
+  const padding = { top: 40, left: 20, right: 40 };
+  const maxT = Math.max(...lanes.flatMap(l => l.events.map(e => e.t)), ...commits.map(c => c.time));
+  const timeScale = 28; // px per time unit
+  const svgW = padding.left + maxT * timeScale + padding.right + 200;
+  const svgH = padding.top + lanes.length * rowH + 60;
+
+  // Drag to pan
+  const onMouseDown = (e) => {
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, scrollLeft: ref.current?.scrollLeft || 0 });
+  };
+  const onMouseMove = useCallback((e) => {
+    if (!isDragging || !ref.current) return;
+    ref.current.scrollLeft = dragStart.scrollLeft - (e.clientX - dragStart.x);
+  }, [isDragging, dragStart]);
+  const onMouseUp = () => setIsDragging(false);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => { window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); };
+  }, [onMouseMove]);
+
+  // Time axis ticks
+  const ticks = [];
+  for (let t = 0; t <= maxT; t += 5) ticks.push(t);
+
+  return (
+    <div className="river" ref={ref} onMouseDown={onMouseDown}>
+      <svg ref={svgRef} width={svgW} height={svgH} style={{minWidth:svgW}}>
+        {/* Time axis */}
+        {ticks.map(t => (
+          <g key={t}>
+            <line x1={padding.left + t * timeScale} y1={padding.top - 10}
+                  x2={padding.left + t * timeScale} y2={svgH}
+                  stroke="rgba(40,60,90,0.15)" strokeWidth={1} />
+            <text x={padding.left + t * timeScale} y={padding.top - 16}
+                  className="river-label" textAnchor="middle">-{maxT - t}m</text>
+          </g>
+        ))}
+
+        {/* Lane streams */}
+        {lanes.map((lane, li) => {
+          const y = padding.top + li * rowH + rowH / 2;
+          const color = ownerColor[lane.owner];
+          const events = lane.events;
+
+          // Stream path (flowing line)
+          const points = events.map(e => [padding.left + e.t * timeScale, y]);
+          // Extend to current time for in-progress
+          if (lane.status === 'in_progress') {
+            points.push([padding.left + (maxT + 2) * timeScale, y]);
+          }
+
+          const pathD = points.length > 1
+            ? `M${points[0][0]},${points[0][1]}` + points.slice(1).map(([x,py]) => {
+                const prevX = points[points.indexOf(points.find(p=>p[0]===x&&p[1]===py))-1]?.[0] || points[0][0];
+                const cpx = (prevX + x) / 2;
+                return `C${cpx},${py} ${cpx},${py} ${x},${py}`;
+              }).join('')
+            : '';
+
+          return (
+            <g key={lane.id}>
+              {/* Stream glow */}
+              <path d={pathD} fill="none" stroke={color} strokeWidth={lane.status === 'in_progress' ? 6 : 3}
+                    strokeOpacity={0.08} strokeLinecap="round" />
+              {/* Stream line */}
+              <path d={pathD} fill="none" stroke={color}
+                    strokeWidth={lane.status === 'in_progress' ? 2.5 : 1.5}
+                    strokeOpacity={lane.status === 'done' ? 0.3 : lane.status === 'blocked' ? 0.4 : 0.6}
+                    strokeLinecap="round"
+                    strokeDasharray={lane.status === 'blocked' ? '4,4' : 'none'} />
+
+              {/* Event nodes */}
+              {events.map((evt, ei) => {
+                const ex = padding.left + evt.t * timeScale;
+                const nodeR = evt.type === 'done' || evt.type === 'blocked' ? 6 :
+                              evt.type === 'commit' ? 5 : evt.type === 'error' ? 5 : 3.5;
+                const ec = eventColor[evt.type] || color;
+                return (
+                  <g key={ei} className="river-node"
+                    onMouseEnter={(e) => onTooltip({
+                      x: e.clientX, y: e.clientY,
+                      title: `${lane.id} · ${evt.type}`,
+                      rows: [
+                        ['Event', evt.label],
+                        ['Time', `-${maxT - evt.t}m ago`],
+                        ['Owner', lane.owner],
+                        ['Status', lane.status],
+                      ]
+                    })}
+                    onMouseLeave={() => onTooltip(null)}>
+                    {/* Glow */}
+                    <circle cx={ex} cy={y} r={nodeR + 4} fill={ec} fillOpacity={0.08} />
+                    {/* Node */}
+                    <circle cx={ex} cy={y} r={nodeR} fill={ec} fillOpacity={0.7}
+                            stroke={ec} strokeWidth={1} strokeOpacity={0.4} />
+                    {/* Pulsing ring for blocked/error */}
+                    {(evt.type === 'blocked' || evt.type === 'error') && (
+                      <circle cx={ex} cy={y} r={nodeR + 2} fill="none" stroke={ec} strokeWidth={1} strokeOpacity={0.3}>
+                        <animate attributeName="r" values={`${nodeR+2};${nodeR+8};${nodeR+2}`} dur="2s" repeatCount="indefinite" />
+                        <animate attributeName="stroke-opacity" values="0.3;0;0.3" dur="2s" repeatCount="indefinite" />
+                      </circle>
+                    )}
+                  </g>
+                );
+              })}
+
+              {/* Label */}
+              <text x={4} y={y + 4} className="river-lane-label" style={{fill:color,fontSize:'9px'}}>
+                {lane.id.replace(`${lane.owner}-`, '').slice(0, 18)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Git commits as diamonds on a separate row */}
+        <g>
+          <line x1={padding.left} y1={svgH - 30} x2={svgW - padding.right} y2={svgH - 30}
+                stroke="rgba(0,224,122,0.1)" strokeWidth={1} />
+          <text x={4} y={svgH - 26} className="river-label" style={{fill:'#00e07a'}}>GIT</text>
+          {commits.map((c, ci) => {
+            const cx = padding.left + c.time * timeScale;
+            const cy = svgH - 30;
+            return (
+              <g key={ci} className="river-node"
+                onMouseEnter={(e) => onTooltip({
+                  x: e.clientX, y: e.clientY,
+                  title: `Commit ${c.hash}`,
+                  rows: [['Message', c.msg], ['Author', c.author], ['Branch', c.branch], ['Time', `-${c.time}m`]]
+                })}
+                onMouseLeave={() => onTooltip(null)}>
+                <rect x={cx-5} y={cy-5} width={10} height={10}
+                      transform={`rotate(45 ${cx} ${cy})`}
+                      fill={ownerColor[c.author] || '#00e07a'} fillOpacity={0.6}
+                      stroke={ownerColor[c.author] || '#00e07a'} strokeWidth={1} strokeOpacity={0.3} />
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+    </div>
+  );
+});
+
+function Detail({ lane }) {
+  if (!lane) return (
+    <div className="detail">
+      <div className="section-title">Detail View</div>
+      <div className="detail-empty">Select a lane from the sidebar<br/>or hover events in the timeline</div>
+
+      <div className="section-title" style={{marginTop:20}}>Recent Commits</div>
+      {GIT_COMMITS.slice(0,5).map(c => (
+        <div className="commit-item" key={c.hash} style={{borderColor:ownerColor[c.author]}}>
+          <span className="commit-hash">{c.hash.slice(0,7)}</span>
+          <div className="commit-msg">{c.msg}</div>
+          <div className="commit-meta">{c.author} · {c.branch} · -{c.time}m</div>
+        </div>
+      ))}
+
+      <div className="section-title" style={{marginTop:16}}>Model Endpoints</div>
+      {ENDPOINTS.map(ep => (
+        <div className="endpoint-item" key={ep.id}>
+          <div className="endpoint-dot" style={{background:ep.ok?'var(--ok)':'var(--crit)',boxShadow:`0 0 4px ${ep.ok?'var(--ok)':'var(--crit)'}`}} />
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,color:ep.ok?'var(--text)':'var(--crit)'}}>{ep.id}</div>
+            <div style={{fontSize:'8px',color:'var(--muted)'}}>{ep.provider} · {ep.latency}ms{ep.models ? ` · ${ep.models} models` : ''}</div>
+          </div>
+        </div>
+      ))}
+
+      <div className="section-title" style={{marginTop:16}}>Active Alerts ({ALERTS.length})</div>
+      {ALERTS.map((a,i) => (
+        <div key={i} style={{
+          padding:'8px',margin:'4px 0',borderRadius:'4px',fontSize:'10px',
+          background:a.sev==='high'?'rgba(255,48,80,0.06)':'rgba(255,170,0,0.04)',
+          borderLeft:`2px solid ${a.sev==='high'?'var(--crit)':'var(--warn)'}`,
+          color:a.sev==='high'?'var(--crit)':'var(--warn)'
+        }}>{a.msg}</div>
+      ))}
+    </div>
+  );
+
+  const color = ownerColor[lane.owner];
+  return (
+    <div className="detail">
+      <div className="section-title" style={{color}}>
+        {lane.owner.toUpperCase()} / {lane.id.replace(`${lane.owner}-`,'')}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+        <div style={{background:'rgba(20,30,45,0.5)',borderRadius:6,padding:'10px',textAlign:'center'}}>
+          <div style={{fontSize:'8px',color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.1em'}}>Status</div>
+          <div style={{fontSize:'14px',fontWeight:700,color:statusColor[lane.status],marginTop:4}}>{lane.status.replace('_',' ').toUpperCase()}</div>
+        </div>
+        <div style={{background:'rgba(20,30,45,0.5)',borderRadius:6,padding:'10px',textAlign:'center'}}>
+          <div style={{fontSize:'8px',color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.1em'}}>Progress</div>
+          <div style={{fontSize:'14px',fontWeight:700,color,marginTop:4}}>{lane.tasks_done}/{lane.tasks_total}</div>
+        </div>
+        <div style={{background:'rgba(20,30,45,0.5)',borderRadius:6,padding:'10px',textAlign:'center'}}>
+          <div style={{fontSize:'8px',color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.1em'}}>Cost</div>
+          <div style={{fontSize:'14px',fontWeight:700,marginTop:4}}>${lane.cost.toFixed(2)}</div>
+        </div>
+        <div style={{background:'rgba(20,30,45,0.5)',borderRadius:6,padding:'10px',textAlign:'center'}}>
+          <div style={{fontSize:'8px',color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.1em'}}>Heartbeat</div>
+          <div style={{fontSize:'14px',fontWeight:700,color:lane.heartbeat_age>120?'var(--warn)':'inherit',marginTop:4}}>{lane.heartbeat_age}s</div>
+        </div>
+      </div>
+
+      <div className="section-title">Event Timeline</div>
+      {lane.events.map((evt, i) => (
+        <div key={i} style={{
+          display:'flex',gap:8,padding:'6px 0',borderBottom:'1px solid rgba(40,60,90,0.15)',fontSize:'10px',alignItems:'center'
+        }}>
+          <div style={{width:6,height:6,borderRadius:'50%',background:eventColor[evt.type],flexShrink:0,boxShadow:`0 0 4px ${eventColor[evt.type]}`}} />
+          <div style={{flex:1}}>
+            <span style={{color:eventColor[evt.type],fontWeight:600,textTransform:'uppercase',fontSize:'8px',letterSpacing:'0.05em'}}>{evt.type}</span>
+            <div style={{color:'var(--text)',marginTop:1}}>{evt.label}</div>
+          </div>
+          <span style={{color:'var(--muted)',fontFamily:'SF Mono, monospace',fontSize:'8px'}}>-{Math.max(0,35-evt.t)}m</span>
+        </div>
+      ))}
+
+      <div className="section-title" style={{marginTop:12}}>Related Commits</div>
+      {GIT_COMMITS.filter(c => c.author === lane.owner).slice(0,3).map(c => (
+        <div className="commit-item" key={c.hash} style={{borderColor:color}}>
+          <span className="commit-hash">{c.hash.slice(0,7)}</span>
+          <div className="commit-msg">{c.msg}</div>
+          <div className="commit-meta">{c.branch} · -{c.time}m</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Footer() {
+  const active = LANES.filter(l => l.status === 'in_progress').length;
+  const done = LANES.filter(l => l.status === 'done').length;
+  const blocked = LANES.filter(l => l.status === 'blocked').length;
+  return (
+    <div className="footer">
+      <div>AEGIS v1.0 · orxaq-ops · poc/dashboard-scifi-nexus-aegis-20260212</div>
+      <div style={{display:'flex',gap:16}}>
+        <span><span style={{color:'var(--ok)'}}>●</span> {done} done</span>
+        <span><span style={{color:'var(--accent)'}}>●</span> {active} active</span>
+        <span><span style={{color:'var(--crit)'}}>●</span> {blocked} blocked</span>
+        <span>Lanes: {LANES.length} · PRs: 22 · Branches: 103</span>
+      </div>
+    </div>
+  );
+}
+
+function Tooltip({ x, y, title, rows }) {
+  const style = {
+    left: Math.min(x + 12, window.innerWidth - 320),
+    top: Math.min(y + 12, window.innerHeight - 150),
+  };
+  return (
+    <div className="tooltip" style={style}>
+      <div className="tt-title">{title}</div>
+      {rows.map(([label, val], i) => (
+        <div className="tt-row" key={i}><span className="tt-label">{label}</span><span className="tt-val">{val}</span></div>
+      ))}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
