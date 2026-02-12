@@ -3151,6 +3151,43 @@ def _remote_moved_url(output: str) -> str | None:
     return match.group(0)
 
 
+_AGENT_BRANCH_REUSE_PATTERNS = (
+    "agent branch reuse detected across sessions",
+    "agent branch reuse detected",
+)
+
+
+def _is_agent_branch_reuse_violation(output: str) -> bool:
+    lowered = output.lower()
+    return any(pattern in lowered for pattern in _AGENT_BRANCH_REUSE_PATTERNS)
+
+
+def _rotate_branch_after_agent_reuse_violation(
+    repo: Path,
+    *,
+    branch: str,
+    timeout_sec: int,
+    owner: str,
+) -> tuple[bool, str]:
+    # Deterministic git collaboration hooks can bind agent branches to a session token.
+    # After restarts/reboots, that token may change and the hook blocks pushes. Instead
+    # of bypassing hooks with --no-verify, rotate to a fresh agent-scoped branch and
+    # push normally so the mapping is updated and policy remains enforced.
+    stamp = _now_utc().strftime("%Y%m%dT%H%M%SZ")
+    agent_prefixes = ("codex/", "claude/", "gemini/", "agent/")
+    base = branch if branch.startswith(agent_prefixes) else _autonomy_branch_name(repo, owner=owner)
+    new_branch = f"{base}-recovery-{stamp}"
+    checkout = run_command(["git", "checkout", "-b", new_branch], cwd=repo, timeout_sec=timeout_sec)
+    if checkout.returncode != 0:
+        checkout_output = (checkout.stdout + "\n" + checkout.stderr).strip()
+        return False, f"unable to create recovery branch `{new_branch}`:\n{checkout_output}"
+    push = run_command(["git", "push", "-u", "origin", new_branch], cwd=repo, timeout_sec=timeout_sec)
+    if push.returncode == 0:
+        return True, f"rotated agent branch due to reuse policy: {branch} -> {new_branch}; pushed"
+    push_output = (push.stdout + "\n" + push.stderr).strip()
+    return False, f"recovery branch push failed for `{new_branch}`:\n{push_output}"
+
+
 def _is_protected_branch_rejection(output: str) -> bool:
     lowered = output.lower()
     return any(pattern in lowered for pattern in PROTECTED_BRANCH_REJECTION_PATTERNS)
@@ -3234,6 +3271,17 @@ def _push_with_recovery(
             return True, f"{message}; pushed new branch `{new_branch}`"
         push_cmd = retry_cmd
         output = (retry.stdout + "\n" + retry.stderr).strip()
+
+    if _is_agent_branch_reuse_violation(output):
+        rotated, rotate_msg = _rotate_branch_after_agent_reuse_violation(
+            repo,
+            branch=branch,
+            timeout_sec=timeout_sec,
+            owner=owner,
+        )
+        if rotated:
+            return True, rotate_msg
+        output = f"{output}\n\nbranch-rotation fallback failed:\n{rotate_msg}"
 
     ok, current_branch = _current_branch(repo)
     if not ok:

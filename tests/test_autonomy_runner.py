@@ -2059,6 +2059,49 @@ class AgentExecutionHardeningTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("updating origin", details)
 
+    def test_push_with_recovery_rotates_branch_on_agent_branch_reuse_violation(self):
+        repo = pathlib.Path("/tmp/repo")
+        fixed_now = dt.datetime(2026, 2, 12, 0, 0, 0, tzinfo=dt.timezone.utc)
+        branch = "codex/issue-16-dashboard-ui-accessibility"
+        rotated = "codex/issue-16-dashboard-ui-accessibility-recovery-20260212T000000Z"
+        with mock.patch.object(
+            runner,
+            "_now_utc",
+            return_value=fixed_now,
+        ), mock.patch.object(
+            runner,
+            "_git_output",
+            return_value=(True, branch),
+        ), mock.patch.object(
+            runner,
+            "run_command",
+            side_effect=[
+                runner.subprocess.CompletedProcess(
+                    ["git", "push"],
+                    returncode=1,
+                    stdout="",
+                    stderr="Agent branch reuse detected across sessions.",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "checkout", "-b", rotated],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+                runner.subprocess.CompletedProcess(
+                    ["git", "push", "-u", "origin", rotated],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                ),
+            ],
+        ) as run_command:
+            ok, details = runner._push_with_recovery(repo, timeout_sec=10, owner="codex")
+        self.assertTrue(ok)
+        self.assertIn("rotated agent branch", details)
+        self.assertIn(rotated, details)
+        self.assertEqual(run_command.call_count, 3)
+
     def test_push_with_recovery_handles_protected_branch_on_no_verify_path(self):
         repo = pathlib.Path("/tmp/repo")
         with mock.patch.object(
