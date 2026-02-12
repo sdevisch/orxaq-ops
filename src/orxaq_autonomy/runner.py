@@ -3174,10 +3174,14 @@ def ensure_pushable_branch(repo: Path, owner: str = "autonomy", timeout_sec: int
 
     create = run_command(["git", "checkout", "-b", target], cwd=repo, timeout_sec=timeout_sec)
     if create.returncode != 0:
+        # NOTE: Python 3.11 disallows backslashes in f-string expressions, even in string literals.
+        # Build combined outputs before interpolating to keep runner compatible with CI.
+        checkout_output = (checkout.stdout + "\n" + checkout.stderr).strip()
+        create_output = (create.stdout + "\n" + create.stderr).strip()
         return False, (
             f"failed to switch off protected branch `{branch}`:\n"
-            f"{(checkout.stdout + '\n' + checkout.stderr).strip()}\n\n"
-            f"create branch failure:\n{(create.stdout + '\n' + create.stderr).strip()}"
+            f"{checkout_output}\n\n"
+            f"create branch failure:\n{create_output}"
         )
     return True, f"created pushable branch `{target}` from protected `{branch}`"
 
