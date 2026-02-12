@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "provider": "openai",
+      "model": "gpt-4.1-mini",
+      "start_time": "2026-02-09T10:00:00+00:00",
+      "end_time": "2026-02-09T10:05:00+00:00",
+      "input_tokens": 1200,
+      "output_tokens": 320,
+      "cost_usd": 0.0612
+    }
+  ],
+  "next_cursor": ""
+}

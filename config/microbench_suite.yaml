@@ -1,0 +1,22 @@
+[
+  {"id":"mb-001","task_type":"docs","prompt":"Summarize routing policy rules","expected_regex":"routing"},
+  {"id":"mb-002","task_type":"schema","prompt":"Validate JSON schema fields","expected_regex":"event_id"},
+  {"id":"mb-003","task_type":"refactor","prompt":"Refactor lane selector","expected_regex":"lane"},
+  {"id":"mb-004","task_type":"tests","prompt":"Add deterministic test fixture","expected_regex":"deterministic"},
+  {"id":"mb-005","task_type":"lint","prompt":"Fix lint warnings","expected_regex":"lint"},
+  {"id":"mb-006","task_type":"docs","prompt":"Document idempotency key handling","expected_regex":"idempotency"},
+  {"id":"mb-007","task_type":"schema","prompt":"Normalize event schema","expected_regex":"schema"},
+  {"id":"mb-008","task_type":"refactor","prompt":"Extract transport plugin","expected_regex":"transport"},
+  {"id":"mb-009","task_type":"tests","prompt":"Write plugin registry tests","expected_regex":"plugin"},
+  {"id":"mb-010","task_type":"lint","prompt":"Sort imports","expected_regex":"import"},
+  {"id":"mb-011","task_type":"docs","prompt":"Explain lane ladder","expected_regex":"L0"},
+  {"id":"mb-012","task_type":"schema","prompt":"Ensure required fields","expected_regex":"required"},
+  {"id":"mb-013","task_type":"refactor","prompt":"Simplify router fallback","expected_regex":"fallback"},
+  {"id":"mb-014","task_type":"tests","prompt":"Add budget enforcement tests","expected_regex":"budget"},
+  {"id":"mb-015","task_type":"lint","prompt":"Remove dead code","expected_regex":"code"},
+  {"id":"mb-016","task_type":"docs","prompt":"Describe governance race","expected_regex":"governance"},
+  {"id":"mb-017","task_type":"schema","prompt":"Check task_type enums","expected_regex":"task_type"},
+  {"id":"mb-018","task_type":"refactor","prompt":"Isolate telemetry sink","expected_regex":"telemetry"},
+  {"id":"mb-019","task_type":"tests","prompt":"Add file lock append test","expected_regex":"lock"},
+  {"id":"mb-020","task_type":"lint","prompt":"Normalize naming","expected_regex":"name"}
+]

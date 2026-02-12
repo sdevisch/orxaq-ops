@@ -1,0 +1,103 @@
+[
+  {
+    "id": "rln-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Advance RLN anti-compaction and retrieval fidelity",
+    "description": "Improve recursive extraction/merge quality under tiny context windows and prove gains against baseline.",
+    "depends_on": [],
+    "acceptance": [
+      "RLN code updated for measurable anti-compaction improvements",
+      "Benchmarks demonstrate retention gains vs baseline",
+      "All related tests pass"
+    ]
+  },
+  {
+    "id": "rln-adversarial-tests",
+    "owner": "claude",
+    "priority": 2,
+    "title": "Expand adversarial RLN test coverage",
+    "description": "Add independent edge-case and regression tests for detail retention, retrieval edge cases, and context compaction risks.",
+    "depends_on": [
+      "rln-hardening"
+    ],
+    "acceptance": [
+      "New RLN adversarial tests added",
+      "Tests fail without recent RLN improvements",
+      "Test suite passes after fixes"
+    ]
+  },
+  {
+    "id": "causal-correctness",
+    "owner": "codex",
+    "priority": 3,
+    "title": "Strengthen causal DAG/SCM/IV correctness",
+    "description": "Improve correctness and robustness for DAG ordering, SCM sampling, identifiability, and IV edge conditions.",
+    "depends_on": [],
+    "acceptance": [
+      "Causal logic improvements implemented",
+      "Robust unit tests for edge cases and invariants",
+      "No regressions in existing tests"
+    ]
+  },
+  {
+    "id": "causal-independent-tests",
+    "owner": "claude",
+    "priority": 4,
+    "title": "Add independent causal validation suite",
+    "description": "Create independent tests that challenge assumptions and validate causal API behavior.",
+    "depends_on": [
+      "causal-correctness"
+    ],
+    "acceptance": [
+      "Independent causal tests added",
+      "Edge cases include weak instruments and graph-path ambiguities",
+      "Suite passes cleanly"
+    ]
+  },
+  {
+    "id": "core-security",
+    "owner": "codex",
+    "priority": 5,
+    "title": "Harden core integrity/resilience/security defaults",
+    "description": "Improve secure defaults, tamper checks, and resilience behavior with explicit threat-model alignment.",
+    "depends_on": [],
+    "acceptance": [
+      "Security and resilience code hardened",
+      "Threat-model alignment documented and tested",
+      "No lint/type/test regressions"
+    ]
+  },
+  {
+    "id": "mesh-cli-rpa",
+    "owner": "codex",
+    "priority": 6,
+    "title": "Stabilize mesh orchestration, CLI DX, and RPA reliability",
+    "description": "Strengthen deterministic orchestration behavior, CLI errors/docs, and safe RPA workflow reliability.",
+    "depends_on": [
+      "core-security"
+    ],
+    "acceptance": [
+      "Mesh/CLI/RPA behavior improved with tests",
+      "Windows user-space constraints are respected",
+      "Documentation updated for operators"
+    ]
+  },
+  {
+    "id": "release-quality",
+    "owner": "codex",
+    "priority": 7,
+    "title": "Finalize quality gates and release readiness",
+    "description": "Ensure CI/CD, packaging, evidence artifacts, and release docs meet production shipping standards.",
+    "depends_on": [
+      "rln-adversarial-tests",
+      "causal-independent-tests",
+      "mesh-cli-rpa"
+    ],
+    "acceptance": [
+      "CI/CD and release artifacts are complete",
+      "Quality gates pass with documented evidence",
+      "Repository is ready to ship"
+    ]
+  }
+]

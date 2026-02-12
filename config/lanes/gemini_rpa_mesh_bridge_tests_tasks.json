@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-mesh-bridge-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand mesh-to-RPA bridge regression tests",
+    "description": "Add regression tests for mesh RPA wrappers, error propagation, and deterministic bridge behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "Mesh bridge RPA coverage increases",
+      "Error-path assertions include actionable diagnostics",
+      "make lint and make test pass"
+    ]
+  }
+]

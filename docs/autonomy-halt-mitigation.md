@@ -37,3 +37,11 @@ Controls:
 - Optional OS keepalive installs a user-space scheduler entry:
   - Windows Task Scheduler task (`schtasks`) under current user.
   - macOS LaunchAgent (`~/Library/LaunchAgents`).
+
+Mitigation Sequence:
+1. Detect runner/supervisor exit
+2. Log comprehensive diagnostics
+3. Check last known good state
+4. Attempt graceful restart
+5. If restart fails, trigger manual review workflow
+6. Preserve conversation and lane state for recovery

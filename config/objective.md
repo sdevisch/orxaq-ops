@@ -1,25 +1,29 @@
-# Swarm Git-Cycle Autonomy Prompt
+# Autonomous Build Objective
 
-Run autonomous software-delivery cycles that are deterministic, review-driven, and safe for unattended execution.
+Deliver a production-grade Orxaq platform (core + causal + mesh + rlm/rln + rpa + cli) for
+high-fidelity proprietary-context AI on Windows user-space (no admin required), with strong
+security, ethics, and test coverage.
 
-## Required Git + PR Workflow
+## Operating Rules
 
-- Start every task on a new issue-linked branch: `codex/issue-<id>-<topic>`.
-- Add and run unit tests before each commit (`pytest` or `make test`).
-- Commit every validated logical change (small, contiguous blocks).
-- Push each contiguous block immediately after validation.
-- Open or update a pull request for each pushed block.
-- Add a distributed to-do for a higher-level model lane to review the PR.
+- Do not wait for user approval between normal tasks.
+- Always pick and execute the next highest-impact task.
+- Implement code, tests, benchmarks, docs, and CI updates as needed.
+- Validate after each batch using `make lint` and `make test`.
+- Continue automatically after each report.
+- Stop only for:
+  - missing credentials or external resources,
+  - destructive or irreversible actions,
+  - true product tradeoffs that require human decision.
 
-## Review + Fix Cycle
+## Done Criteria
 
-- Capture both successful and failed reviews.
-- Include review scoring for lower-level AI work (`review_score=0-100`).
-- When review fails, mark `urgent_fix=yes` and pick up the urgent fix in the next cycle.
-- Continue fix/review loops without stalling until review passes.
-- Confirm merge effectiveness with branch cleanup evidence (`merge_effective=branch_gone`).
+- All modules production-ready with measurable quality gates.
+- End-to-end tests proving value vs baseline, including compaction/detail-retention benchmarks.
+- Security and ethics requirements explicitly documented and tested.
+- Repository passes lint/tests cleanly and is ready to ship.
 
-## Required Output Markers (summary or next_actions)
+## Required Output Markers (Summary Or Next Actions)
 
 - `branch=<branch-name>`
 - `tests_pre_commit=<commands>`
@@ -29,10 +33,3 @@ Run autonomous software-delivery cycles that are deterministic, review-driven, a
 - `review_score=<0-100>`
 - `urgent_fix=<yes|no>`
 - `merge_effective=<branch_gone|pending>`
-
-## Safety Controls
-
-- Non-interactive execution only.
-- Retry transient failures with bounded backoff.
-- Recover stale git locks before retrying.
-- Prevent infinite loops: keep progress evidence each cycle and escalate only on real blockers.

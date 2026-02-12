@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-rpa-security-fixes",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Fix RPA adversarial security gaps",
+    "description": "Close null-byte, localhost/encoded-host, decimal-IP, nested-scheme, and credential-leak URL safety failures.",
+    "depends_on": [],
+    "acceptance": [
+      "RPA safety adversarial tests pass",
+      "RPA URL safety guards are deterministic",
+      "Validation commands pass"
+    ]
+  }
+]

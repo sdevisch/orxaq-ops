@@ -21,17 +21,33 @@ class VersioningTests(unittest.TestCase):
     def test_validate_release_tag(self):
         self.assertEqual(validate_release_tag("1.2.3", "v1.2.3"), [])
         self.assertTrue(validate_release_tag("1.2.3", "v1.2.4"))
+        self.assertEqual(validate_release_tag("1.2.3", None), [])
+        self.assertTrue(validate_release_tag("1.2.3", "release-1.2.3"))
 
     def test_bump_version(self):
         self.assertEqual(bump_version("1.2.3", "patch"), "1.2.4")
         self.assertEqual(bump_version("1.2.3", "minor"), "1.3.0")
         self.assertEqual(bump_version("1.2.3", "major"), "2.0.0")
+        with self.assertRaises(ValueError):
+            bump_version("1.2", "patch")
+        with self.assertRaises(ValueError):
+            bump_version("1.2.3", "build")
 
     def test_load_project_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             pyproject = pathlib.Path(tmp) / "pyproject.toml"
             pyproject.write_text('[project]\nname="x"\nversion="0.1.1"\n', encoding="utf-8")
             self.assertEqual(load_project_version(pyproject), "0.1.1")
+
+    def test_load_project_version_error_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pyproject = pathlib.Path(tmp) / "pyproject.toml"
+            pyproject.write_text('[tool]\nname="x"\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_project_version(pyproject)
+            pyproject.write_text('[project]\nname="x"\nversion=""\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_project_version(pyproject)
 
 
 if __name__ == "__main__":

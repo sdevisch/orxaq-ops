@@ -1,0 +1,124 @@
+{
+  "schema_version": "api-interop-policy.v1",
+  "release_phase": "foundation",
+  "activation": {
+    "late_stage_only": true,
+    "requires_upgrade_controls": true,
+    "requires_backlog_tasks": [
+      "B11-T6",
+      "B11-T7",
+      "B9-T4"
+    ],
+    "requires_api_backlog_tasks": [
+      "B12-T1",
+      "B12-T2",
+      "B12-T3",
+      "B12-T6",
+      "B12-T8"
+    ]
+  },
+  "protocols": {
+    "required": [
+      {
+        "id": "rest",
+        "enabled": true
+      },
+      {
+        "id": "mcp",
+        "enabled": true
+      },
+      {
+        "id": "webhook",
+        "enabled": true
+      },
+      {
+        "id": "sse",
+        "enabled": true
+      }
+    ],
+    "standards": [
+      "openapi",
+      "json_schema",
+      "asyncapi",
+      "cloudevents"
+    ],
+    "async": {
+      "requires_asyncapi": true,
+      "requires_cloudevents_envelope": true,
+      "required_delivery_guarantees": [
+        "at_least_once",
+        "dead_letter",
+        "replay_safe_ids"
+      ]
+    },
+    "adapters": {
+      "required": [
+        "grpc",
+        "jsonrpc"
+      ],
+      "parity_with": [
+        "rest",
+        "mcp"
+      ],
+      "deterministic_fallback_required": true
+    }
+  },
+  "contracts": {
+    "openapi_required": true,
+    "json_schema_required": true,
+    "schema_registry_required": true,
+    "compatibility": {
+      "backward_required": true,
+      "forward_required": true,
+      "deprecation_window_days_min": 90,
+      "breaking_change_requires_exemption": true,
+      "exemption_audit_required": true
+    }
+  },
+  "security": {
+    "required_controls": [
+      "oauth2",
+      "oidc",
+      "token_scopes"
+    ],
+    "tenant_isolation_required": true,
+    "rate_limits_required": true,
+    "webhook_signing_required": true,
+    "breakglass_required_fields": [
+      "reason",
+      "scope",
+      "ttl",
+      "rollback_proof",
+      "audit_trail"
+    ]
+  },
+  "routing_and_execution": {
+    "local_first_required": true,
+    "cloud_requires_explicit_trigger": true,
+    "user_mode_only": true,
+    "github_coordination_required": true
+  },
+  "observability": {
+    "slo_required": true,
+    "trace_required": true,
+    "developer_diagnostics_required": true,
+    "causal_learning_required": true,
+    "version_capture_required": true,
+    "required_dimensions": [
+      "protocol",
+      "route",
+      "auth_context",
+      "latency_ms",
+      "error_class",
+      "downstream_dependency",
+      "contract_version"
+    ]
+  },
+  "release_gates": {
+    "conformance_suite_required": true,
+    "compatibility_checks_required": true,
+    "sdk_generated_from_contracts_required": true,
+    "docs_generated_from_contracts_required": true,
+    "block_promotion_on_failure": true
+  }
+}

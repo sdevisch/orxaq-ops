@@ -1,0 +1,15 @@
+[
+  {
+    "id": "codex-rpa-url-safety-hardening",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Harden RPA URL safety canonicalization and host guards",
+    "description": "Fix URL parsing/canonicalization edge cases (encoded hosts, mixed notation, private network detection) while preserving deterministic allowlist behavior.",
+    "depends_on": [],
+    "acceptance": [
+      "RPA URL safety rejects localhost/private-network bypass encodings consistently",
+      "Regression coverage expands for new bypass patterns",
+      "make lint, make test, make version-check, and make repo-hygiene pass"
+    ]
+  }
+]

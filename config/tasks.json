@@ -14,8 +14,8 @@
   },
   {
     "id": "rln-adversarial-tests",
-    "owner": "gemini",
-    "priority": 2,
+    "owner": "codex",
+    "priority": 6,
     "title": "Expand adversarial RLN test coverage",
     "description": "Add independent edge-case and regression tests for detail retention, retrieval edge cases, and context compaction risks.",
     "depends_on": [
@@ -30,7 +30,7 @@
   {
     "id": "causal-correctness",
     "owner": "codex",
-    "priority": 3,
+    "priority": 1,
     "title": "Strengthen causal DAG/SCM/IV correctness",
     "description": "Improve correctness and robustness for DAG ordering, SCM sampling, identifiability, and IV edge conditions.",
     "depends_on": [],
@@ -42,7 +42,7 @@
   },
   {
     "id": "causal-independent-tests",
-    "owner": "gemini",
+    "owner": "codex",
     "priority": 4,
     "title": "Add independent causal validation suite",
     "description": "Create independent tests that challenge assumptions and validate causal API behavior.",

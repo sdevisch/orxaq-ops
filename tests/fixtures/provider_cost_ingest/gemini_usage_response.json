@@ -1,0 +1,18 @@
+{
+  "usage": [
+    {
+      "model_name": "gemini-2.5-flash",
+      "start": "2026-02-09T12:00:00+00:00",
+      "end": "2026-02-09T12:12:00+00:00",
+      "usage": {
+        "prompt_tokens": 1800,
+        "completion_tokens": 500
+      },
+      "billing": {
+        "total_cost_usd": 0.0721,
+        "currency": "USD"
+      }
+    }
+  ],
+  "next_page": ""
+}

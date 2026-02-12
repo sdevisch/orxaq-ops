@@ -1,0 +1,312 @@
+{
+  "version": 2,
+  "enabled": true,
+  "router": {
+    "url": "http://127.0.0.1:8789/route",
+    "timeout_sec": 2
+  },
+  "providers": {
+    "codex": {
+      "enabled": true,
+      "fallback_model": "qwen/qwen2.5-coder-32b",
+      "respect_requested_model": false,
+      "default_objective": "quality",
+      "allowed_models": [
+        "liquid/lfm2.5-1.2b",
+        "google/gemma-3-4b",
+        "deepseek/deepseek-r1-0528-qwen3-8b",
+        "qwen/qwen2.5-coder-32b",
+        "qwen/qwen3-coder-next",
+        "deepseek-coder-v2-lite-instruct",
+        "meta/llama-3.3-70b",
+        "gpt-4.1",
+        "gpt-5-codex",
+        "gpt-5-mini"
+      ],
+      "objective_weights": {
+        "cost_speed": {
+          "cost": 0.58,
+          "speed": 0.37,
+          "quality": 0.05
+        },
+        "balanced": {
+          "cost": 0.34,
+          "speed": 0.31,
+          "quality": 0.35
+        },
+        "quality": {
+          "cost": 0.08,
+          "speed": 0.17,
+          "quality": 0.75
+        }
+      }
+    },
+    "gemini": {
+      "enabled": true,
+      "fallback_model": "gemini-2.5-pro",
+      "respect_requested_model": false,
+      "default_objective": "quality",
+      "allowed_models": [
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro"
+      ]
+    },
+    "claude": {
+      "enabled": true,
+      "fallback_model": "claude-3-7-sonnet-latest",
+      "respect_requested_model": false,
+      "default_objective": "quality",
+      "allowed_models": [
+        "claude-3-5-sonnet-latest",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-haiku-latest"
+      ]
+    }
+  },
+  "model_catalog": {
+    "liquid/lfm2.5-1.2b": {
+      "family": "liquid",
+      "local": true,
+      "input_per_million": 0.05,
+      "output_per_million": 0.08,
+      "speed_tps": 270,
+      "quality_score": 44,
+      "max_context_tokens": 16384
+    },
+    "google/gemma-3-4b": {
+      "family": "gemma",
+      "local": true,
+      "input_per_million": 0.1,
+      "output_per_million": 0.15,
+      "speed_tps": 190,
+      "quality_score": 54,
+      "max_context_tokens": 8192
+    },
+    "deepseek/deepseek-r1-0528-qwen3-8b": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.24,
+      "output_per_million": 0.36,
+      "speed_tps": 95,
+      "quality_score": 72,
+      "max_context_tokens": 65536
+    },
+    "qwen/qwen2.5-coder-32b": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.42,
+      "output_per_million": 0.63,
+      "speed_tps": 70,
+      "quality_score": 82,
+      "max_context_tokens": 32768
+    },
+    "qwen/qwen3-coder-next": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.5,
+      "output_per_million": 0.75,
+      "speed_tps": 60,
+      "quality_score": 86,
+      "max_context_tokens": 32768
+    },
+    "meta/llama-3.3-70b": {
+      "family": "llama",
+      "local": true,
+      "input_per_million": 0.7,
+      "output_per_million": 0.95,
+      "speed_tps": 30,
+      "quality_score": 83,
+      "max_context_tokens": 8192
+    },
+    "qwen2.5-coder-3b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.08,
+      "output_per_million": 0.12,
+      "speed_tps": 220,
+      "quality_score": 46,
+      "max_context_tokens": 32768
+    },
+    "qwen2.5-coder-7b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.12,
+      "output_per_million": 0.18,
+      "speed_tps": 180,
+      "quality_score": 58,
+      "max_context_tokens": 32768
+    },
+    "qwen2.5-coder-14b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.18,
+      "output_per_million": 0.27,
+      "speed_tps": 120,
+      "quality_score": 69,
+      "max_context_tokens": 32768
+    },
+    "qwen2.5-coder-32b-instruct": {
+      "family": "qwen",
+      "local": true,
+      "input_per_million": 0.42,
+      "output_per_million": 0.63,
+      "speed_tps": 70,
+      "quality_score": 82,
+      "max_context_tokens": 32768
+    },
+    "deepseek-coder-v2-lite-instruct": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.16,
+      "output_per_million": 0.24,
+      "speed_tps": 110,
+      "quality_score": 63,
+      "max_context_tokens": 65536
+    },
+    "deepseek-coder-v2-instruct": {
+      "family": "deepseek",
+      "local": true,
+      "input_per_million": 0.38,
+      "output_per_million": 0.58,
+      "speed_tps": 58,
+      "quality_score": 79,
+      "max_context_tokens": 65536
+    },
+    "llama-3.1-8b-instruct": {
+      "family": "llama",
+      "local": true,
+      "input_per_million": 0.1,
+      "output_per_million": 0.16,
+      "speed_tps": 165,
+      "quality_score": 57,
+      "max_context_tokens": 8192
+    },
+    "llama-3.1-70b-instruct": {
+      "family": "llama",
+      "local": true,
+      "input_per_million": 0.7,
+      "output_per_million": 0.95,
+      "speed_tps": 30,
+      "quality_score": 83,
+      "max_context_tokens": 8192
+    },
+    "mistral-nemo-instruct-2407": {
+      "family": "mistral",
+      "local": true,
+      "input_per_million": 0.14,
+      "output_per_million": 0.22,
+      "speed_tps": 150,
+      "quality_score": 61,
+      "max_context_tokens": 32768
+    },
+    "mixtral-8x7b-instruct-v0.1": {
+      "family": "mistral",
+      "local": true,
+      "input_per_million": 0.32,
+      "output_per_million": 0.48,
+      "speed_tps": 65,
+      "quality_score": 74,
+      "max_context_tokens": 32768
+    },
+    "codestral-22b": {
+      "family": "mistral",
+      "local": true,
+      "input_per_million": 0.28,
+      "output_per_million": 0.42,
+      "speed_tps": 86,
+      "quality_score": 77,
+      "max_context_tokens": 32768
+    },
+    "gpt-4.1-mini": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 0.4,
+      "output_per_million": 1.6,
+      "speed_tps": 180,
+      "quality_score": 74,
+      "max_context_tokens": 128000
+    },
+    "gpt-4.1": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 2.0,
+      "output_per_million": 8.0,
+      "speed_tps": 90,
+      "quality_score": 88,
+      "max_context_tokens": 128000
+    },
+    "gpt-5-mini": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 0.8,
+      "output_per_million": 3.2,
+      "speed_tps": 165,
+      "quality_score": 82,
+      "max_context_tokens": 256000
+    },
+    "gpt-5-codex": {
+      "family": "openai",
+      "local": false,
+      "input_per_million": 2.0,
+      "output_per_million": 8.0,
+      "speed_tps": 95,
+      "quality_score": 91,
+      "max_context_tokens": 256000
+    },
+    "gemini-2.0-flash": {
+      "family": "gemini",
+      "local": false,
+      "input_per_million": 0.2,
+      "output_per_million": 0.8,
+      "speed_tps": 220,
+      "quality_score": 68,
+      "max_context_tokens": 1048576
+    },
+    "gemini-2.5-flash": {
+      "family": "gemini",
+      "local": false,
+      "input_per_million": 0.3,
+      "output_per_million": 1.2,
+      "speed_tps": 200,
+      "quality_score": 79,
+      "max_context_tokens": 1048576
+    },
+    "gemini-2.5-pro": {
+      "family": "gemini",
+      "local": false,
+      "input_per_million": 1.5,
+      "output_per_million": 6.0,
+      "speed_tps": 110,
+      "quality_score": 90,
+      "max_context_tokens": 1048576
+    },
+    "claude-3-5-haiku-latest": {
+      "family": "claude",
+      "local": false,
+      "input_per_million": 0.25,
+      "output_per_million": 1.25,
+      "speed_tps": 200,
+      "quality_score": 72,
+      "max_context_tokens": 200000
+    },
+    "claude-3-5-sonnet-latest": {
+      "family": "claude",
+      "local": false,
+      "input_per_million": 3.0,
+      "output_per_million": 15.0,
+      "speed_tps": 95,
+      "quality_score": 89,
+      "max_context_tokens": 200000
+    },
+    "claude-3-7-sonnet-latest": {
+      "family": "claude",
+      "local": false,
+      "input_per_million": 3.0,
+      "output_per_million": 15.0,
+      "speed_tps": 105,
+      "quality_score": 92,
+      "max_context_tokens": 200000
+    }
+  }
+}

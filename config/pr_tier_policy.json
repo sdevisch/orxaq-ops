@@ -1,0 +1,35 @@
+{
+  "schema_version": "pr-tier-policy.v1",
+  "enabled": true,
+  "repos": [
+    "Orxaq/orxaq-ops",
+    "Orxaq/orxaq"
+  ],
+  "states": [
+    "open"
+  ],
+  "lookback_days": 30,
+  "max_prs_per_repo": 200,
+  "include_drafts": false,
+  "labels": {
+    "t1": [
+      "tier:t1",
+      "swarm:t1",
+      "t1"
+    ],
+    "escalated": [
+      "tier:t2",
+      "tier:t3",
+      "tier:escalated",
+      "swarm:escalated",
+      "escalated"
+    ]
+  },
+  "require_tier_label": true,
+  "max_unlabeled_ratio": 0.1,
+  "min_t1_ratio": 0.7,
+  "max_escalated_ratio": 0.3,
+  "min_sample_prs": 10,
+  "enforce_min_sample": false,
+  "max_violations": 0
+}

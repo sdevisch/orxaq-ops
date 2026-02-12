@@ -1,0 +1,15 @@
+[
+  {
+    "id": "task-dashboard-todo-metrics-fix",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Low-level agent: fix todo coverage/total metric consistency and add deterministic checks.",
+    "description": "Execute lane objective in config/objectives/codex_dashboard_todo_metrics_fix.md and deliver a minimal tested patch.",
+    "depends_on": [],
+    "acceptance": [
+      "Implements requested improvement with clear before/after behavior",
+      "Includes focused automated coverage or assertions",
+      "Lane validation commands pass"
+    ]
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-release-quality-orxaq-gemini",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Close release-quality test and type gaps in orxaq_gemini",
+    "description": "Stabilize lint/typecheck/test coverage for release-quality readiness and close high-risk regressions in orxaq_gemini.",
+    "depends_on": [],
+    "acceptance": [
+      "Release-critical regressions are fixed with tests",
+      "lint/typecheck/version/repo-hygiene/test validations pass",
+      "Outputs are deterministic for autonomous retries"
+    ]
+  }
+]

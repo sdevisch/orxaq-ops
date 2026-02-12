@@ -1,0 +1,133 @@
+{
+  "schema_version": "backend-portfolio-policy.v1",
+  "release_phase": "foundation",
+  "portfolio": {
+    "backends": [
+      {
+        "id": "pandas_native",
+        "type": "local",
+        "mode": "pandas",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": false
+      },
+      {
+        "id": "numpy_native",
+        "type": "local",
+        "mode": "numpy",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": false
+      },
+      {
+        "id": "jit_numpy_native",
+        "type": "local",
+        "mode": "jit_numpy",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": false
+      },
+      {
+        "id": "spark",
+        "type": "spark",
+        "mode": "pure_spark",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": false
+      },
+      {
+        "id": "dask",
+        "type": "dask",
+        "mode": "pure_dask",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": false
+      },
+      {
+        "id": "spark_jit_numpy_hybrid",
+        "type": "hybrid",
+        "mode": "spark_distribution_with_jit_numpy_workers",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": false
+      },
+      {
+        "id": "databricks",
+        "type": "cloud",
+        "mode": "managed_spark",
+        "supports_user_mode": true,
+        "requires_explicit_trigger": true
+      }
+    ],
+    "coding_variants": [
+      {
+        "id": "pandas"
+      },
+      {
+        "id": "numpy"
+      },
+      {
+        "id": "jit_numpy"
+      },
+      {
+        "id": "narwhals"
+      },
+      {
+        "id": "ibis"
+      }
+    ]
+  },
+  "routing": {
+    "specialist_router_required": true,
+    "local_first": true,
+    "cloud_escalation_requires_trigger": true,
+    "criteria": [
+      "latency",
+      "throughput",
+      "cost",
+      "determinism",
+      "correctness",
+      "memory_pressure",
+      "startup_overhead",
+      "operability",
+      "failure_blast_radius"
+    ]
+  },
+  "distributed_mode": {
+    "github_coordination_required": true,
+    "user_mode_only": true,
+    "organization_opt_in_compute": {
+      "enabled": true,
+      "required_fields": [
+        "user_id",
+        "machine_id",
+        "consent_reason",
+        "granted_at",
+        "expires_at",
+        "revoked",
+        "revoked_at",
+        "revoke_reason"
+      ]
+    }
+  },
+  "os_parity": {
+    "required_os": [
+      "macos",
+      "windows"
+    ]
+  },
+  "telemetry": {
+    "require_version_capture": true,
+    "required_dimensions": [
+      "backend_id",
+      "coding_variant",
+      "dataset_profile",
+      "package_versions",
+      "latency_ms",
+      "throughput_rows_per_sec",
+      "cost_estimate",
+      "determinism_score",
+      "quality_score",
+      "error_rate"
+    ]
+  },
+  "causal_learning": {
+    "enabled": true,
+    "require_hypothesis_ids": true,
+    "policy_update_requires_confidence": true
+  }
+}

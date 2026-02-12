@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-lane-guard-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA lane guard and policy tests",
+    "description": "Add tests that ensure lane-specific RPA guardrails and policy checks remain deterministic under adversarial inputs.",
+    "depends_on": [],
+    "acceptance": [
+      "Lane guard test coverage for RPA paths increases",
+      "Assertions validate deterministic policy outcomes",
+      "make lint and make test pass"
+    ]
+  }
+]

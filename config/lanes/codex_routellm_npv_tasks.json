@@ -1,0 +1,148 @@
+[
+  {
+    "id": "routellm-router-adapter",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Integrate RouteLLM routing adapter into autonomy runtime",
+    "description": "Add RouteLLM-aware routing hooks in manager/runner with deterministic fallback behavior and explicit configuration surfaces for cost-aware model routing.",
+    "depends_on": [],
+    "acceptance": [
+      "RouteLLM integration path is configurable and optional",
+      "Fallback behavior is deterministic when router is unavailable",
+      "Runner/manager unit tests cover routing decision paths"
+    ]
+  },
+  {
+    "id": "routellm-routing-adversarial-tests",
+    "owner": "gemini",
+    "priority": 2,
+    "title": "Add independent adversarial tests for routing correctness",
+    "description": "Create independent tests for model-routing correctness under latency spikes, quota pressure, and malformed router responses.",
+    "depends_on": [
+      "routellm-router-adapter"
+    ],
+    "acceptance": [
+      "Tests cover router timeout, fallback, and malformed payload handling",
+      "At least one test demonstrates regression protection for incorrect route selection",
+      "Validation commands pass and evidence is recorded"
+    ]
+  },
+  {
+    "id": "npv-capacity-allocation-engine",
+    "owner": "codex",
+    "priority": 3,
+    "title": "Implement NPV-based capacity allocation policy",
+    "description": "Implement economic policy that decides when to scale lanes/subagents by expected marginal NPV relative to projected model and execution costs.",
+    "depends_on": [
+      "routellm-router-adapter"
+    ],
+    "acceptance": [
+      "Policy computes marginal NPV with configurable assumptions",
+      "Scaling decisions honor budget ceilings and safety limits",
+      "Telemetry captures decision rationale and cost/value inputs"
+    ]
+  },
+  {
+    "id": "npv-policy-independent-tests",
+    "owner": "gemini",
+    "priority": 4,
+    "title": "Add independent policy tests for NPV gates",
+    "description": "Build tests that challenge economic policy assumptions including false-positive scale-ups, budget exhaustion, and uncertainty penalties.",
+    "depends_on": [
+      "npv-capacity-allocation-engine"
+    ],
+    "acceptance": [
+      "Tests assert no scale-up when marginal NPV is negative",
+      "Tests assert correct guardrails under budget and concurrency limits",
+      "Validation commands pass and findings are documented"
+    ]
+  },
+  {
+    "id": "autonomy-lane-subagent-scaling",
+    "owner": "codex",
+    "priority": 5,
+    "title": "Wire lane/subagent scaling controls into supervisor operations",
+    "description": "Integrate approved NPV decisions into lane start/ensure logic for controlled parallelism increases with rollback safety.",
+    "depends_on": [
+      "npv-capacity-allocation-engine"
+    ],
+    "acceptance": [
+      "Lane scaling controls are gated and reversible",
+      "Scale-up and scale-down events are observable in status/dashboard outputs",
+      "No regression in existing lane orchestration behavior"
+    ]
+  },
+  {
+    "id": "routing-economics-release-readiness",
+    "owner": "codex",
+    "priority": 6,
+    "title": "Finalize release readiness for routing economics profile",
+    "description": "Complete docs, runbooks, and evidence artifacts proving cost/performance gains and safe autonomy operation.",
+    "depends_on": [
+      "autonomy-lane-subagent-scaling"
+    ],
+    "acceptance": [
+      "Runbook documents activation, rollback, and stop-loss policy",
+      "Validation and metrics evidence is committed under governance standards",
+      "Repository passes required quality gates"
+    ]
+  },
+  {
+    "id": "local-model-fleet-discovery-and-benchmarking",
+    "owner": "codex",
+    "priority": 7,
+    "title": "Build local model fleet discovery and benchmarking pipeline",
+    "description": "Implement autonomous probing/benchmarking for all LM Studio endpoints, publish fleet status artifacts, and wire into monitor/dashboard.",
+    "depends_on": [],
+    "acceptance": [
+      "Fleet probe captures endpoint health/model inventory across local network nodes",
+      "Benchmark suite records latency/success by endpoint+model",
+      "Monitor/dashboard surfaces fleet health and benchmark rollups"
+    ]
+  },
+  {
+    "id": "local-model-auto-sync-and-canary",
+    "owner": "codex",
+    "priority": 8,
+    "title": "Add auto-sync hooks and canary tests for new local models",
+    "description": "Implement configurable auto-download hooks for missing target models and run canary performance tests before promoting models into routing policies.",
+    "depends_on": [
+      "local-model-fleet-discovery-and-benchmarking"
+    ],
+    "acceptance": [
+      "Missing target models are detected per endpoint with explicit sync actions",
+      "Canary tests gate promotion of newly discovered/downloaded models",
+      "Artifacts include pass/fail reasons and recommended routing tier"
+    ]
+  },
+  {
+    "id": "complexity-aware-local-first-routing",
+    "owner": "codex",
+    "priority": 9,
+    "title": "Enforce local-first routing with complexity-aware model tiers",
+    "description": "Harden route selection to prioritize local models until saturated, then cheaper hosted models, reserving premium hosted models for deep planning/research/review workloads.",
+    "depends_on": [
+      "local-model-auto-sync-and-canary"
+    ],
+    "acceptance": [
+      "Routing payloads include complexity objective and local-first hints",
+      "Policy fallback order is local -> cheap hosted -> premium hosted",
+      "Metrics prove reduced hosted spend at equal or improved task throughput"
+    ]
+  },
+  {
+    "id": "workhorse-collaboration-dashboard-integration",
+    "owner": "codex",
+    "priority": 10,
+    "title": "Integrate workhorse controls into collaboration, cost, and dashboard flows",
+    "description": "Publish runbooks/prompts and dashboard telemetry for local workhorse orchestration, cost optimization, and multi-lane delegation behavior.",
+    "depends_on": [
+      "complexity-aware-local-first-routing"
+    ],
+    "acceptance": [
+      "Objective/prompt/runbook describe autonomous local-workhorse operating mode",
+      "Dashboard exposes local fleet health/load alongside routing economics",
+      "Lane-level evidence captures utilization and saturation behavior"
+    ]
+  }
+]

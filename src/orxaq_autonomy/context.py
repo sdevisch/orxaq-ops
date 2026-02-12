@@ -33,14 +33,23 @@ def summarize_filetypes_from_git_ls_files(repo: Path, limit: int = 8) -> str:
 def write_default_skill_protocol(path: Path) -> None:
     payload = {
         "name": "orxaq-autonomy",
-        "version": "1",
+        "version": "2",
         "description": "Portable autonomy protocol for resilient multi-agent execution.",
         "required_behaviors": [
             "work-non-interactively",
+            "issue-first-workflow",
+            "branch-from-issue",
+            "maintain-clean-synced-environment",
+            "commit-and-push-regularly",
+            "request-cross-model-review",
+            "attach-review-evidence",
+            "resolve-conflicts-in-pr",
+            "avoid-artificial-file-blocks",
             "retry-transient-failures",
             "recover-git-locks",
             "validate-and-report",
             "continue-after-partial-output",
+            "respect-non-admin-boundaries",
         ],
         "filetype_policy": "Preserve unknown and binary file types; avoid destructive rewrites; use .gitattributes for explicit handling.",
     }

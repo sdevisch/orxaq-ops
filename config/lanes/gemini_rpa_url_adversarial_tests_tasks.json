@@ -1,0 +1,15 @@
+[
+  {
+    "id": "gemini-rpa-url-adversarial-tests",
+    "owner": "gemini",
+    "priority": 1,
+    "title": "Expand RPA URL safety adversarial tests",
+    "description": "Add adversarial tests for encoded/obfuscated localhost, numeric-IP variants, and nested-scheme bypass attempts.",
+    "depends_on": [],
+    "acceptance": [
+      "RPA URL adversarial coverage increases with deterministic assertions",
+      "Failure output provides concrete fix hints",
+      "make lint and make test pass"
+    ]
+  }
+]

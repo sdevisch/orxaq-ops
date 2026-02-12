@@ -1,0 +1,15 @@
+[
+  {
+    "id": "task-dashboard-ui-accessibility",
+    "owner": "codex",
+    "priority": 3,
+    "title": "Low-level agent: improve accessibility/readability of top dashboard todo activity widget.",
+    "description": "Execute lane objective in config/objectives/codex_dashboard_ui_accessibility.md and deliver a minimal tested patch.",
+    "depends_on": [],
+    "acceptance": [
+      "Implements requested improvement with clear before/after behavior",
+      "Includes focused automated coverage or assertions",
+      "Lane validation commands pass"
+    ]
+  }
+]
