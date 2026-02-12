@@ -916,7 +916,6 @@ def ensure_background(config: ManagerConfig) -> None:
     ).resolve()
     lock_handle = _acquire_process_lock(supervisor_lock_file)
     if lock_handle is None:
-        _log("autonomy supervisor already running (lock held)")
         return
     _release_process_lock(lock_handle)
 
@@ -931,8 +930,7 @@ def ensure_background(config: ManagerConfig) -> None:
     if runner_pid and _pid_running(runner_pid) and age != -1 and age > config.heartbeat_stale_sec:
         _log(f"runner heartbeat stale ({age}s); restarting runner pid={runner_pid}")
         _terminate_pid(runner_pid)
-    else:
-        _log("autonomy supervisor ensured")
+        return
 
 
 def dashboard_ensure(
