@@ -70,6 +70,11 @@ class DashboardTests(unittest.TestCase):
                     self.assertEqual(resp.status, 200)
                     self.assertIn("health_json", payload)
 
+                with urllib_request.urlopen(f"{base}/api/health", timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(resp.status, 200)
+                    self.assertTrue(payload.get("ok"))
+
                 with urllib_request.urlopen(f"{base}/file/health.json", timeout=5) as resp:
                     body = resp.read().decode("utf-8")
                     self.assertEqual(resp.status, 200)

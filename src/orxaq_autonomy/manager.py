@@ -16,6 +16,14 @@ from pathlib import Path
 from typing import Any
 
 
+_DEFAULT_TOOL_DIRS: tuple[Path, ...] = (
+    # Homebrew (Apple Silicon)
+    Path("/opt/homebrew/bin"),
+    # Homebrew (Intel) + common unix installs
+    Path("/usr/local/bin"),
+)
+
+
 def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -355,6 +363,45 @@ def _write_pid(path: Path, pid: int) -> None:
     path.write_text(f"{pid}\n", encoding="utf-8")
 
 
+def _acquire_process_lock(path: Path) -> Any | None:
+    """Acquire a non-blocking, cross-platform single-process lock.
+
+    Returns a handle that must be passed to `_release_process_lock` or None when locked.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except OSError:
+        handle.close()
+        return None
+
+
+def _release_process_lock(handle: Any) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        handle.close()
+
+
 def _pid_running(pid: int | None) -> bool:
     if pid is None or pid <= 0:
         return False
@@ -563,10 +610,25 @@ class ManagerConfig:
 
 def ensure_runtime(config: ManagerConfig) -> None:
     config.artifacts_dir.mkdir(parents=True, exist_ok=True)
-    if shutil.which("codex") is None:
-        raise RuntimeError("codex CLI not found in PATH")
-    if shutil.which("gemini") is None:
-        raise RuntimeError("gemini CLI not found in PATH")
+
+    def _ensure_tool(tool: str) -> None:
+        if shutil.which(tool) is not None:
+            return
+        current = os.environ.get("PATH", "")
+        parts = [p for p in current.split(os.pathsep) if p]
+        for tool_dir in _DEFAULT_TOOL_DIRS:
+            candidate = tool_dir / tool
+            if os.name == "nt":
+                candidate = candidate.with_suffix(".exe")
+            if candidate.exists():
+                tool_dir_str = str(tool_dir)
+                if tool_dir_str not in parts:
+                    os.environ["PATH"] = tool_dir_str + (os.pathsep + current if current else "")
+                return
+        raise RuntimeError(f"{tool} CLI not found in PATH")
+
+    _ensure_tool("codex")
+    _ensure_tool("gemini")
     env = _load_env_file(config.env_file)
     if not _has_codex_auth(env):
         raise RuntimeError("Codex auth missing. Configure OPENAI_API_KEY or run `codex login`.")
@@ -701,6 +763,21 @@ def run_foreground(config: ManagerConfig) -> int:
 
 def supervise_foreground(config: ManagerConfig) -> int:
     ensure_runtime(config)
+    supervisor_lock_file = Path(
+        os.environ.get(
+            "ORXAQ_AUTONOMY_SUPERVISOR_LOCK_FILE",
+            str(config.artifacts_dir / "supervisor.lock"),
+        )
+    ).resolve()
+    lock_handle = _acquire_process_lock(supervisor_lock_file)
+    if lock_handle is None:
+        existing_pid = _read_pid(config.supervisor_pid_file)
+        if _pid_running(existing_pid):
+            _log(f"autonomy supervisor already running (pid={existing_pid})")
+        else:
+            _log("autonomy supervisor already running (lock held)")
+        return 0
+
     _write_pid(config.supervisor_pid_file, os.getpid())
     restart_count = 0
     backoff = max(1, config.supervisor_restart_delay_sec)
@@ -750,6 +827,7 @@ def supervise_foreground(config: ManagerConfig) -> int:
             backoff = min(config.supervisor_max_backoff_sec, backoff * 2)
     finally:
         config.supervisor_pid_file.unlink(missing_ok=True)
+        _release_process_lock(lock_handle)
 
 
 def start_background(config: ManagerConfig) -> None:
@@ -778,8 +856,7 @@ def start_background(config: ManagerConfig) -> None:
         )
     finally:
         log_handle.close()
-    _write_pid(config.supervisor_pid_file, proc.pid)
-    _log(f"autonomy supervisor started (pid={proc.pid})")
+    _log(f"autonomy supervisor spawned (pid={proc.pid})")
 
 
 def stop_background(config: ManagerConfig) -> None:
@@ -831,6 +908,18 @@ def autonomy_stop(
 
 
 def ensure_background(config: ManagerConfig) -> None:
+    supervisor_lock_file = Path(
+        os.environ.get(
+            "ORXAQ_AUTONOMY_SUPERVISOR_LOCK_FILE",
+            str(config.artifacts_dir / "supervisor.lock"),
+        )
+    ).resolve()
+    lock_handle = _acquire_process_lock(supervisor_lock_file)
+    if lock_handle is None:
+        _log("autonomy supervisor already running (lock held)")
+        return
+    _release_process_lock(lock_handle)
+
     supervisor_pid = _read_pid(config.supervisor_pid_file)
     if not _pid_running(supervisor_pid):
         _log("autonomy supervisor not running; starting")
@@ -844,6 +933,73 @@ def ensure_background(config: ManagerConfig) -> None:
         _terminate_pid(runner_pid)
     else:
         _log("autonomy supervisor ensured")
+
+
+def dashboard_ensure(
+    config: ManagerConfig,
+    *,
+    artifacts_root: Path,
+    host: str = "127.0.0.1",
+    port: int = 8787,
+) -> dict[str, Any]:
+    pid_file = config.artifacts_dir / "dashboard.pid"
+    log_file = config.artifacts_dir / "dashboard.log"
+    existing_pid = _read_pid(pid_file)
+    url = f"http://{host}:{int(port)}/"
+    if _pid_running(existing_pid):
+        return {
+            "ok": True,
+            "running": True,
+            "pid": existing_pid,
+            "pid_file": str(pid_file),
+            "log_file": str(log_file),
+            "url": url,
+        }
+
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    log_handle = log_file.open("a", encoding="utf-8")
+    kwargs: dict[str, Any] = {
+        "cwd": str(config.root_dir),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": log_handle,
+        "env": _runtime_env(_load_env_file(config.env_file)),
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "orxaq_autonomy.cli",
+                "--root",
+                str(config.root_dir),
+                "dashboard",
+                "--artifacts-dir",
+                str(artifacts_root.resolve()),
+                "--host",
+                str(host),
+                "--port",
+                str(int(port)),
+            ],
+            **kwargs,
+        )
+    finally:
+        log_handle.close()
+
+    _write_pid(pid_file, proc.pid)
+    return {
+        "ok": True,
+        "running": True,
+        "pid": proc.pid,
+        "pid_file": str(pid_file),
+        "log_file": str(log_file),
+        "url": url,
+    }
 
 
 def status_snapshot(config: ManagerConfig) -> dict[str, Any]:
@@ -933,10 +1089,15 @@ def install_keepalive(config: ManagerConfig) -> str:
         plist.parent.mkdir(parents=True, exist_ok=True)
         log_file = config.artifacts_dir / "ensure.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        env_path = os.environ.get("PATH", "/usr/bin:/bin")
+        env_path = env_path.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         payload = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\"><dict>
   <key>Label</key><string>{label}</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>{env_path}</string>
+  </dict>
   <key>ProgramArguments</key><array>
     <string>{sys.executable}</string>
     <string>-m</string>

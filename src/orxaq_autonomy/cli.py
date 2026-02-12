@@ -22,6 +22,7 @@ from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
     autonomy_stop,
+    dashboard_ensure,
     ensure_background,
     health_snapshot,
     install_keepalive,
@@ -47,6 +48,13 @@ def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
     root = Path(args.root).resolve()
     env_file = Path(args.env_file).resolve() if args.env_file else None
     return ManagerConfig.from_root(root, env_file_override=env_file)
+
+
+def _resolve_under_root(root: Path, raw: str) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (root / path).resolve()
+    return path.resolve()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,6 +145,17 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument("--artifacts-dir", default="./artifacts")
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8787)
+    dashboard.add_argument("--refresh-sec", type=int, default=5, help=argparse.SUPPRESS)
+    dashboard.add_argument("--port-scan", type=int, default=0, help=argparse.SUPPRESS)
+    dashboard.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)
+
+    dashboard_ensure_cmd = sub.add_parser("dashboard-ensure")
+    dashboard_ensure_cmd.add_argument("--artifacts-dir", default="./artifacts")
+    dashboard_ensure_cmd.add_argument("--host", default="127.0.0.1")
+    dashboard_ensure_cmd.add_argument("--port", type=int, default=8787)
+    dashboard_ensure_cmd.add_argument("--refresh-sec", type=int, default=5, help=argparse.SUPPRESS)
+    dashboard_ensure_cmd.add_argument("--port-scan", type=int, default=0, help=argparse.SUPPRESS)
+    dashboard_ensure_cmd.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)
 
     pr_open = sub.add_parser("pr-open")
     pr_open.add_argument("--repo", default="", help="GitHub repo slug owner/name")
@@ -341,11 +360,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "dashboard":
         run_dashboard_server(
-            artifacts_root=Path(args.artifacts_dir).expanduser().resolve(),
+            artifacts_root=_resolve_under_root(cfg.root_dir, str(args.artifacts_dir)),
             host=str(args.host),
             port=int(args.port),
         )
         return 0
+    if args.command == "dashboard-ensure":
+        payload = dashboard_ensure(
+            cfg,
+            artifacts_root=_resolve_under_root(cfg.root_dir, str(args.artifacts_dir)),
+            host=str(args.host),
+            port=int(args.port),
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload.get("ok", False) else 1
     if args.command == "pr-open":
         try:
             repo = args.repo.strip() or detect_repo(cfg.root_dir)

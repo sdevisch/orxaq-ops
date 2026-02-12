@@ -199,6 +199,19 @@ def make_dashboard_handler(artifacts_root: Path) -> type[BaseHTTPRequestHandler]
                 self._send_text(HTTPStatus.OK, render_dashboard_html(payload), "text/html; charset=utf-8")
                 return
 
+            if path == "/api/health":
+                payload = {
+                    "ok": True,
+                    "timestamp": _utc_now_iso(),
+                    "artifacts_root": str(self._artifacts_root),
+                }
+                self._send_text(
+                    HTTPStatus.OK,
+                    json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                    "application/json; charset=utf-8",
+                )
+                return
+
             if path == "/api/index":
                 payload = collect_dashboard_index(self._artifacts_root)
                 self._send_text(

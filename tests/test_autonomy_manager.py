@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -40,6 +41,22 @@ class ManagerTests(unittest.TestCase):
             parsed = manager._load_env_file(env)
             self.assertEqual(parsed["GEMINI_API_KEY"], "test")
             self.assertEqual(parsed["OPENAI_API_KEY"], "abc")
+
+    def test_ensure_runtime_bootstraps_tool_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            tool_dir = pathlib.Path(td) / "toolbin"
+            tool_dir.mkdir(parents=True, exist_ok=True)
+            for tool in ("codex", "gemini"):
+                binary = tool_dir / tool
+                binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                binary.chmod(0o755)
+
+            with mock.patch.object(manager, "_DEFAULT_TOOL_DIRS", (tool_dir,)):
+                with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+                    manager.ensure_runtime(cfg)
+                    self.assertIn(str(tool_dir), os.environ.get("PATH", "").split(os.pathsep))
 
     def test_runner_argv_contains_skill_and_validation(self):
         with tempfile.TemporaryDirectory() as td:
@@ -153,6 +170,9 @@ class ManagerTests(unittest.TestCase):
                 self.assertEqual(label, "com.orxaq.autonomy.ensure")
                 plist = fake_home / "Library" / "LaunchAgents" / "com.orxaq.autonomy.ensure.plist"
                 self.assertTrue(plist.exists())
+                payload = plist.read_text(encoding="utf-8")
+                self.assertIn("EnvironmentVariables", payload)
+                self.assertIn("<key>PATH</key>", payload)
 
     def test_install_keepalive_unsupported_platform_raises(self):
         with tempfile.TemporaryDirectory() as td:

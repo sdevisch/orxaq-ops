@@ -169,6 +169,32 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             serve.assert_called_once()
 
+    def test_dashboard_ensure_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch("orxaq_autonomy.cli.dashboard_ensure", return_value={"ok": True}) as ensure:
+                rc = cli.main(
+                    [
+                        "--root",
+                        str(root),
+                        "dashboard-ensure",
+                        "--artifacts-dir",
+                        "./artifacts",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "8765",
+                        "--refresh-sec",
+                        "5",
+                        "--port-scan",
+                        "0",
+                        "--no-browser",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            ensure.assert_called_once()
+
     def test_providers_check_strict_failure_returns_one(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
