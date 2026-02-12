@@ -112,12 +112,12 @@ class CliTests(unittest.TestCase):
                     [
                         "--root",
                         str(root),
-                        "profile-apply",
+                        "router-profile-apply",
                         "local",
                         "--config",
                         "./config/router.example.yaml",
                         "--profiles-dir",
-                        "./profiles",
+                        "./router_profiles",
                         "--output",
                         "./config/router.active.yaml",
                     ]
@@ -168,6 +168,46 @@ class CliTests(unittest.TestCase):
                 )
             self.assertEqual(rc, 0)
             serve.assert_called_once()
+
+    def test_providers_check_strict_failure_returns_one(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.run_providers_check",
+                return_value={"summary": {"all_required_up": False}},
+            ):
+                rc = cli.main(["--root", str(root), "providers-check", "--strict"])
+            self.assertEqual(rc, 1)
+
+    def test_task_queue_validate_success(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            rc = cli.main(["--root", str(root), "task-queue-validate"])
+            self.assertEqual(rc, 0)
+
+    def test_profile_apply(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            (root / "profiles").mkdir(parents=True, exist_ok=True)
+            (root / "profiles" / "local.yaml").write_text('{"name":"local"}\n', encoding="utf-8")
+            rc = cli.main(["--root", str(root), "profile-apply", "local"])
+            self.assertEqual(rc, 0)
+            self.assertTrue((root / "config" / "providers.active.yaml").exists())
+
+    def test_stop_with_report_calls_stop_report_builder(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._prep_root(root)
+            with mock.patch(
+                "orxaq_autonomy.cli.autonomy_stop",
+                return_value={"ok": True, "report_path": "artifacts/autonomy/AUTONOMY_STOP_REPORT.md"},
+            ) as stop:
+                rc = cli.main(["--root", str(root), "stop", "--report"])
+            self.assertEqual(rc, 0)
+            stop.assert_called_once()
 
 
 if __name__ == "__main__":

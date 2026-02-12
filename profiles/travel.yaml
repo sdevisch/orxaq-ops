@@ -1,14 +1,8 @@
 {
-  "schema_version": "router-profile.v1",
   "name": "travel",
-  "required_providers": ["openai-small"],
-  "router": {
-    "fallback_order": ["L1", "L2", "L3"]
-  },
-  "lanes": {
-    "L0": [],
-    "L1": ["openai-small", "gemini-small", "claude-small"],
-    "L2": ["openai-standard", "gemini-standard", "claude-standard"],
-    "L3": ["openai-audit"]
+  "required_lanes": ["L1"],
+  "overrides": {
+    "required": ["openai-primary"],
+    "optional": ["gemini-primary", "claude-primary", "lmstudio-local"]
   }
 }

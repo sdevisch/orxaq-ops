@@ -1,14 +1,8 @@
 {
-  "schema_version": "router-profile.v1",
   "name": "local",
-  "required_providers": ["lmstudio-local"],
-  "router": {
-    "fallback_order": ["L0", "L1", "L2", "L3"]
-  },
-  "lanes": {
-    "L0": ["lmstudio-local"],
-    "L1": ["lmstudio-local"],
-    "L2": ["lmstudio-local"],
-    "L3": ["openai-audit"]
+  "required_lanes": ["L0"],
+  "overrides": {
+    "required": ["lmstudio-local"],
+    "optional": ["openai-primary", "gemini-primary", "claude-primary"]
   }
 }

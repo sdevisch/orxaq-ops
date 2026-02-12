@@ -100,7 +100,8 @@ def apply_router_profile(
     root: str = ".",
     profile_name: str,
     base_config_path: str = "./config/router.example.yaml",
-    profiles_dir: str = "./profiles",
+    # Router profiles have a different schema than provider profiles (profiles/*.yaml).
+    profiles_dir: str = "./router_profiles",
     output_path: str = "./config/router.active.yaml",
 ) -> dict[str, Any]:
     root_path = Path(root).expanduser().resolve()
@@ -295,7 +296,7 @@ def run_router_check(
     config_path: str = "./config/router.example.yaml",
     output_path: str = "./artifacts/router_check.json",
     profile: str = "",
-    profiles_dir: str = "./profiles",
+    profiles_dir: str = "./router_profiles",
     active_config_output: str = "./config/router.active.yaml",
     lane: str = "",
     timeout_sec: int = 5,
