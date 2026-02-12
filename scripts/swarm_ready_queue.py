@@ -94,6 +94,7 @@ def build_queue(
     privilege_policy_summary = auto_artifacts / "privilege_policy_health.json"
     git_delivery_policy_summary = auto_artifacts / "git_delivery_policy_health.json"
     git_hygiene_summary = auto_artifacts / "git_hygiene_health.json"
+    git_hygiene_remediation_summary = auto_artifacts / "git_hygiene_remediation.json"
     backend_upgrade_policy_summary = auto_artifacts / "backend_upgrade_policy_health.json"
     api_interop_policy_summary = auto_artifacts / "api_interop_policy_health.json"
     backlog_control_summary = auto_artifacts / "deterministic_backlog_health.json"
@@ -116,6 +117,7 @@ def build_queue(
     privilege_policy = _load_json(privilege_policy_summary)
     git_delivery_policy = _load_json(git_delivery_policy_summary)
     git_hygiene = _load_json(git_hygiene_summary)
+    git_hygiene_remediation = _load_json(git_hygiene_remediation_summary)
     backend_upgrade_policy = _load_json(backend_upgrade_policy_summary)
     api_interop_policy = _load_json(api_interop_policy_summary)
     backlog_control = _load_json(backlog_control_summary)
@@ -406,6 +408,118 @@ def build_queue(
             )
         )
 
+    remediation_summary = (
+        git_hygiene_remediation.get("summary", {})
+        if isinstance(git_hygiene_remediation.get("summary"), dict)
+        else {}
+    )
+    remediation_exists = git_hygiene_remediation_summary.exists()
+    remediation_ok = bool(git_hygiene_remediation.get("ok", False))
+    remediation_remote_stale_prefix = int(
+        remediation_summary.get("remote_stale_prefix_count", remediation_summary.get("remote_candidate_count", 0)) or 0
+    )
+    remediation_local_stale_prefix = int(
+        remediation_summary.get("local_stale_prefix_count", remediation_summary.get("local_candidate_count", 0)) or 0
+    )
+    remediation_remote_candidates = int(remediation_summary.get("remote_candidate_count", 0) or 0)
+    remediation_local_candidates = int(remediation_summary.get("local_candidate_count", 0) or 0)
+    remediation_remote_blocked_open_pr = int(remediation_summary.get("remote_blocked_open_pr_count", 0) or 0)
+    remediation_remote_blocked_unmerged = int(remediation_summary.get("remote_blocked_unmerged_count", 0) or 0)
+    remediation_local_blocked_unmerged = int(remediation_summary.get("local_blocked_unmerged_count", 0) or 0)
+    remediation_local_blocked_worktree = int(remediation_summary.get("local_blocked_worktree_count", 0) or 0)
+    remediation_worktree_prune_removed = int(remediation_summary.get("worktree_prune_removed_count", 0) or 0)
+    remediation_remote_deleted = int(remediation_summary.get("remote_deleted_count", 0) or 0)
+    remediation_local_deleted = int(remediation_summary.get("local_deleted_count", 0) or 0)
+    if not remediation_exists:
+        tasks.append(
+            _task(
+                task_id="T1-GIT-HYGIENE-REMEDIATION-INSTRUMENTATION",
+                title="Enable deterministic git hygiene remediation artifact",
+                priority="P1",
+                rationale="git_hygiene_remediation artifact missing from current cycle.",
+                acceptance=[
+                    "git_hygiene_remediation.json exists under artifacts/autonomy.",
+                    "Artifact reports local/remote candidate and deleted branch counts.",
+                    "Cycle runs remediation step before git hygiene policy check.",
+                ],
+            )
+        )
+    elif not remediation_ok:
+        tasks.append(
+            _task(
+                task_id="T1-GIT-HYGIENE-REMEDIATION-HEALTH",
+                title="Restore git hygiene remediation health",
+                priority="P1",
+                rationale="git_hygiene_remediation reported errors in current cycle.",
+                acceptance=[
+                    "git_hygiene_remediation summary.error_count equals 0.",
+                    "Remediation run succeeds for both orxaq-ops and orxaq repos.",
+                    "No open PR head branches are deleted.",
+                ],
+            )
+        )
+    elif remediation_remote_candidates > 0 or remediation_local_candidates > 0:
+        tasks.append(
+            _task(
+                task_id="T1-GIT-HYGIENE-REMEDIATION-BACKLOG",
+                title="Drain remaining stale branch remediation backlog",
+                priority="P1",
+                rationale=(
+                    "Git hygiene remediation still sees pending branch candidates "
+                    f"(remote={remediation_remote_candidates}, local={remediation_local_candidates}, "
+                    f"deleted_remote={remediation_remote_deleted}, deleted_local={remediation_local_deleted})."
+                ),
+                acceptance=[
+                    "Candidate counts trend down cycle-over-cycle with deterministic evidence.",
+                    "Deleted branch counts are recorded with transparent audit trails.",
+                    "Only merged or closed-PR non-open branches are remediated.",
+                ],
+            )
+        )
+    if remediation_local_blocked_worktree > 0:
+        tasks.append(
+            _task(
+                task_id="T1-GIT-HYGIENE-WORKTREE-RECONCILE",
+                title="Reconcile worktree-bound branch locks",
+                priority="P1",
+                rationale=(
+                    "Git hygiene remediation could not delete some local branches because they are "
+                    f"still bound to worktrees (blocked_worktree={remediation_local_blocked_worktree}, "
+                    f"worktree_prune_removed={remediation_worktree_prune_removed})."
+                ),
+                acceptance=[
+                    "Stale worktree metadata is pruned before remediation runs.",
+                    "Worktree-bound deletion failures are reduced with deterministic evidence.",
+                    "Active lane worktrees remain intact and documented.",
+                ],
+            )
+        )
+    if (
+        remediation_remote_blocked_open_pr > 0
+        or remediation_remote_blocked_unmerged > 0
+        or remediation_local_blocked_unmerged > 0
+    ):
+        tasks.append(
+            _task(
+                task_id="T1-GIT-HYGIENE-BRANCH-GOVERNANCE",
+                title="Triage non-actionable stale branch debt",
+                priority="P2",
+                rationale=(
+                    "Stale branch inventory includes non-actionable branches pending PR/merge governance "
+                    f"(remote_open_pr={remediation_remote_blocked_open_pr}, "
+                    f"remote_unmerged={remediation_remote_blocked_unmerged}, "
+                    f"local_unmerged={remediation_local_blocked_unmerged}, "
+                    f"stale_remote_prefix={remediation_remote_stale_prefix}, "
+                    f"stale_local_prefix={remediation_local_stale_prefix})."
+                ),
+                acceptance=[
+                    "Open-PR stale heads are tracked with owner and disposition.",
+                    "Unmerged stale branches are closed, merged, or explicitly exempted.",
+                    "Stale prefix inventory trends down over successive cycles.",
+                ],
+            )
+        )
+
     backend_upgrade_ok = bool(backend_upgrade_policy.get("ok", True))
     backend_upgrade_summary_payload = (
         backend_upgrade_policy.get("summary", {})
@@ -617,6 +731,19 @@ def build_queue(
             "git_hygiene_total_branch_count": git_hygiene_total,
             "git_hygiene_max_total_branches": git_hygiene_max_total,
             "git_hygiene_stale_local_branch_count": git_hygiene_stale_local,
+            "git_hygiene_remediation_exists": remediation_exists,
+            "git_hygiene_remediation_ok": remediation_ok,
+            "git_hygiene_remediation_remote_stale_prefix_count": remediation_remote_stale_prefix,
+            "git_hygiene_remediation_local_stale_prefix_count": remediation_local_stale_prefix,
+            "git_hygiene_remediation_remote_candidates": remediation_remote_candidates,
+            "git_hygiene_remediation_local_candidates": remediation_local_candidates,
+            "git_hygiene_remediation_remote_blocked_open_pr_count": remediation_remote_blocked_open_pr,
+            "git_hygiene_remediation_remote_blocked_unmerged_count": remediation_remote_blocked_unmerged,
+            "git_hygiene_remediation_local_blocked_unmerged_count": remediation_local_blocked_unmerged,
+            "git_hygiene_remediation_local_blocked_worktree_count": remediation_local_blocked_worktree,
+            "git_hygiene_remediation_worktree_prune_removed_count": remediation_worktree_prune_removed,
+            "git_hygiene_remediation_remote_deleted": remediation_remote_deleted,
+            "git_hygiene_remediation_local_deleted": remediation_local_deleted,
             "backend_upgrade_policy_ok": backend_upgrade_ok,
             "backend_upgrade_policy_violation_count": backend_upgrade_violations,
             "backend_upgrade_release_phase": backend_upgrade_release_phase,

@@ -128,6 +128,26 @@ class SwarmCycleReportTests(unittest.TestCase):
             },
         )
         self._write_json(
+            root / "artifacts" / "autonomy" / "git_hygiene_remediation.json",
+            {
+                "ok": True,
+                "summary": {
+                    "error_count": 0,
+                    "remote_stale_prefix_count": 0,
+                    "local_stale_prefix_count": 0,
+                    "remote_candidate_count": 0,
+                    "local_candidate_count": 0,
+                    "remote_blocked_open_pr_count": 0,
+                    "remote_blocked_unmerged_count": 0,
+                    "local_blocked_unmerged_count": 0,
+                    "local_blocked_worktree_count": 0,
+                    "worktree_prune_removed_count": 0,
+                    "remote_deleted_count": 0,
+                    "local_deleted_count": 0,
+                },
+            },
+        )
+        self._write_json(
             root / "artifacts" / "autonomy" / "backend_upgrade_policy_health.json",
             {
                 "ok": True,
@@ -226,6 +246,8 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertTrue(criteria["ticket_branch_pr_workflow"].get("ok"))
         self.assertIn("git_hygiene_instrumented", criteria)
         self.assertTrue(criteria["git_hygiene_instrumented"].get("ok"))
+        self.assertIn("git_hygiene_remediation", criteria)
+        self.assertTrue(criteria["git_hygiene_remediation"].get("ok"))
         self.assertIn("deterministic_backlog_control", criteria)
         self.assertTrue(criteria["deterministic_backlog_control"].get("ok"))
         self.assertIn("pr_approval_remediation", criteria)
@@ -234,6 +256,8 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertTrue(report["summary"]["backend_upgrade_policy_ok"])
         self.assertTrue(report["summary"]["api_interop_policy_ok"])
         self.assertTrue(report["summary"]["git_delivery_policy_ok"])
+        self.assertTrue(report["summary"]["git_hygiene_remediation_ok"])
+        self.assertEqual(report["summary"]["git_hygiene_remediation_remote_blocked_open_pr_count"], 0)
 
     def test_build_report_fails_when_backend_upgrade_policy_unhealthy(self):
         with tempfile.TemporaryDirectory() as td:
@@ -329,6 +353,30 @@ class SwarmCycleReportTests(unittest.TestCase):
         self.assertFalse(criteria["git_hygiene_instrumented"].get("ok"))
         self.assertFalse(report["summary"]["git_hygiene_ok"])
         self.assertEqual(report["summary"]["git_hygiene_violation_count"], 2)
+
+    def test_build_report_fails_when_git_hygiene_remediation_unhealthy(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(
+                root / "artifacts" / "autonomy" / "git_hygiene_remediation.json",
+                {
+                    "ok": False,
+                    "summary": {
+                        "error_count": 1,
+                        "remote_candidate_count": 42,
+                        "local_candidate_count": 8,
+                        "remote_deleted_count": 0,
+                        "local_deleted_count": 0,
+                    },
+                },
+            )
+            report = swarm_cycle_report.build_report(root)
+
+        criteria = {row.get("id"): row for row in report.get("criteria", []) if isinstance(row, dict)}
+        self.assertIn("git_hygiene_remediation", criteria)
+        self.assertFalse(criteria["git_hygiene_remediation"].get("ok"))
+        self.assertFalse(report["summary"]["git_hygiene_remediation_ok"])
+        self.assertEqual(report["summary"]["git_hygiene_remediation_error_count"], 1)
 
     def test_build_report_fails_when_deterministic_backlog_control_unhealthy(self):
         with tempfile.TemporaryDirectory() as td:

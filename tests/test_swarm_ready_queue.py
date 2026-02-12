@@ -65,6 +65,26 @@ class SwarmReadyQueueTests(unittest.TestCase):
             },
         )
         self._write_json(
+            root / "artifacts" / "autonomy" / "git_hygiene_remediation.json",
+            {
+                "ok": True,
+                "summary": {
+                    "error_count": 0,
+                    "remote_stale_prefix_count": 0,
+                    "local_stale_prefix_count": 0,
+                    "remote_candidate_count": 0,
+                    "local_candidate_count": 0,
+                    "remote_blocked_open_pr_count": 0,
+                    "remote_blocked_unmerged_count": 0,
+                    "local_blocked_unmerged_count": 0,
+                    "local_blocked_worktree_count": 0,
+                    "worktree_prune_removed_count": 0,
+                    "remote_deleted_count": 0,
+                    "local_deleted_count": 0,
+                },
+            },
+        )
+        self._write_json(
             root / "artifacts" / "autonomy" / "backend_upgrade_policy_health.json",
             {
                 "ok": True,
@@ -215,6 +235,68 @@ class SwarmReadyQueueTests(unittest.TestCase):
         task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
         self.assertIn("T1-BACKLOG-CONTROL-HEALTH", task_ids)
         self.assertFalse(queue["summary"]["deterministic_backlog_ok"])
+
+    def test_build_queue_adds_git_hygiene_backlog_task_when_actionable_candidates_exist(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(
+                root / "artifacts" / "autonomy" / "git_hygiene_remediation.json",
+                {
+                    "ok": True,
+                    "summary": {
+                        "error_count": 0,
+                        "remote_stale_prefix_count": 12,
+                        "local_stale_prefix_count": 8,
+                        "remote_candidate_count": 2,
+                        "local_candidate_count": 3,
+                        "remote_blocked_open_pr_count": 4,
+                        "remote_blocked_unmerged_count": 6,
+                        "local_blocked_unmerged_count": 5,
+                        "local_blocked_worktree_count": 1,
+                        "worktree_prune_removed_count": 0,
+                        "remote_deleted_count": 1,
+                        "local_deleted_count": 1,
+                    },
+                },
+            )
+            queue = swarm_ready_queue.build_queue(root, max_items=50)
+
+        task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
+        self.assertIn("T1-GIT-HYGIENE-REMEDIATION-BACKLOG", task_ids)
+        self.assertIn("T1-GIT-HYGIENE-WORKTREE-RECONCILE", task_ids)
+        self.assertIn("T1-GIT-HYGIENE-BRANCH-GOVERNANCE", task_ids)
+        self.assertEqual(queue["summary"]["git_hygiene_remediation_remote_candidates"], 2)
+        self.assertEqual(queue["summary"]["git_hygiene_remediation_local_candidates"], 3)
+
+    def test_build_queue_adds_branch_governance_task_for_non_actionable_stale_branches(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._base_root(td)
+            self._write_json(
+                root / "artifacts" / "autonomy" / "git_hygiene_remediation.json",
+                {
+                    "ok": True,
+                    "summary": {
+                        "error_count": 0,
+                        "remote_stale_prefix_count": 40,
+                        "local_stale_prefix_count": 32,
+                        "remote_candidate_count": 0,
+                        "local_candidate_count": 0,
+                        "remote_blocked_open_pr_count": 10,
+                        "remote_blocked_unmerged_count": 21,
+                        "local_blocked_unmerged_count": 18,
+                        "local_blocked_worktree_count": 0,
+                        "worktree_prune_removed_count": 0,
+                        "remote_deleted_count": 0,
+                        "local_deleted_count": 0,
+                    },
+                },
+            )
+            queue = swarm_ready_queue.build_queue(root, max_items=50)
+
+        task_ids = {row.get("id") for row in queue.get("tasks", []) if isinstance(row, dict)}
+        self.assertIn("T1-GIT-HYGIENE-BRANCH-GOVERNANCE", task_ids)
+        self.assertNotIn("T1-GIT-HYGIENE-REMEDIATION-BACKLOG", task_ids)
+        self.assertEqual(queue["summary"]["git_hygiene_remediation_remote_blocked_open_pr_count"], 10)
 
     def test_build_queue_adds_pr_approval_remediation_task_when_other_blocked(self):
         with tempfile.TemporaryDirectory() as td:

@@ -140,6 +140,7 @@ def build_report(root: Path) -> dict[str, Any]:
         "privilege_policy": ops_root / "artifacts" / "autonomy" / "privilege_policy_health.json",
         "git_delivery_policy": ops_root / "artifacts" / "autonomy" / "git_delivery_policy_health.json",
         "git_hygiene": ops_root / "artifacts" / "autonomy" / "git_hygiene_health.json",
+        "git_hygiene_remediation": ops_root / "artifacts" / "autonomy" / "git_hygiene_remediation.json",
         "backend_upgrade_policy": ops_root / "artifacts" / "autonomy" / "backend_upgrade_policy_health.json",
         "api_interop_policy": ops_root / "artifacts" / "autonomy" / "api_interop_policy_health.json",
         "deterministic_backlog": ops_root / "artifacts" / "autonomy" / "deterministic_backlog_health.json",
@@ -166,6 +167,7 @@ def build_report(root: Path) -> dict[str, Any]:
     privilege_policy = _load_json(paths["privilege_policy"])
     git_delivery_policy = _load_json(paths["git_delivery_policy"])
     git_hygiene = _load_json(paths["git_hygiene"])
+    git_hygiene_remediation = _load_json(paths["git_hygiene_remediation"])
     backend_upgrade_policy = _load_json(paths["backend_upgrade_policy"])
     api_interop_policy = _load_json(paths["api_interop_policy"])
     deterministic_backlog = _load_json(paths["deterministic_backlog"])
@@ -276,6 +278,47 @@ def build_report(root: Path) -> dict[str, Any]:
     git_hygiene_total_count = _as_int(git_hygiene_summary.get("total_branch_count", 0), 0)
     git_hygiene_stale_local_count = _as_int(git_hygiene_summary.get("stale_local_branch_count", 0), 0)
     git_hygiene_max_total = _as_int(git_hygiene_summary.get("max_total_branches", 0), 0)
+    git_hygiene_remediation_summary = (
+        git_hygiene_remediation.get("summary", {})
+        if isinstance(git_hygiene_remediation.get("summary"), dict)
+        else {}
+    )
+    git_hygiene_remediation_artifact_exists = paths["git_hygiene_remediation"].exists()
+    git_hygiene_remediation_ok = _as_bool(git_hygiene_remediation.get("ok", False), False)
+    git_hygiene_remediation_error_count = _as_int(git_hygiene_remediation_summary.get("error_count", 0), 0)
+    git_hygiene_remediation_remote_stale_prefix_count = _as_int(
+        git_hygiene_remediation_summary.get("remote_stale_prefix_count", 0), 0
+    )
+    git_hygiene_remediation_local_stale_prefix_count = _as_int(
+        git_hygiene_remediation_summary.get("local_stale_prefix_count", 0), 0
+    )
+    git_hygiene_remediation_remote_candidates = _as_int(
+        git_hygiene_remediation_summary.get("remote_candidate_count", 0), 0
+    )
+    git_hygiene_remediation_local_candidates = _as_int(
+        git_hygiene_remediation_summary.get("local_candidate_count", 0), 0
+    )
+    git_hygiene_remediation_remote_blocked_open_pr_count = _as_int(
+        git_hygiene_remediation_summary.get("remote_blocked_open_pr_count", 0), 0
+    )
+    git_hygiene_remediation_remote_blocked_unmerged_count = _as_int(
+        git_hygiene_remediation_summary.get("remote_blocked_unmerged_count", 0), 0
+    )
+    git_hygiene_remediation_local_blocked_unmerged_count = _as_int(
+        git_hygiene_remediation_summary.get("local_blocked_unmerged_count", 0), 0
+    )
+    git_hygiene_remediation_local_blocked_worktree_count = _as_int(
+        git_hygiene_remediation_summary.get("local_blocked_worktree_count", 0), 0
+    )
+    git_hygiene_remediation_worktree_prune_removed_count = _as_int(
+        git_hygiene_remediation_summary.get("worktree_prune_removed_count", 0), 0
+    )
+    git_hygiene_remediation_remote_deleted = _as_int(
+        git_hygiene_remediation_summary.get("remote_deleted_count", 0), 0
+    )
+    git_hygiene_remediation_local_deleted = _as_int(
+        git_hygiene_remediation_summary.get("local_deleted_count", 0), 0
+    )
 
     backend_upgrade_summary = (
         backend_upgrade_policy.get("summary", {})
@@ -564,6 +607,33 @@ def build_report(root: Path) -> dict[str, Any]:
     )
 
     add_criterion(
+        criterion_id="git_hygiene_remediation",
+        description="Git branch remediation loop runs each cycle and captures deterministic deletion telemetry.",
+        ok=git_hygiene_remediation_artifact_exists and git_hygiene_remediation_ok and git_hygiene_remediation_error_count == 0,
+        evidence=[
+            f"git_hygiene_remediation_artifact_exists={git_hygiene_remediation_artifact_exists}",
+            f"git_hygiene_remediation_ok={git_hygiene_remediation_ok}",
+            f"git_hygiene_remediation_error_count={git_hygiene_remediation_error_count}",
+            f"git_hygiene_remediation_remote_stale_prefix_count={git_hygiene_remediation_remote_stale_prefix_count}",
+            f"git_hygiene_remediation_local_stale_prefix_count={git_hygiene_remediation_local_stale_prefix_count}",
+            f"git_hygiene_remediation_remote_candidates={git_hygiene_remediation_remote_candidates}",
+            f"git_hygiene_remediation_local_candidates={git_hygiene_remediation_local_candidates}",
+            f"git_hygiene_remediation_remote_blocked_open_pr_count={git_hygiene_remediation_remote_blocked_open_pr_count}",
+            f"git_hygiene_remediation_remote_blocked_unmerged_count={git_hygiene_remediation_remote_blocked_unmerged_count}",
+            f"git_hygiene_remediation_local_blocked_unmerged_count={git_hygiene_remediation_local_blocked_unmerged_count}",
+            f"git_hygiene_remediation_local_blocked_worktree_count={git_hygiene_remediation_local_blocked_worktree_count}",
+            f"git_hygiene_remediation_worktree_prune_removed_count={git_hygiene_remediation_worktree_prune_removed_count}",
+            f"git_hygiene_remediation_remote_deleted={git_hygiene_remediation_remote_deleted}",
+            f"git_hygiene_remediation_local_deleted={git_hygiene_remediation_local_deleted}",
+        ],
+        blocker_reason="git_hygiene_remediation_unhealthy",
+        next_action=(
+            "rerun deterministic git hygiene remediation, resolve remediation execution errors, "
+            "and confirm candidate backlog drains while preserving open PR heads."
+        ),
+    )
+
+    add_criterion(
         criterion_id="backend_upgrade_policy_ready",
         description="Backend portfolio routing and upgrade lifecycle policy gates are defined and passing.",
         ok=backend_upgrade_ok and backend_upgrade_violations == 0,
@@ -734,6 +804,20 @@ def build_report(root: Path) -> dict[str, Any]:
             "git_hygiene_total_branch_count": git_hygiene_total_count,
             "git_hygiene_stale_local_branch_count": git_hygiene_stale_local_count,
             "git_hygiene_max_total_branches": git_hygiene_max_total,
+            "git_hygiene_remediation_artifact_exists": git_hygiene_remediation_artifact_exists,
+            "git_hygiene_remediation_ok": git_hygiene_remediation_ok,
+            "git_hygiene_remediation_error_count": git_hygiene_remediation_error_count,
+            "git_hygiene_remediation_remote_stale_prefix_count": git_hygiene_remediation_remote_stale_prefix_count,
+            "git_hygiene_remediation_local_stale_prefix_count": git_hygiene_remediation_local_stale_prefix_count,
+            "git_hygiene_remediation_remote_candidates": git_hygiene_remediation_remote_candidates,
+            "git_hygiene_remediation_local_candidates": git_hygiene_remediation_local_candidates,
+            "git_hygiene_remediation_remote_blocked_open_pr_count": git_hygiene_remediation_remote_blocked_open_pr_count,
+            "git_hygiene_remediation_remote_blocked_unmerged_count": git_hygiene_remediation_remote_blocked_unmerged_count,
+            "git_hygiene_remediation_local_blocked_unmerged_count": git_hygiene_remediation_local_blocked_unmerged_count,
+            "git_hygiene_remediation_local_blocked_worktree_count": git_hygiene_remediation_local_blocked_worktree_count,
+            "git_hygiene_remediation_worktree_prune_removed_count": git_hygiene_remediation_worktree_prune_removed_count,
+            "git_hygiene_remediation_remote_deleted": git_hygiene_remediation_remote_deleted,
+            "git_hygiene_remediation_local_deleted": git_hygiene_remediation_local_deleted,
             "backend_upgrade_policy_ok": backend_upgrade_ok,
             "backend_upgrade_policy_violation_count": backend_upgrade_violations,
             "backend_upgrade_release_phase": backend_upgrade_release_phase,
