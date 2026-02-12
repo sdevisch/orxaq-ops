@@ -26,7 +26,9 @@
       "max_cycles": 1000000000,
       "env": {
         "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
-        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1",
+        "ORXAQ_AUTONOMY_LOCAL_ONLY": "1",
+        "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://127.0.0.1:1234/v1"
       }
     },
     {
@@ -54,7 +56,9 @@
       "max_cycles": 1000000000,
       "env": {
         "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
-        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1",
+        "ORXAQ_AUTONOMY_LOCAL_ONLY": "1",
+        "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://127.0.0.1:1234/v1"
       }
     },
     {
@@ -82,7 +86,9 @@
       "max_cycles": 1000000000,
       "env": {
         "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
-        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1",
+        "ORXAQ_AUTONOMY_LOCAL_ONLY": "1",
+        "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://127.0.0.1:1234/v1"
       }
     },
     {
@@ -110,7 +116,9 @@
       "max_cycles": 1000000000,
       "env": {
         "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
-        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1",
+        "ORXAQ_AUTONOMY_LOCAL_ONLY": "1",
+        "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://127.0.0.1:1234/v1"
       }
     },
     {
@@ -138,7 +146,9 @@
       "max_cycles": 1000000000,
       "env": {
         "ORXAQ_TASK_QUEUE_PERSISTENT_MODE": "1",
-        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1"
+        "ORXAQ_AUTONOMY_ASSUME_TRUE_FULL_AUTONOMY": "1",
+        "ORXAQ_AUTONOMY_LOCAL_ONLY": "1",
+        "ORXAQ_LOCAL_OPENAI_BASE_URLS": "http://127.0.0.1:1234/v1"
       }
     },
     {

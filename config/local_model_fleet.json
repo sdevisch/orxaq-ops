@@ -2,13 +2,13 @@
   "version": 1,
   "enabled": true,
   "endpoints": [
-    {
-      "id": "local-main",
-      "base_url": "http://127.0.0.1:1234/v1",
-      "role": "primary",
-      "enabled": true,
-      "max_parallel": 4
-    },
+	    {
+	      "id": "local-main",
+	      "base_url": "http://127.0.0.1:1234/v1",
+	      "role": "primary",
+	      "enabled": true,
+	      "max_parallel": 5
+	    },
     {
       "id": "lan-86",
       "base_url": "http://192.168.50.86:1234/v1",
