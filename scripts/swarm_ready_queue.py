@@ -427,6 +427,11 @@ def build_queue(
     remediation_remote_blocked_unmerged = int(remediation_summary.get("remote_blocked_unmerged_count", 0) or 0)
     remediation_local_blocked_unmerged = int(remediation_summary.get("local_blocked_unmerged_count", 0) or 0)
     remediation_local_blocked_worktree = int(remediation_summary.get("local_blocked_worktree_count", 0) or 0)
+    remediation_local_blocked_worktree_dirty = int(
+        remediation_summary.get("local_blocked_worktree_dirty_count", remediation_summary.get("local_blocked_worktree_count", 0))
+        or 0
+    )
+    remediation_local_force_deleted = int(remediation_summary.get("local_force_deleted_count", 0) or 0)
     remediation_worktree_prune_removed = int(remediation_summary.get("worktree_prune_removed_count", 0) or 0)
     remediation_worktree_remove_attempted = int(remediation_summary.get("worktree_remove_attempted_count", 0) or 0)
     remediation_worktree_removed = int(remediation_summary.get("worktree_removed_count", 0) or 0)
@@ -488,6 +493,8 @@ def build_queue(
                 rationale=(
                     "Git hygiene remediation could not delete some local branches because they are "
                     f"still bound to worktrees (blocked_worktree={remediation_local_blocked_worktree}, "
+                    f"blocked_worktree_dirty={remediation_local_blocked_worktree_dirty}, "
+                    f"local_force_deleted={remediation_local_force_deleted}, "
                     f"worktree_prune_removed={remediation_worktree_prune_removed}, "
                     f"worktree_remove_attempted={remediation_worktree_remove_attempted}, "
                     f"worktree_removed={remediation_worktree_removed}, "
@@ -748,6 +755,8 @@ def build_queue(
             "git_hygiene_remediation_remote_blocked_unmerged_count": remediation_remote_blocked_unmerged,
             "git_hygiene_remediation_local_blocked_unmerged_count": remediation_local_blocked_unmerged,
             "git_hygiene_remediation_local_blocked_worktree_count": remediation_local_blocked_worktree,
+            "git_hygiene_remediation_local_blocked_worktree_dirty_count": remediation_local_blocked_worktree_dirty,
+            "git_hygiene_remediation_local_force_deleted_count": remediation_local_force_deleted,
             "git_hygiene_remediation_worktree_prune_removed_count": remediation_worktree_prune_removed,
             "git_hygiene_remediation_worktree_remove_attempted_count": remediation_worktree_remove_attempted,
             "git_hygiene_remediation_worktree_removed_count": remediation_worktree_removed,

@@ -310,6 +310,16 @@ def build_report(root: Path) -> dict[str, Any]:
     git_hygiene_remediation_local_blocked_worktree_count = _as_int(
         git_hygiene_remediation_summary.get("local_blocked_worktree_count", 0), 0
     )
+    git_hygiene_remediation_local_blocked_worktree_dirty_count = _as_int(
+        git_hygiene_remediation_summary.get(
+            "local_blocked_worktree_dirty_count",
+            git_hygiene_remediation_summary.get("local_blocked_worktree_count", 0),
+        ),
+        0,
+    )
+    git_hygiene_remediation_local_force_deleted_count = _as_int(
+        git_hygiene_remediation_summary.get("local_force_deleted_count", 0), 0
+    )
     git_hygiene_remediation_worktree_prune_removed_count = _as_int(
         git_hygiene_remediation_summary.get("worktree_prune_removed_count", 0), 0
     )
@@ -631,6 +641,8 @@ def build_report(root: Path) -> dict[str, Any]:
             f"git_hygiene_remediation_remote_blocked_unmerged_count={git_hygiene_remediation_remote_blocked_unmerged_count}",
             f"git_hygiene_remediation_local_blocked_unmerged_count={git_hygiene_remediation_local_blocked_unmerged_count}",
             f"git_hygiene_remediation_local_blocked_worktree_count={git_hygiene_remediation_local_blocked_worktree_count}",
+            f"git_hygiene_remediation_local_blocked_worktree_dirty_count={git_hygiene_remediation_local_blocked_worktree_dirty_count}",
+            f"git_hygiene_remediation_local_force_deleted_count={git_hygiene_remediation_local_force_deleted_count}",
             f"git_hygiene_remediation_worktree_prune_removed_count={git_hygiene_remediation_worktree_prune_removed_count}",
             f"git_hygiene_remediation_worktree_remove_attempted_count={git_hygiene_remediation_worktree_remove_attempted_count}",
             f"git_hygiene_remediation_worktree_removed_count={git_hygiene_remediation_worktree_removed_count}",
@@ -827,6 +839,8 @@ def build_report(root: Path) -> dict[str, Any]:
             "git_hygiene_remediation_remote_blocked_unmerged_count": git_hygiene_remediation_remote_blocked_unmerged_count,
             "git_hygiene_remediation_local_blocked_unmerged_count": git_hygiene_remediation_local_blocked_unmerged_count,
             "git_hygiene_remediation_local_blocked_worktree_count": git_hygiene_remediation_local_blocked_worktree_count,
+            "git_hygiene_remediation_local_blocked_worktree_dirty_count": git_hygiene_remediation_local_blocked_worktree_dirty_count,
+            "git_hygiene_remediation_local_force_deleted_count": git_hygiene_remediation_local_force_deleted_count,
             "git_hygiene_remediation_worktree_prune_removed_count": git_hygiene_remediation_worktree_prune_removed_count,
             "git_hygiene_remediation_worktree_remove_attempted_count": git_hygiene_remediation_worktree_remove_attempted_count,
             "git_hygiene_remediation_worktree_removed_count": git_hygiene_remediation_worktree_removed_count,

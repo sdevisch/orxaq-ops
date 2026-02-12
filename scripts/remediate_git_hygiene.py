@@ -163,6 +163,13 @@ def _delete_local_branch(repo: Path, branch: str) -> tuple[bool, str]:
     return (False, _as_text(proc.stderr or proc.stdout or "local_delete_failed"))
 
 
+def _force_delete_local_branch(repo: Path, branch: str) -> tuple[bool, str]:
+    proc = _git(repo, ["branch", "-D", branch])
+    if proc.returncode == 0:
+        return (True, "")
+    return (False, _as_text(proc.stderr or proc.stdout or "local_force_delete_failed"))
+
+
 def _extract_worktree_path(reason: str) -> Path | None:
     match = re.search(r"used by worktree at '([^']+)'", reason)
     if not match:
@@ -247,6 +254,8 @@ def remediate_repo(
         "local_candidate_count": 0,
         "local_blocked_unmerged_count": 0,
         "local_blocked_worktree_count": 0,
+        "local_blocked_worktree_dirty_count": 0,
+        "local_force_deleted_count": 0,
         "local_deleted_count": 0,
         "local_deleted": [],
     }
@@ -309,6 +318,8 @@ def remediate_repo(
     local_candidates = 0
     local_blocked_unmerged_count = 0
     local_blocked_worktree_count = 0
+    local_blocked_worktree_dirty_count = 0
+    local_force_deleted_count = 0
     worktree_remove_attempted_count = 0
     worktree_removed_count = 0
     worktree_remove_failed_count = 0
@@ -392,6 +403,24 @@ def remediate_repo(
                 }
             )
         else:
+            if (
+                apply
+                and not merged
+                and closed_pr_head
+                and "is not fully merged" in reason
+            ):
+                force_deleted, force_reason = _force_delete_local_branch(repo, branch)
+                if force_deleted:
+                    local_force_deleted_count += 1
+                    local_deleted.append(
+                        {
+                            "branch": branch,
+                            "age_days": age_days,
+                            "basis": "closed_pr_head_force_delete",
+                        }
+                    )
+                    continue
+                reason = f"{reason};force_delete_failed:{force_reason}"
             worktree_path = _extract_worktree_path(reason)
             if apply and remove_worktree_locks and worktree_path is not None:
                 worktree_remove_attempted_count += 1
@@ -416,6 +445,8 @@ def remediate_repo(
                     reason = f"{reason};worktree_remove_failed:{remove_reason}"
             if "used by worktree at" in reason:
                 local_blocked_worktree_count += 1
+            if "worktree_remove_failed:worktree_dirty" in reason:
+                local_blocked_worktree_dirty_count += 1
             skipped.append({"scope": "local", "branch": branch, "reason": f"delete_failed:{reason}"})
 
     report["remote_stale_prefix_count"] = remote_stale_prefix_count
@@ -428,6 +459,8 @@ def remediate_repo(
     report["local_candidate_count"] = local_candidates
     report["local_blocked_unmerged_count"] = local_blocked_unmerged_count
     report["local_blocked_worktree_count"] = local_blocked_worktree_count
+    report["local_blocked_worktree_dirty_count"] = local_blocked_worktree_dirty_count
+    report["local_force_deleted_count"] = local_force_deleted_count
     report["local_deleted_count"] = len(local_deleted)
     report["local_deleted"] = local_deleted
     report["worktree_remove_attempted_count"] = worktree_remove_attempted_count
@@ -518,6 +551,10 @@ def main(argv: list[str] | None = None) -> int:
         "remote_blocked_unmerged_count": sum(int(row.get("remote_blocked_unmerged_count", 0) or 0) for row in repo_reports),
         "local_blocked_unmerged_count": sum(int(row.get("local_blocked_unmerged_count", 0) or 0) for row in repo_reports),
         "local_blocked_worktree_count": sum(int(row.get("local_blocked_worktree_count", 0) or 0) for row in repo_reports),
+        "local_blocked_worktree_dirty_count": sum(
+            int(row.get("local_blocked_worktree_dirty_count", 0) or 0) for row in repo_reports
+        ),
+        "local_force_deleted_count": sum(int(row.get("local_force_deleted_count", 0) or 0) for row in repo_reports),
         "open_pr_head_count": sum(int(row.get("open_pr_head_count", 0) or 0) for row in repo_reports),
         "error_count": sum(len(row.get("errors", [])) for row in repo_reports if isinstance(row, dict)),
     }
