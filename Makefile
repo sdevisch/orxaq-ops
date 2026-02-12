@@ -22,7 +22,7 @@ ROUTING_SOTA_EXEC_ARGS ?= $(AUTONOMY_EXEC_ISOLATION_ARGS)
 PROCESS_WATCHDOG_SCRIPT ?= /Users/sdevisch/.codex/skills/autonomous-process-watchdog/scripts/process_watchdog.py
 SWARM_TODO_HEALTH_INTERVAL_SEC ?= 3600
 
-.PHONY: run supervise start stop ensure status monitor metrics health process-watchdog full-autonomy logs reset preflight preflight-autonomy bootstrap dashboard dashboard-start dashboard-ensure dashboard-status dashboard-stop dashboard-logs conversations lanes-plan lanes-status lanes-start lanes-ensure lanes-stop mesh-init mesh-status mesh-publish mesh-dispatch mesh-import mesh-export mesh-sync mesh-autonomy-once workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status routellm-preflight routellm-bootstrap routellm-start routellm-ensure routellm-status routellm-stop routellm-full-auto-discover routellm-full-auto-prepare routellm-full-auto-dry-run routellm-full-auto-run routing-sota-full-auto-discover routing-sota-full-auto-prepare routing-sota-full-auto-dry-run routing-sota-full-auto-run local-model-fleet-probe local-model-fleet-benchmark local-model-fleet-sync local-model-fleet-capability-scan local-model-fleet-full-cycle model-router-connectivity provider-cost-ingest provider-cost-health provider-cost-ingest-check remote-heartbeat-start remote-heartbeat-stop remote-heartbeat-status local-idle-guard-once local-idle-guard-start local-idle-guard-stop local-idle-guard-status local-model-watchdog-once local-model-watchdog-start local-model-watchdog-stop local-model-watchdog-status swarm-todo-health-once swarm-todo-health-start swarm-todo-health-stop swarm-todo-health-status lint test version-check repo-hygiene hosted-controls-check readiness-check readiness-check-autonomy bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status monitor metrics health process-watchdog full-autonomy logs reset preflight preflight-autonomy bootstrap dashboard dashboard-start dashboard-ensure dashboard-status dashboard-stop dashboard-logs conversations lanes-plan lanes-status lanes-start lanes-ensure lanes-stop mesh-init mesh-status mesh-publish mesh-dispatch mesh-import mesh-export mesh-sync mesh-autonomy-once workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status routellm-preflight routellm-bootstrap routellm-start routellm-ensure routellm-status routellm-stop routellm-full-auto-discover routellm-full-auto-prepare routellm-full-auto-dry-run routellm-full-auto-run routing-sota-full-auto-discover routing-sota-full-auto-prepare routing-sota-full-auto-dry-run routing-sota-full-auto-run local-model-fleet-probe local-model-fleet-benchmark local-model-fleet-sync local-model-fleet-capability-scan local-model-fleet-full-cycle model-router-connectivity provider-cost-ingest provider-cost-health provider-cost-ingest-check provider-autobootstrap t1-basic-model-policy-check privilege-policy-check git-delivery-policy-check git-delivery-baseline-capture git-hygiene-check backend-upgrade-policy-check api-interop-policy-check backlog-control-once backlog-control-start backlog-control-stop backlog-control-status cleanup-loop-once cleanup-loop-start cleanup-loop-start-fast cleanup-loop-stop cleanup-loop-status remote-heartbeat-start remote-heartbeat-stop remote-heartbeat-status local-idle-guard-once local-idle-guard-start local-idle-guard-stop local-idle-guard-status local-model-watchdog-once local-model-watchdog-start local-model-watchdog-stop local-model-watchdog-status swarm-todo-health-once swarm-todo-health-current-once swarm-todo-health-current-start swarm-todo-health-current-stop swarm-todo-health-current-status swarm-todo-health-start swarm-todo-health-stop swarm-todo-health-status swarm-health-strict swarm-health-operational swarm-health-snapshot swarm-ready-queue swarm-cycle-report lint test version-check repo-hygiene hosted-controls-check readiness-check readiness-check-autonomy bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -100,11 +100,104 @@ provider-cost-ingest:
 	$(PYTHON) scripts/provider_cost_ingest.py
 
 provider-cost-health:
-	$(PYTHON) scripts/check_provider_cost_health.py
+	$(PYTHON) scripts/check_provider_cost_health.py --json --output $(ROOT)/artifacts/autonomy/provider_cost_health.json
 
 provider-cost-ingest-check:
 	$(PYTHON) scripts/provider_cost_ingest.py
-	$(PYTHON) scripts/check_provider_cost_health.py
+	$(PYTHON) scripts/check_provider_cost_health.py --json --output $(ROOT)/artifacts/autonomy/provider_cost_health.json
+
+t1-basic-model-policy-check:
+	$(PYTHON) scripts/check_t1_basic_model_policy.py --root $(ROOT) --policy-file $(ROOT)/config/t1_model_policy.json --metrics-file $(ROOT)/artifacts/autonomy/response_metrics.ndjson --output $(ROOT)/artifacts/autonomy/t1_basic_model_policy.json --json
+
+privilege-policy-check:
+	$(PYTHON) scripts/check_privilege_policy.py --root $(ROOT) --policy-file $(ROOT)/config/privilege_policy.json --output $(ROOT)/artifacts/autonomy/privilege_policy_health.json --json
+
+git-delivery-policy-check:
+	$(PYTHON) scripts/check_git_delivery_policy.py --root $(ROOT) --repo-root $(ROOT) --policy-file $(ROOT)/config/git_delivery_policy.json --output $(ROOT)/artifacts/autonomy/git_delivery_policy_health.json --json
+
+.PHONY: git-delivery-baseline-capture
+git-delivery-baseline-capture:
+	$(PYTHON) scripts/check_git_delivery_policy.py --root $(ROOT) --repo-root $(ROOT) --policy-file $(ROOT)/config/git_delivery_policy.json --baseline-file $(ROOT)/artifacts/autonomy/git_delivery_baseline.json --capture-baseline --output $(ROOT)/artifacts/autonomy/git_delivery_policy_health.json --json
+
+.PHONY: pr-approval-remediate
+pr-approval-remediate:
+	$(PYTHON) scripts/remediate_pr_approvals.py --root $(ROOT) --repo Orxaq/orxaq-ops --repo Orxaq/orxaq --output $(ROOT)/artifacts/autonomy/pr_approval_remediation.json --json
+
+git-hygiene-check:
+	$(PYTHON) scripts/check_git_hygiene_health.py --root $(ROOT) --repo-root $(ROOT) --policy-file $(ROOT)/config/git_hygiene_policy.json --output $(ROOT)/artifacts/autonomy/git_hygiene_health.json --json
+
+backend-upgrade-policy-check:
+	$(PYTHON) scripts/check_backend_upgrade_policy.py --root $(ROOT) --backend-policy-file $(ROOT)/config/backend_portfolio_policy.json --upgrade-policy-file $(ROOT)/config/upgrade_lifecycle_policy.json --backlog-file ../orxaq/ops/backlog/distributed_todo.yaml --output $(ROOT)/artifacts/autonomy/backend_upgrade_policy_health.json --json
+
+api-interop-policy-check:
+	$(PYTHON) scripts/check_api_interop_policy.py --root $(ROOT) --policy-file $(ROOT)/config/api_interop_policy.json --backlog-file ../orxaq/ops/backlog/distributed_todo.yaml --output $(ROOT)/artifacts/autonomy/api_interop_policy_health.json --json
+
+backlog-control-once:
+	-$(PYTHON) scripts/deterministic_backlog_control.py --root $(ROOT) --policy-file $(ROOT)/config/deterministic_backlog_policy.json --output-file $(ROOT)/artifacts/autonomy/deterministic_backlog_health.json --history-file $(ROOT)/artifacts/autonomy/deterministic_backlog_history.ndjson --apply --json
+
+backlog-control-start:
+	@mkdir -p $(ROOT)/artifacts/autonomy
+	@if [ -f $(ROOT)/artifacts/autonomy/deterministic_backlog.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/deterministic_backlog.pid) 2>/dev/null; then \
+		echo "deterministic backlog loop already running pid=$$(cat $(ROOT)/artifacts/autonomy/deterministic_backlog.pid)"; \
+	else \
+		$(PYTHON) scripts/deterministic_backlog_control.py --daemon --root $(ROOT) --policy-file $(ROOT)/config/deterministic_backlog_policy.json --output-file $(ROOT)/artifacts/autonomy/deterministic_backlog_health.json --history-file $(ROOT)/artifacts/autonomy/deterministic_backlog_history.ndjson --pid-file $(ROOT)/artifacts/autonomy/deterministic_backlog.pid --log-file $(ROOT)/artifacts/autonomy/deterministic_backlog.log --apply >/dev/null; \
+		echo "deterministic backlog loop started pid=$$(cat $(ROOT)/artifacts/autonomy/deterministic_backlog.pid)"; \
+	fi
+
+backlog-control-stop:
+	@if [ -f $(ROOT)/artifacts/autonomy/deterministic_backlog.pid ]; then \
+		PID=$$(cat $(ROOT)/artifacts/autonomy/deterministic_backlog.pid); \
+		if kill -0 $$PID 2>/dev/null; then kill $$PID; fi; \
+		rm -f $(ROOT)/artifacts/autonomy/deterministic_backlog.pid; \
+		echo "deterministic backlog loop stopped"; \
+	else \
+		echo "deterministic backlog loop not running"; \
+	fi
+
+backlog-control-status:
+	@if [ -f $(ROOT)/artifacts/autonomy/deterministic_backlog.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/deterministic_backlog.pid) 2>/dev/null; then \
+		echo "running pid=$$(cat $(ROOT)/artifacts/autonomy/deterministic_backlog.pid)"; \
+		tail -n 8 $(ROOT)/artifacts/autonomy/deterministic_backlog.log; \
+	else \
+		echo "stopped"; \
+		[ -f $(ROOT)/artifacts/autonomy/deterministic_backlog.log ] && tail -n 8 $(ROOT)/artifacts/autonomy/deterministic_backlog.log || true; \
+	fi
+
+provider-autobootstrap:
+	bash scripts/provider_autobootstrap.sh
+
+cleanup-loop-once:
+	$(PYTHON) scripts/cleanup_loop.py --root $(ROOT)
+
+cleanup-loop-start:
+	@mkdir -p $(ROOT)/artifacts/autonomy/cleanup_loop
+	@if [ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid) 2>/dev/null; then \
+		echo "cleanup loop already running pid=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid)"; \
+	else \
+		$(PYTHON) scripts/cleanup_loop.py --daemon --root $(ROOT) --interval-sec 30 --pid-file $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid --log-file $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log --output-file $(ROOT)/artifacts/autonomy/cleanup_loop/latest.json --history-file $(ROOT)/artifacts/autonomy/cleanup_loop/history.ndjson --lock-file $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.lock >/dev/null; \
+		echo "cleanup loop started pid=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid)"; \
+	fi
+
+cleanup-loop-start-fast: cleanup-loop-start
+
+cleanup-loop-stop:
+	@if [ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid ]; then \
+		PID=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid); \
+		if kill -0 $$PID 2>/dev/null; then kill $$PID; fi; \
+		rm -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid; \
+		echo "cleanup loop stopped"; \
+	else \
+		echo "cleanup loop not running"; \
+	fi
+
+cleanup-loop-status:
+	@if [ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid) 2>/dev/null; then \
+		echo "running pid=$$(cat $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.pid)"; \
+		tail -n 8 $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log; \
+	else \
+		echo "stopped"; \
+		[ -f $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log ] && tail -n 8 $(ROOT)/artifacts/autonomy/cleanup_loop/cleanup.log || true; \
+	fi
 
 remote-heartbeat-start:
 	@mkdir -p $(ROOT)/artifacts/autonomy/local_models
@@ -199,6 +292,37 @@ local-model-watchdog-status:
 swarm-todo-health-once:
 	$(PYTHON) scripts/swarm_distributed_todo_health.py --root $(ROOT) --json
 
+swarm-todo-health-current-once:
+	$(PYTHON) scripts/swarm_todo_health_current.py --root $(ROOT) --json
+
+swarm-todo-health-current-start:
+	@mkdir -p $(ROOT)/artifacts/autonomy/swarm_todo_health
+	@if [ -f $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid) 2>/dev/null; then \
+		echo "swarm/todo current-scope health daemon already running pid=$$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid)"; \
+	else \
+		$(PYTHON) scripts/swarm_todo_health_current.py --daemon --root $(ROOT) --interval-sec $(SWARM_TODO_HEALTH_INTERVAL_SEC) --json --pid-file $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid --log-file $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.log --output-file $(ROOT)/artifacts/autonomy/swarm_todo_health/current_latest.json --history-file $(ROOT)/artifacts/autonomy/swarm_todo_health/current_history.ndjson >/dev/null; \
+		echo "swarm/todo current-scope health daemon started pid=$$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid)"; \
+	fi
+
+swarm-todo-health-current-stop:
+	@if [ -f $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid ]; then \
+		PID=$$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid); \
+		if kill -0 $$PID 2>/dev/null; then kill $$PID; fi; \
+		rm -f $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid; \
+		echo "swarm/todo current-scope health daemon stopped"; \
+	else \
+		echo "swarm/todo current-scope health daemon not running"; \
+	fi
+
+swarm-todo-health-current-status:
+	@if [ -f $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid) 2>/dev/null; then \
+		echo "running pid=$$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.pid)"; \
+		tail -n 8 $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.log; \
+	else \
+		echo "stopped"; \
+		[ -f $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.log ] && tail -n 8 $(ROOT)/artifacts/autonomy/swarm_todo_health/current_health.log || true; \
+	fi
+
 swarm-todo-health-start:
 	@mkdir -p $(ROOT)/artifacts/autonomy/swarm_todo_health
 	@if [ -f $(ROOT)/artifacts/autonomy/swarm_todo_health/health.pid ] && kill -0 $$(cat $(ROOT)/artifacts/autonomy/swarm_todo_health/health.pid) 2>/dev/null; then \
@@ -226,6 +350,24 @@ swarm-todo-health-status:
 		echo "stopped"; \
 		[ -f $(ROOT)/artifacts/autonomy/swarm_todo_health/health.log ] && tail -n 8 $(ROOT)/artifacts/autonomy/swarm_todo_health/health.log || true; \
 	fi
+
+swarm-health-strict: model-router-connectivity
+	$(PYTHON) ../orxaq/orxaq_cli.py swarm-health --root ../orxaq --output ../orxaq/artifacts/health.json --strict --connectivity-report ../orxaq-ops/artifacts/model_connectivity.json
+
+swarm-health-operational: model-router-connectivity
+	$(PYTHON) ../orxaq/orxaq_cli.py swarm-health --root ../orxaq --output ../orxaq/artifacts/health_operational.json --connectivity-report ../orxaq-ops/artifacts/model_connectivity.json --skip-quality-gates --skip-security-gates
+
+swarm-health-snapshot: model-router-connectivity
+	$(PYTHON) scripts/run_swarm_health_snapshot.py --ops-root $(ROOT) --source-root ../orxaq --connectivity-report artifacts/model_connectivity.json --strict-output artifacts/autonomy/health_snapshot/strict.json --operational-output artifacts/autonomy/health_snapshot/operational.json
+
+swarm-ready-queue:
+	$(PYTHON) scripts/swarm_ready_queue.py --root $(ROOT) --output $(ROOT)/artifacts/autonomy/ready_queue_week.json --max-items 21
+
+swarm-cycle-report: swarm-health-snapshot t1-basic-model-policy-check privilege-policy-check git-delivery-policy-check git-hygiene-check backend-upgrade-policy-check api-interop-policy-check backlog-control-once
+	-$(PYTHON) scripts/swarm_todo_health_current.py --root $(ROOT) --json
+	-$(PYTHON) scripts/cleanup_loop.py --root $(ROOT)
+	$(PYTHON) scripts/swarm_ready_queue.py --root $(ROOT) --output $(ROOT)/artifacts/autonomy/ready_queue_week.json --max-items 21
+	$(PYTHON) scripts/swarm_cycle_report.py --root $(ROOT) --output $(ROOT)/artifacts/autonomy/swarm_cycle_report.json --markdown $(ROOT)/artifacts/autonomy/swarm_cycle_report.md --blocked-output $(ROOT)/artifacts/autonomy/blocked_cycle_escalations.json
 
 ensure:
 	$(AUTONOMY) ensure

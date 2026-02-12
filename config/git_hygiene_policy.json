@@ -1,0 +1,26 @@
+{
+  "policy_version": "git-hygiene-policy.v1",
+  "branch_inventory": {
+    "max_local_branches": 80,
+    "max_remote_branches": 160,
+    "max_total_branches": 140,
+    "stale_days": 30,
+    "max_stale_local_branches": 40,
+    "protected_branch_patterns": [
+      "^main$",
+      "^master$",
+      "^develop$",
+      "^release/.+$"
+    ]
+  },
+  "monitoring": {
+    "baseline_file": "artifacts/autonomy/git_hygiene_baseline.json",
+    "use_baseline_guard": true,
+    "allow_missing_baseline": true,
+    "allow_legacy_above_threshold_when_nonincreasing": true,
+    "require_nonincreasing": false,
+    "max_delta_local_branches": 0,
+    "max_delta_remote_branches": 2,
+    "max_delta_total_branches": 2
+  }
+}
