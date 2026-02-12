@@ -46,6 +46,7 @@ def collect_dashboard_index(artifacts_root: Path) -> dict[str, Any]:
     health_md = _rel_paths([*root.glob("**/health.md")], root)
     run_reports = _rel_paths([*root.glob("**/W*_run.json")], root)
     run_summaries = _rel_paths([*root.glob("**/W*_summary.md")], root)
+    pr_review_snapshots = _rel_paths([*root.glob("**/pr_review_snapshot.json")], root)
 
     evidence_dirs = _rel_paths([path for path in root.glob("rpa_evidence/*/*") if path.is_dir()], root)
     evidence_files = _rel_paths(
@@ -60,6 +61,7 @@ def collect_dashboard_index(artifacts_root: Path) -> dict[str, Any]:
         "health_md": health_md,
         "run_reports": run_reports,
         "run_summaries": run_summaries,
+        "pr_review_snapshots": pr_review_snapshots,
         "evidence_dirs": evidence_dirs,
         "evidence_files": evidence_files,
     }
@@ -95,6 +97,7 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
         _render_file_links("Health Markdown", list(index_payload.get("health_md", []))),
         _render_file_links("Run Reports", list(index_payload.get("run_reports", []))),
         _render_file_links("Run Summaries", list(index_payload.get("run_summaries", []))),
+        _render_file_links("PR Review Snapshots", list(index_payload.get("pr_review_snapshots", []))),
         _render_file_links("Evidence Directories", list(index_payload.get("evidence_dirs", []))),
         _render_file_links("Evidence Files", list(index_payload.get("evidence_files", []))),
     ]
