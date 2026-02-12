@@ -1,0 +1,16 @@
+[
+  {
+    "id": "governance-dashboard-collaboration-monitoring",
+    "owner": "codex",
+    "priority": 1,
+    "title": "Upgrade governance dashboard for collaboration observability",
+    "description": "Improve dashboard visibility for multi-agent collaboration signals: lane health, conversation traces, and resilience diagnostics.",
+    "depends_on": [],
+    "acceptance": [
+      "Dashboard shows lane-level status with owner identity",
+      "Dashboard exposes and renders recent conversation events",
+      "Monitoring flow remains resilient when one source fails",
+      "All tests and lint pass"
+    ]
+  }
+]
