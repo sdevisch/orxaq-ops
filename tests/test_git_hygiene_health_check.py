@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -19,32 +20,68 @@ module_spec.loader.exec_module(check_git_hygiene_health)
 
 
 class GitHygieneHealthCheckTests(unittest.TestCase):
+    def _clean_git_env(self) -> dict[str, str]:
+        """Git hooks set GIT_DIR/GIT_WORK_TREE which breaks nested `git -C <tmp>` calls.
+
+        Pre-push runs tests from inside a git hook environment; strip hook-provided vars so our
+        temp-repo git commands are isolated and deterministic.
+        """
+
+        env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            env.pop(key, None)
+        return env
+
     def _init_repo(self, repo: pathlib.Path) -> None:
+        env = self._clean_git_env()
         repo.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
         (repo / "README.md").write_text("hello\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, env=env)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, env=env)
 
     def _current_branch(self, repo: pathlib.Path) -> str:
+        env = self._clean_git_env()
         proc = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
         return proc.stdout.strip()
 
     def test_main_passes_with_healthy_branch_counts(self):
+        env = self._clean_git_env()
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
             repo = root / "repo"
             self._init_repo(repo)
             default_branch = self._current_branch(repo)
-            subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature/a"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(repo), "checkout", default_branch], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-b", "feature/a"],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", default_branch],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
             policy_file = root / "policy.json"
             policy_file.write_text(
                 json.dumps(
@@ -82,12 +119,23 @@ class GitHygieneHealthCheckTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["violation_count"], 0)
 
     def test_main_fails_when_total_branch_count_exceeds_policy(self):
+        env = self._clean_git_env()
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
             repo = root / "repo"
             self._init_repo(repo)
-            subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature/a"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature/b"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-b", "feature/a"],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-b", "feature/b"],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
             policy_file = root / "policy.json"
             policy_file.write_text(
                 json.dumps(
@@ -128,14 +176,30 @@ class GitHygieneHealthCheckTests(unittest.TestCase):
             )
 
     def test_main_fails_when_legacy_suppression_caps_are_exceeded(self):
+        env = self._clean_git_env()
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
             repo = root / "repo"
             self._init_repo(repo)
             default_branch = self._current_branch(repo)
-            subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature/a"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature/b"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(repo), "checkout", default_branch], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-b", "feature/a"],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-b", "feature/b"],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", default_branch],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
 
             baseline_file = root / "baseline.json"
             baseline_file.write_text(

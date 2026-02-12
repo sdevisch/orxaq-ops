@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -88,6 +89,15 @@ def _append_ndjson(path: Path, payload: dict[str, Any]) -> None:
         handle.write("\n")
 
 
+def _clean_git_env() -> dict[str, str]:
+    """Strip git-hook env vars that break nested `git -C <repo>` calls."""
+
+    env = dict(os.environ)
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+        env.pop(key, None)
+    return env
+
+
 def _run(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -95,6 +105,7 @@ def _run(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        env=_clean_git_env(),
     )
 
 
