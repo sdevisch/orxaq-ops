@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 from urllib.parse import urlparse
 
 from .ide import generate_workspace, open_in_ide
@@ -2242,11 +2244,73 @@ def _lane_build_id(config: ManagerConfig, lane: dict[str, Any]) -> str:
     return hasher.hexdigest()[:12]
 
 
+def _dashboard_http_version_snapshot(config: ManagerConfig, meta: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """Best-effort probe of the dashboard's /api/version endpoint.
+
+    The dashboard is sometimes started outside of the background manager, leaving stale pid/meta files behind.
+    This probe lets us treat an already-live dashboard as running and reconcile pid/meta deterministically.
+    """
+
+    candidates: list[str] = []
+    meta_url = str(meta.get("url", "")).strip()
+    if meta_url:
+        candidates.append(meta_url.rstrip("/"))
+
+    host = str(meta.get("host", "")).strip() or "127.0.0.1"
+    port = _int_value(meta.get("port", 0), 0)
+    if port > 0:
+        candidates.append(f"http://{host}:{int(port)}")
+
+    if not candidates:
+        return None, ""
+
+    # Deterministic fallbacks to avoid flapping on older meta files.
+    candidates.extend([f"http://{host}:8765", f"http://{host}:8876"])
+
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for base in candidates:
+        token = base.strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        dedup.append(token)
+
+    for base in dedup:
+        url = f"{base.rstrip('/')}/api/version"
+        try:
+            with urlopen(url, timeout=0.8) as response:  # noqa: S310
+                status = _int_value(getattr(response, "status", 200), 200)
+                body = response.read(64 * 1024)
+        except HTTPError:
+            continue
+        except (URLError, TimeoutError, OSError):
+            continue
+        if not (200 <= status < 500):
+            continue
+        try:
+            payload = json.loads(body.decode("utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not bool(payload.get("ok", False)):
+            continue
+        if str(payload.get("root_dir", "")).strip() != str(config.root_dir):
+            continue
+        return payload, base
+
+    return None, ""
+
+
 def dashboard_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     pid = _read_pid(config.dashboard_pid_file)
-    running = _pid_running(pid)
+    running_pid = _pid_running(pid)
     meta = _read_json_file(config.dashboard_meta_file)
     url = str(meta.get("url", "")).strip()
+    resolved_host = str(meta.get("host", "")).strip()
+    resolved_port = int(meta.get("port", 0) or 0)
+    resolved_refresh_sec = int(meta.get("refresh_sec", 0) or 0)
     build_id = str(meta.get("build_id", "")).strip()
     expected_build_id = _dashboard_build_id(config)
 
@@ -2257,16 +2321,61 @@ def dashboard_status_snapshot(config: ManagerConfig) -> dict[str, Any]:
                 url = line.split("=", 1)[1].strip()
                 break
 
+    meta_for_http = dict(meta)
+    if url:
+        meta_for_http["url"] = url
+    version_payload, version_base = _dashboard_http_version_snapshot(config, meta_for_http)
+    running_http = version_payload is not None
+    if version_payload:
+        http_pid = _int_value(version_payload.get("pid", 0), 0)
+        if http_pid > 0:
+            pid = http_pid
+            # Reconcile stale PID file so background stop/restart is safe and deterministic.
+            if _read_pid(config.dashboard_pid_file) != http_pid:
+                _write_pid(config.dashboard_pid_file, http_pid)
+
+        parsed = urlparse(version_base) if version_base else None
+        host = (parsed.hostname if parsed else "") or resolved_host or "127.0.0.1"
+        bound_port = _int_value(version_payload.get("bound_port", 0), 0)
+        port = bound_port if bound_port > 0 else (resolved_port or 0)
+        refresh_sec = _int_value(version_payload.get("refresh_sec", resolved_refresh_sec), 0)
+        build_id = str(version_payload.get("build_id", "")).strip() or build_id
+
+        scheme = (parsed.scheme if parsed else "") or "http"
+        if host and port > 0:
+            url = f"{scheme}://{host}:{port}/"
+
+        resolved_host = host
+        resolved_port = int(port)
+        resolved_refresh_sec = int(refresh_sec)
+
+        meta_out = {
+            "started_at": str(version_payload.get("started_at", "")).strip() or str(meta.get("started_at", "")).strip(),
+            "host": host,
+            "port": int(port),
+            "refresh_sec": int(refresh_sec),
+            "url": url,
+            "build_id": build_id,
+        }
+        if meta_out != meta:
+            _write_json_file(config.dashboard_meta_file, meta_out)
+            meta = meta_out
+
+    running = running_pid or running_http
+
     return {
         "running": running,
+        "running_pid": running_pid,
+        "running_http": running_http,
         "pid": pid,
         "url": url,
-        "host": str(meta.get("host", "")),
-        "port": int(meta.get("port", 0) or 0),
-        "refresh_sec": int(meta.get("refresh_sec", 0) or 0),
+        "host": resolved_host,
+        "port": resolved_port,
+        "refresh_sec": resolved_refresh_sec,
         "build_id": build_id,
         "expected_build_id": expected_build_id,
-        "build_current": bool(build_id and build_id == expected_build_id),
+        # Missing build-id is treated as current to avoid flapping restarts when meta files are stale.
+        "build_current": bool((not build_id) or (build_id == expected_build_id)),
         "log_file": str(config.dashboard_log_file),
         "pid_file": str(config.dashboard_pid_file),
         "meta_file": str(config.dashboard_meta_file),

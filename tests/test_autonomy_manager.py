@@ -2574,6 +2574,71 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["pid"], None)
             self.assertIn("build_current", snapshot)
 
+    def test_dashboard_status_snapshot_reconciles_live_http_dashboard(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.dashboard_meta_file.write_text(
+                json.dumps(
+                    {
+                        "host": "127.0.0.1",
+                        "port": 8765,
+                        "refresh_sec": 5,
+                        "url": "http://127.0.0.1:8765/",
+                        "build_id": "stale",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg.dashboard_pid_file.write_text("999\n", encoding="utf-8")
+
+            version_payload = {
+                "ok": True,
+                "build_id": "test-build",
+                "pid": 4321,
+                "root_dir": str(cfg.root_dir),
+                "started_at": "2026-02-12T00:00:00Z",
+                "requested_port": 8765,
+                "bound_port": 8765,
+                "refresh_sec": 5,
+                "signature": "unit-test",
+            }
+            version_body = (json.dumps(version_payload, sort_keys=True) + "\n").encode("utf-8")
+
+            class FakeResponse:
+                def __init__(self, body: bytes, status: int = 200):
+                    self.status = status
+                    self._body = body
+
+                def read(self, _size: int = -1) -> bytes:
+                    return self._body
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            with mock.patch("orxaq_autonomy.manager._dashboard_build_id", return_value="test-build"), mock.patch(
+                "orxaq_autonomy.manager._pid_running",
+                side_effect=lambda pid: bool(pid == 4321),
+            ), mock.patch(
+                "orxaq_autonomy.manager.urlopen",
+                return_value=FakeResponse(version_body, status=200),
+            ):
+                snapshot = manager.dashboard_status_snapshot(cfg)
+
+            self.assertTrue(snapshot["running"])
+            self.assertTrue(snapshot.get("running_http", False))
+            self.assertEqual(snapshot["pid"], 4321)
+            self.assertEqual(cfg.dashboard_pid_file.read_text(encoding="utf-8").strip(), "4321")
+            meta = json.loads(cfg.dashboard_meta_file.read_text(encoding="utf-8"))
+            self.assertEqual(meta["build_id"], "test-build")
+            self.assertEqual(meta["port"], 8765)
+
     def test_start_dashboard_background_writes_pid_and_meta(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))
