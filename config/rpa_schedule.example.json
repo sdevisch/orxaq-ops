@@ -1,0 +1,35 @@
+{
+  "run_id": "example-rpa-schedule",
+  "python_executable": "python3",
+  "orxaq_cli_path": "../orxaq/orxaq_cli.py",
+  "evidence_root": "../orxaq/artifacts/rpa_evidence",
+  "policy": {
+    "max_concurrent_browsers": 2,
+    "per_domain_interval_sec": 1.0,
+    "failure_backoff_base_sec": 2.0,
+    "failure_backoff_max_sec": 30.0,
+    "max_retries": 2
+  },
+  "jobs": [
+    {
+      "id": "fixture-a",
+      "domain": "example.com",
+      "command": [
+        "python3",
+        "-c",
+        "print('fixture-a')"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "id": "fixture-b",
+      "domain": "example.com",
+      "command": [
+        "python3",
+        "-c",
+        "print('fixture-b')"
+      ],
+      "timeout_sec": 30
+    }
+  ]
+}

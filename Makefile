@@ -3,7 +3,7 @@ ROOT := $(CURDIR)
 export PYTHONPATH := $(ROOT)/src:$(PYTHONPATH)
 AUTONOMY := $(PYTHON) -m orxaq_autonomy.cli --root $(ROOT)
 
-.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
+.PHONY: run supervise start stop ensure status health logs reset preflight workspace open-vscode open-cursor open-pycharm install-keepalive uninstall-keepalive keepalive-status router-check router-profile-apply profile-apply rpa-schedule dashboard lint test version-check repo-hygiene bump-patch bump-minor bump-major package setup pre-commit pre-push
 
 run:
 	$(AUTONOMY) run
@@ -55,6 +55,21 @@ uninstall-keepalive:
 
 keepalive-status:
 	$(AUTONOMY) keepalive-status
+
+router-check:
+	$(AUTONOMY) router-check --config ./config/router.example.yaml --output ./artifacts/router_check.json --profiles-dir ./router_profiles --strict
+
+router-profile-apply:
+	$(AUTONOMY) router-profile-apply $(PROFILE) --config ./config/router.example.yaml --profiles-dir ./router_profiles --output ./config/router.active.yaml
+
+# Legacy alias retained for early PR branches; applies router profiles, not provider profiles.
+profile-apply: router-profile-apply
+
+rpa-schedule:
+	$(AUTONOMY) rpa-schedule --config ./config/rpa_schedule.example.json --output ./artifacts/autonomy/rpa_scheduler_report.json
+
+dashboard:
+	$(AUTONOMY) dashboard --artifacts-dir ./artifacts --host 127.0.0.1 --port 8787
 
 setup:
 	$(PYTHON) -m pip install -e .

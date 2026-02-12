@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .context import write_default_skill_protocol
+from .dashboard import run_dashboard_server
 from .gitops import (
     GitOpsError,
     detect_head_branch,
@@ -20,6 +21,7 @@ from .gitops import (
 from .ide import generate_workspace, open_in_ide
 from .manager import (
     ManagerConfig,
+    autonomy_stop,
     ensure_background,
     health_snapshot,
     install_keepalive,
@@ -36,7 +38,8 @@ from .manager import (
 )
 from .profile import profile_apply
 from .providers import run_providers_check
-from .stop_report import build_stop_report, file_issue
+from .router import apply_router_profile, run_router_check
+from .rpa_scheduler import run_rpa_schedule_from_config
 from .task_queue import validate_task_queue_file
 
 
@@ -58,7 +61,19 @@ def main(argv: list[str] | None = None) -> int:
     stop_cmd = sub.add_parser("stop")
     stop_cmd.add_argument("--report", action="store_true", help="Also write AUTONOMY_STOP_REPORT.md.")
     stop_cmd.add_argument("--file-issue", action="store_true", help="Also file a GitHub issue with stop report.")
-    stop_cmd.add_argument("--issue-title", default="AUTONOMY STOP: manual follow-up required")
+    stop_cmd.add_argument(
+        "--reason",
+        default="manual stop requested",
+        help="Reason included in AUTONOMY_STOP_REPORT.md and issue payload.",
+    )
+    stop_cmd.add_argument("--issue-title", default="", help="Optional issue title override.")
+    stop_cmd.add_argument("--issue-repo", default="", help="Optional owner/repo override for issue filing.")
+    stop_cmd.add_argument(
+        "--issue-label",
+        action="append",
+        default=[],
+        help="Issue label(s) to include when --file-issue is enabled.",
+    )
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
@@ -96,6 +111,32 @@ def main(argv: list[str] | None = None) -> int:
 
     profile_cmd = sub.add_parser("profile-apply")
     profile_cmd.add_argument("name", choices=["local", "lan", "travel"])
+
+    router = sub.add_parser("router-check")
+    router.add_argument("--config", default="./config/router.example.yaml")
+    router.add_argument("--output", default="./artifacts/router_check.json")
+    router.add_argument("--profile", default="")
+    router.add_argument("--profiles-dir", default="./router_profiles")
+    router.add_argument("--active-config", default="./config/router.active.yaml")
+    router.add_argument("--lane", default="")
+    router.add_argument("--timeout-sec", type=int, default=5)
+    router.add_argument("--strict", action="store_true")
+
+    router_profile = sub.add_parser("router-profile-apply")
+    router_profile.add_argument("name")
+    router_profile.add_argument("--config", default="./config/router.example.yaml")
+    router_profile.add_argument("--profiles-dir", default="./router_profiles")
+    router_profile.add_argument("--output", default="./config/router.active.yaml")
+
+    rpa_schedule = sub.add_parser("rpa-schedule")
+    rpa_schedule.add_argument("--config", default="./config/rpa_schedule.example.json")
+    rpa_schedule.add_argument("--output", default="./artifacts/autonomy/rpa_scheduler_report.json")
+    rpa_schedule.add_argument("--strict", action="store_true")
+
+    dashboard = sub.add_parser("dashboard")
+    dashboard.add_argument("--artifacts-dir", default="./artifacts")
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8787)
 
     pr_open = sub.add_parser("pr-open")
     pr_open.add_argument("--repo", default="", help="GitHub repo slug owner/name")
@@ -171,22 +212,16 @@ def main(argv: list[str] | None = None) -> int:
         start_background(cfg)
         return 0
     if args.command == "stop":
-        stop_background(cfg)
-        if args.report or args.file_issue:
-            report_path = build_stop_report(
-                root=cfg.root_dir,
-                health_path=(cfg.root_dir / "artifacts" / "health.json"),
-                heartbeat_path=cfg.heartbeat_file,
-                state_path=cfg.state_file,
-                output_path=(cfg.root_dir / "artifacts" / "AUTONOMY_STOP_REPORT.md"),
-            )
-            print(f"wrote stop report: {report_path}")
-            if args.file_issue:
-                issue = file_issue(root=cfg.root_dir, title=args.issue_title, body_path=report_path)
-                print(json.dumps(issue, indent=2, sort_keys=True))
-                if not issue.get("ok", False):
-                    return 1
-        return 0
+        payload = autonomy_stop(
+            cfg,
+            reason=str(args.reason),
+            file_issue=bool(args.file_issue),
+            issue_repo=str(args.issue_repo),
+            issue_title=str(args.issue_title),
+            labels=list(args.issue_label or []),
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload.get("ok", False) else 1
     if args.command == "ensure":
         ensure_background(cfg)
         return 0
@@ -203,9 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "preflight":
         payload = preflight(cfg, require_clean=not args.allow_dirty)
         print(json.dumps(payload, indent=2, sort_keys=True))
-        if payload.get("clean", True):
-            return 0
-        return 1
+        return 0 if payload.get("clean", True) else 1
     if args.command == "reset":
         reset_state(cfg)
         print(f"cleared state file: {cfg.state_file}")
@@ -267,6 +300,52 @@ def main(argv: list[str] | None = None) -> int:
         destination = profile_apply(root=cfg.root_dir, name=args.name)
         print(f"applied profile: {args.name} -> {destination}")
         return 0
+    if args.command == "router-check":
+        report = run_router_check(
+            root=str(cfg.root_dir),
+            config_path=args.config,
+            output_path=args.output,
+            profile=args.profile,
+            profiles_dir=args.profiles_dir,
+            active_config_output=args.active_config,
+            lane=args.lane,
+            timeout_sec=max(1, int(args.timeout_sec)),
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if args.strict and not bool(report.get("summary", {}).get("overall_ok", False)):
+            return 1
+        return 0
+    if args.command == "router-profile-apply":
+        try:
+            payload = apply_router_profile(
+                root=str(cfg.root_dir),
+                profile_name=str(args.name),
+                base_config_path=str(args.config),
+                profiles_dir=str(args.profiles_dir),
+                output_path=str(args.output),
+            )
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+            return 1
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "rpa-schedule":
+        payload = run_rpa_schedule_from_config(
+            root=str(cfg.root_dir),
+            config_path=args.config,
+            output_path=args.output,
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.strict and not bool(payload.get("ok", False)):
+            return 1
+        return 0
+    if args.command == "dashboard":
+        run_dashboard_server(
+            artifacts_root=Path(args.artifacts_dir).expanduser().resolve(),
+            host=str(args.host),
+            port=int(args.port),
+        )
+        return 0
     if args.command == "pr-open":
         try:
             repo = args.repo.strip() or detect_repo(cfg.root_dir)
@@ -300,25 +379,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
             return 1
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0 if payload.get("ok") else 1
+        return 0
     if args.command == "pr-merge":
         try:
             repo = args.repo.strip() or detect_repo(cfg.root_dir)
-            swarm_health_score: float | None
-            if args.swarm_health_score >= 0:
-                swarm_health_score = float(args.swarm_health_score)
-            elif args.swarm_health_json.strip():
-                swarm_health_score = read_swarm_health_score(Path(args.swarm_health_json).resolve())
-            else:
-                swarm_health_score = None
+            swarm_score = args.swarm_health_score
+            if swarm_score < 0:
+                swarm_score = read_swarm_health_score(args.swarm_health_json)
             payload = merge_pr(
                 repo=repo,
                 pr_number=int(args.pr),
-                method=args.method,
+                merge_method=args.method,
                 delete_branch=bool(args.delete_branch),
+                swarm_health_score=swarm_score,
                 min_swarm_health=float(args.min_swarm_health),
-                swarm_health_score=swarm_health_score,
-                require_ci_green=not bool(args.allow_ci_yellow),
+                allow_ci_yellow=bool(args.allow_ci_yellow),
             )
         except GitOpsError as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
@@ -326,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
+    parser.print_help(sys.stderr)
     return 2
 
 

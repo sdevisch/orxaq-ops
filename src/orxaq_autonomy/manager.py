@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -25,6 +26,319 @@ def _now_iso() -> str:
 
 def _log(msg: str) -> None:
     print(f"[{_now_iso()}] {msg}", flush=True)
+
+
+SECRET_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*([\"'])?[^\\s,\"']+\\2?",
+        ),
+        r"\1=[REDACTED]",
+    ),
+    (
+        re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}\b"),
+        "[REDACTED_OPENAI_KEY]",
+    ),
+)
+
+
+def sanitize_text(value: str) -> str:
+    text = str(value)
+    for pattern, replacement in SECRET_REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _read_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _parse_repo_slug(remote_url: str) -> str:
+    cleaned = remote_url.strip()
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    if cleaned.startswith("git@github.com:"):
+        return cleaned.split("git@github.com:", 1)[1]
+    if "github.com/" in cleaned:
+        return cleaned.split("github.com/", 1)[1]
+    return ""
+
+
+def _repo_slug(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return _parse_repo_slug(result.stdout)
+
+
+def _repo_branch(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _detect_health_score(config: ManagerConfig) -> int | None:
+    candidates = [
+        config.impl_repo / "artifacts" / "health.json",
+        config.artifacts_dir / "health.json",
+    ]
+    for path in candidates:
+        payload = _read_json_dict(path)
+        score = payload.get("score")
+        if isinstance(score, int):
+            return score
+    return None
+
+
+def _select_last_task(state_payload: dict[str, Any]) -> dict[str, Any]:
+    best_task: dict[str, Any] = {}
+    best_key: tuple[int, str, int] = (0, "", -1)
+    for task_id, raw in state_payload.items():
+        if not isinstance(raw, dict):
+            continue
+        last_update = str(raw.get("last_update", "")).strip()
+        attempts = int(raw.get("attempts", 0) or 0)
+        key = (1 if last_update else 0, last_update, attempts)
+        if key <= best_key:
+            continue
+        best_key = key
+        best_task = {
+            "task_id": str(task_id),
+            "status": str(raw.get("status", "")).strip(),
+            "attempts": attempts,
+            "last_update": last_update,
+            "last_summary": sanitize_text(str(raw.get("last_summary", "")).strip()),
+            "last_error": sanitize_text(str(raw.get("last_error", "")).strip()),
+        }
+    return best_task
+
+
+def _detect_last_ci_failure(config: ManagerConfig) -> dict[str, str]:
+    repo_slug = _repo_slug(config.root_dir)
+    branch = _repo_branch(config.root_dir)
+    if not repo_slug or not branch:
+        return {}
+
+    pr_list = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo_slug,
+            "--head",
+            branch,
+            "--json",
+            "number,url,state",
+            "--limit",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pr_list.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(pr_list.stdout)
+    except Exception:
+        return {}
+    if not isinstance(payload, list) or not payload:
+        return {}
+    first = payload[0] if isinstance(payload[0], dict) else {}
+    pr_number = str(first.get("number", "")).strip()
+    pr_url = str(first.get("url", "")).strip()
+    if not pr_number:
+        return {}
+
+    checks = subprocess.run(
+        ["gh", "pr", "checks", pr_number, "--repo", repo_slug],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = checks.stdout.strip()
+    if not output:
+        return {"pr_number": pr_number, "pr_url": pr_url}
+
+    for line in output.splitlines():
+        parts = [chunk.strip() for chunk in line.split("\t")]
+        if len(parts) < 2:
+            continue
+        name, status = parts[0], parts[1].lower()
+        if status not in {"fail", "cancel", "timed_out", "action_required"}:
+            continue
+        details_url = parts[3] if len(parts) >= 4 else ""
+        return {
+            "pr_number": pr_number,
+            "pr_url": pr_url,
+            "check_name": sanitize_text(name),
+            "check_status": status,
+            "details_url": details_url,
+        }
+
+    return {"pr_number": pr_number, "pr_url": pr_url}
+
+
+def _suggest_smallest_fix_path(last_task: dict[str, Any], ci_failure: dict[str, str]) -> str:
+    if ci_failure.get("check_name"):
+        return (
+            "Reproduce the failing CI check locally, patch the smallest failing unit, "
+            "rerun the targeted command, then rerun full lint/test."
+        )
+    if last_task.get("task_id"):
+        return (
+            f"Resume from task `{last_task['task_id']}` using its last error/summary, "
+            "apply the smallest scoped fix, then rerun validations."
+        )
+    return "Run `make preflight`, identify first hard failure, and patch only that blocker."
+
+
+def build_stop_report_payload(config: ManagerConfig, *, reason: str) -> dict[str, Any]:
+    state_payload = _read_json_dict(config.state_file)
+    status_payload = status_snapshot(config)
+    last_task = _select_last_task(state_payload)
+    ci_failure = _detect_last_ci_failure(config)
+    health_score = _detect_health_score(config)
+    return {
+        "generated_at": _now_iso(),
+        "reason": sanitize_text(reason),
+        "repo": str(config.root_dir),
+        "branch": _repo_branch(config.root_dir),
+        "health_score": health_score,
+        "status": status_payload,
+        "last_task": last_task,
+        "last_ci_failure": ci_failure,
+        "suggested_smallest_fix_path": _suggest_smallest_fix_path(last_task, ci_failure),
+        "artifacts": {
+            "state_file": str(config.state_file),
+            "log_file": str(config.log_file),
+            "heartbeat_file": str(config.heartbeat_file),
+            "budget_report": str(config.budget_report_file),
+        },
+    }
+
+
+def render_stop_report_markdown(payload: dict[str, Any]) -> str:
+    last_task = payload.get("last_task", {}) if isinstance(payload.get("last_task"), dict) else {}
+    ci_failure = payload.get("last_ci_failure", {}) if isinstance(payload.get("last_ci_failure"), dict) else {}
+    artifacts = payload.get("artifacts", {}) if isinstance(payload.get("artifacts"), dict) else {}
+    health_score = payload.get("health_score")
+    health_display = "unknown" if health_score is None else str(health_score)
+    lines = [
+        "# AUTONOMY STOP REPORT",
+        "",
+        f"- generated_at: `{payload.get('generated_at', '')}`",
+        f"- reason: `{payload.get('reason', '')}`",
+        f"- repo: `{payload.get('repo', '')}`",
+        f"- branch: `{payload.get('branch', '')}`",
+        f"- health_score: `{health_display}`",
+        "",
+        "## Last Executed Task",
+        "",
+        f"- task_id: `{last_task.get('task_id', '')}`",
+        f"- status: `{last_task.get('status', '')}`",
+        f"- attempts: `{last_task.get('attempts', 0)}`",
+        f"- last_update: `{last_task.get('last_update', '')}`",
+        f"- last_summary: `{last_task.get('last_summary', '')}`",
+        f"- last_error: `{last_task.get('last_error', '')}`",
+        "",
+        "## Last CI Failure",
+        "",
+        f"- pr_url: `{ci_failure.get('pr_url', '')}`",
+        f"- check_name: `{ci_failure.get('check_name', '')}`",
+        f"- check_status: `{ci_failure.get('check_status', '')}`",
+        f"- details_url: `{ci_failure.get('details_url', '')}`",
+        "",
+        "## Suggested Smallest Fix Path",
+        "",
+        payload.get("suggested_smallest_fix_path", ""),
+        "",
+        "## Artifacts",
+        "",
+        f"- state_file: `{artifacts.get('state_file', '')}`",
+        f"- log_file: `{artifacts.get('log_file', '')}`",
+        f"- heartbeat_file: `{artifacts.get('heartbeat_file', '')}`",
+        f"- budget_report: `{artifacts.get('budget_report', '')}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_stop_issue_payload(
+    config: ManagerConfig,
+    *,
+    report_payload: dict[str, Any],
+    report_path: Path,
+    issue_repo: str = "",
+    issue_title: str = "",
+    labels: list[str] | None = None,
+) -> dict[str, Any]:
+    repo_slug = issue_repo.strip() or _repo_slug(config.root_dir)
+    ts = _now_utc().strftime("%Y-%m-%d %H:%M UTC")
+    title = issue_title.strip() or f"AUTONOMY STOP: {config.root_dir.name} ({ts})"
+    body = "\n".join(
+        [
+            "Autonomy run stopped and requires intervention.",
+            "",
+            f"- reason: `{report_payload.get('reason', '')}`",
+            f"- health_score: `{report_payload.get('health_score', 'unknown')}`",
+            f"- last_task: `{(report_payload.get('last_task') or {}).get('task_id', '')}`",
+            f"- ci_failure: `{(report_payload.get('last_ci_failure') or {}).get('check_name', '')}`",
+            "",
+            f"Stop report: `{report_path}`",
+            "",
+            "Suggested smallest fix path:",
+            report_payload.get("suggested_smallest_fix_path", ""),
+        ]
+    )
+    sanitized_body = sanitize_text(body)
+    cleaned_labels = [sanitize_text(lbl).strip() for lbl in (labels or []) if str(lbl).strip()]
+    return {
+        "repo_slug": sanitize_text(repo_slug),
+        "title": sanitize_text(title),
+        "body": sanitized_body,
+        "labels": cleaned_labels,
+    }
+
+
+def _file_stop_issue(issue_payload: dict[str, Any]) -> str:
+    if not issue_payload.get("repo_slug"):
+        return ""
+    cmd = [
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        str(issue_payload["repo_slug"]),
+        "--title",
+        str(issue_payload["title"]),
+        "--body",
+        str(issue_payload["body"]),
+    ]
+    for label in issue_payload.get("labels", []):
+        cmd.extend(["--label", str(label)])
+    created = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if created.returncode != 0:
+        return ""
+    return created.stdout.strip().splitlines()[-1].strip()
 
 
 def _read_pid(path: Path) -> int | None:
@@ -112,11 +426,14 @@ def _runtime_env(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def _current_uid() -> int:
+def _safe_uid() -> int:
     getuid = getattr(os, "getuid", None)
     if callable(getuid):
-        return int(getuid())
-    return int(os.environ.get("UID", "0") or "0")
+        try:
+            return int(getuid())
+        except Exception:
+            return 0
+    return 0
 
 
 @dataclass(frozen=True)
@@ -148,6 +465,11 @@ class ManagerConfig:
     idle_sleep_sec: int
     agent_timeout_sec: int
     validate_timeout_sec: int
+    max_runtime_sec: int
+    max_total_tokens: int
+    max_total_cost_usd: float
+    max_total_retries: int
+    budget_report_file: Path
     heartbeat_poll_sec: int
     heartbeat_stale_sec: int
     supervisor_restart_delay_sec: int
@@ -175,6 +497,15 @@ class ManagerConfig:
                 return default
             try:
                 return int(raw)
+            except ValueError:
+                return default
+
+        def _float(key: str, default: float) -> float:
+            raw = merged.get(key)
+            if raw is None:
+                return default
+            try:
+                return float(raw)
             except ValueError:
                 return default
 
@@ -214,6 +545,11 @@ class ManagerConfig:
             idle_sleep_sec=_int("ORXAQ_AUTONOMY_IDLE_SLEEP_SEC", 10),
             agent_timeout_sec=_int("ORXAQ_AUTONOMY_AGENT_TIMEOUT_SEC", 3600),
             validate_timeout_sec=_int("ORXAQ_AUTONOMY_VALIDATE_TIMEOUT_SEC", 1800),
+            max_runtime_sec=_int("ORXAQ_AUTONOMY_MAX_RUNTIME_SEC", 0),
+            max_total_tokens=_int("ORXAQ_AUTONOMY_MAX_TOTAL_TOKENS", 0),
+            max_total_cost_usd=_float("ORXAQ_AUTONOMY_MAX_TOTAL_COST_USD", 0.0),
+            max_total_retries=_int("ORXAQ_AUTONOMY_MAX_TOTAL_RETRIES", 0),
+            budget_report_file=_path("ORXAQ_AUTONOMY_BUDGET_REPORT_FILE", artifacts / "budget.json"),
             heartbeat_poll_sec=_int("ORXAQ_AUTONOMY_HEARTBEAT_POLL_SEC", 20),
             heartbeat_stale_sec=_int("ORXAQ_AUTONOMY_HEARTBEAT_STALE_SEC", 300),
             supervisor_restart_delay_sec=_int("ORXAQ_AUTONOMY_SUPERVISOR_RESTART_DELAY_SEC", 5),
@@ -312,6 +648,16 @@ def runner_argv(config: ManagerConfig) -> list[str]:
         str(config.agent_timeout_sec),
         "--validate-timeout-sec",
         str(config.validate_timeout_sec),
+        "--max-runtime-sec",
+        str(config.max_runtime_sec),
+        "--max-total-tokens",
+        str(config.max_total_tokens),
+        "--max-total-cost-usd",
+        str(config.max_total_cost_usd),
+        "--max-total-retries",
+        str(config.max_total_retries),
+        "--budget-report-file",
+        str(config.budget_report_file),
         "--skill-protocol-file",
         str(config.skill_protocol_file),
     ]
@@ -448,6 +794,42 @@ def stop_background(config: ManagerConfig) -> None:
     _log("autonomy supervisor stopped")
 
 
+def autonomy_stop(
+    config: ManagerConfig,
+    *,
+    reason: str,
+    file_issue: bool = False,
+    issue_repo: str = "",
+    issue_title: str = "",
+    labels: list[str] | None = None,
+) -> dict[str, Any]:
+    stop_background(config)
+    report_payload = build_stop_report_payload(config, reason=reason)
+    report_path = config.artifacts_dir / "AUTONOMY_STOP_REPORT.md"
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(render_stop_report_markdown(report_payload), encoding="utf-8")
+
+    issue_url = ""
+    issue_payload = build_stop_issue_payload(
+        config,
+        report_payload=report_payload,
+        report_path=report_path,
+        issue_repo=issue_repo,
+        issue_title=issue_title,
+        labels=labels,
+    )
+    if file_issue:
+        issue_url = _file_stop_issue(issue_payload)
+
+    return {
+        "ok": True,
+        "report_path": str(report_path),
+        "issue_url": issue_url,
+        "issue_payload": issue_payload,
+        "stop_report": report_payload,
+    }
+
+
 def ensure_background(config: ManagerConfig) -> None:
     supervisor_pid = _read_pid(config.supervisor_pid_file)
     if not _pid_running(supervisor_pid):
@@ -511,6 +893,11 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
         "blocked_tasks": blocked_tasks,
         "heartbeat_stale": stale,
     }
+    if config.budget_report_file.exists():
+        try:
+            out["budget"] = json.loads(config.budget_report_file.read_text(encoding="utf-8"))
+        except Exception:
+            out["budget"] = {"error": "invalid_budget_report"}
     health_file = config.artifacts_dir / "health.json"
     config.artifacts_dir.mkdir(parents=True, exist_ok=True)
     health_file.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -565,7 +952,7 @@ def install_keepalive(config: ManagerConfig) -> str:
 </dict></plist>
 """
         plist.write_text(payload, encoding="utf-8")
-        uid = _current_uid()
+        uid = _safe_uid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
         load = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=False, capture_output=True)
         if load.returncode != 0:
@@ -583,7 +970,7 @@ def uninstall_keepalive(config: ManagerConfig) -> str:
     if sys.platform == "darwin":
         label = "com.orxaq.autonomy.ensure"
         plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        uid = _current_uid()
+        uid = _safe_uid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
         plist.unlink(missing_ok=True)
         return label
@@ -598,7 +985,7 @@ def keepalive_status(config: ManagerConfig) -> dict[str, Any]:
     if sys.platform == "darwin":
         label = "com.orxaq.autonomy.ensure"
         plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        uid = _current_uid()
+        uid = _safe_uid()
         result = subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"], check=False, capture_output=True)
         return {"platform": "macos", "label": label, "active": result.returncode == 0, "plist": str(plist)}
     return {"platform": sys.platform, "active": False, "note": "No native keepalive integration for this platform."}
