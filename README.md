@@ -24,9 +24,16 @@ Reusable autonomy control-plane for Orxaq. The autonomy runtime is now a standal
 - `src/orxaq_autonomy/runner.py` - resilient task runner with retries/validation.
 - `src/orxaq_autonomy/protocols.py` - skill protocol + MCP context interfaces.
 - `src/orxaq_autonomy/ide.py` - workspace generation and IDE launch helpers.
+- `src/orxaq_autonomy/providers.py` - provider registry parsing and connectivity checks.
+- `src/orxaq_autonomy/task_queue.py` - task queue validation + checkpoint helpers.
+- `src/orxaq_autonomy/profile.py` - local/LAN/travel profile application.
+- `src/orxaq_autonomy/stop_report.py` - autonomy stop report + issue payload support.
 - `skills/orxaq-autonomy-agent/SKILL.md` - reusable skill definition for autonomy workflows.
 - `config/skill_protocol.json` - reusable autonomy protocol contract.
 - `config/mcp_context.example.json` - sample MCP-style context payload.
+- `config/providers.example.yaml` - provider registry template for lanes.
+- `config/task_queue.schema.json` - JSON schema for task queue payloads.
+- `profiles/*.yaml` - routing profile overlays (`local`, `lan`, `travel`).
 - `docs/autonomy-halt-mitigation.md` - failure-mode playbook.
 - `docs/release-pypi.md` - trusted-publishing release runbook.
 
@@ -58,6 +65,9 @@ Optional reusable context controls:
 
 - `ORXAQ_AUTONOMY_SKILL_PROTOCOL_FILE` (default `config/skill_protocol.json`)
 - `ORXAQ_AUTONOMY_MCP_CONTEXT_FILE` (optional MCP-style JSON file)
+- `ORXAQ_AUTONOMY_CHECKPOINT_DIR` (default `artifacts/checkpoints`)
+- `ORXAQ_AUTONOMY_RUN_ID` (optional explicit run id)
+- `ORXAQ_AUTONOMY_RESUME_RUN_ID` (resume from `artifacts/checkpoints/<run_id>.json`)
 
 ## Commands
 
@@ -78,6 +88,10 @@ make open-pycharm
 orxaq-autonomy --root . pr-open --title "Autonomy update" --body "Objective + acceptance criteria"
 orxaq-autonomy --root . pr-wait --pr 123 --close-on-failure --open-issue-on-failure
 orxaq-autonomy --root . pr-merge --pr 123 --swarm-health-json ../orxaq/artifacts/health.json --min-swarm-health 85 --delete-branch
+orxaq-autonomy --root . providers-check --config config/providers.example.yaml --output artifacts/providers_check.json --strict
+orxaq-autonomy --root . profile-apply local
+orxaq-autonomy --root . task-queue-validate --tasks-file config/tasks.json
+orxaq-autonomy --root . stop --report --file-issue --issue-title "AUTONOMY STOP: manual follow-up required"
 make lint
 make test
 make version-check

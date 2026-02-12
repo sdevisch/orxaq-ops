@@ -125,6 +125,108 @@ class SchedulingTests(unittest.TestCase):
         self.assertTrue(entry["not_before"])
 
 
+class CheckpointTests(unittest.TestCase):
+    def test_apply_checkpoint_state_restores_known_tasks(self):
+        tasks = [
+            runner.Task("a", "codex", 1, "A", "A", [], []),
+            runner.Task("b", "gemini", 2, "B", "B", [], []),
+        ]
+        state = {
+            "a": {
+                "status": runner.STATUS_PENDING,
+                "attempts": 0,
+                "retryable_failures": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "",
+                "owner": "codex",
+            },
+            "b": {
+                "status": runner.STATUS_PENDING,
+                "attempts": 0,
+                "retryable_failures": 0,
+                "not_before": "",
+                "last_update": "",
+                "last_summary": "",
+                "last_error": "",
+                "owner": "gemini",
+            },
+        }
+        checkpoint_state = {
+            "a": {"status": "done", "attempts": 3, "last_summary": "ok"},
+            "b": {"status": "in_progress", "attempts": 1},
+            "unknown": {"status": "done"},
+        }
+
+        runner.apply_checkpoint_state(state, tasks, checkpoint_state)
+
+        self.assertEqual(state["a"]["status"], runner.STATUS_DONE)
+        self.assertEqual(state["a"]["attempts"], 3)
+        self.assertEqual(state["a"]["last_summary"], "ok")
+        # in_progress should be normalized to pending on restore.
+        self.assertEqual(state["b"]["status"], runner.STATUS_PENDING)
+        self.assertEqual(state["b"]["attempts"], 1)
+
+    def test_resume_missing_checkpoint_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            impl_repo = root / "impl"
+            test_repo = root / "test"
+            config_dir = root / "config"
+            state_dir = root / "state"
+            artifacts_dir = root / "artifacts"
+            impl_repo.mkdir()
+            test_repo.mkdir()
+            config_dir.mkdir()
+            state_dir.mkdir()
+            artifacts_dir.mkdir()
+
+            (impl_repo / ".git").mkdir()
+            tasks = [
+                {
+                    "id": "t1",
+                    "owner": "codex",
+                    "priority": 1,
+                    "title": "T1",
+                    "description": "D",
+                }
+            ]
+            (config_dir / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+            (config_dir / "objective.md").write_text("objective", encoding="utf-8")
+            (config_dir / "codex_result.schema.json").write_text("{}", encoding="utf-8")
+            (config_dir / "skill_protocol.json").write_text("{}", encoding="utf-8")
+
+            argv = [
+                "--impl-repo",
+                str(impl_repo),
+                "--test-repo",
+                str(test_repo),
+                "--tasks-file",
+                str(config_dir / "tasks.json"),
+                "--state-file",
+                str(state_dir / "state.json"),
+                "--objective-file",
+                str(config_dir / "objective.md"),
+                "--codex-schema",
+                str(config_dir / "codex_result.schema.json"),
+                "--artifacts-dir",
+                str(artifacts_dir),
+                "--heartbeat-file",
+                str(artifacts_dir / "heartbeat.json"),
+                "--lock-file",
+                str(artifacts_dir / "runner.lock"),
+                "--max-cycles",
+                "1",
+                "--resume",
+                "missing-run-id",
+            ]
+
+            with mock.patch.object(runner, "ensure_cli_exists"):
+                with self.assertRaises(FileNotFoundError):
+                    runner.main(argv)
+
+
 class RuntimeSafeguardTests(unittest.TestCase):
     def test_build_subprocess_env_sets_non_interactive_defaults(self):
         env = runner.build_subprocess_env()
@@ -218,7 +320,11 @@ class RuntimeSafeguardTests(unittest.TestCase):
     def test_run_command_returns_nonzero_when_binary_missing(self):
         result = runner.run_command(["definitely-not-a-real-binary"], cwd=pathlib.Path("/tmp"), timeout_sec=1)
         self.assertEqual(result.returncode, 127)
-        self.assertIn("No such file", result.stderr)
+        stderr_lower = result.stderr.lower()
+        self.assertTrue(
+            "no such file" in stderr_lower or "cannot find the file" in stderr_lower,
+            msg=f"unexpected missing-binary message: {result.stderr}",
+        )
 
 
 class DeliveryContractTests(unittest.TestCase):

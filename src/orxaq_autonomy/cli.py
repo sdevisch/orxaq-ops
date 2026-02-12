@@ -34,6 +34,10 @@ from .manager import (
     tail_logs,
     uninstall_keepalive,
 )
+from .profile import profile_apply
+from .providers import run_providers_check
+from .stop_report import build_stop_report, file_issue
+from .task_queue import validate_task_queue_file
 
 
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
@@ -51,7 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run")
     sub.add_parser("supervise")
     sub.add_parser("start")
-    sub.add_parser("stop")
+    stop_cmd = sub.add_parser("stop")
+    stop_cmd.add_argument("--report", action="store_true", help="Also write AUTONOMY_STOP_REPORT.md.")
+    stop_cmd.add_argument("--file-issue", action="store_true", help="Also file a GitHub issue with stop report.")
+    stop_cmd.add_argument("--issue-title", default="AUTONOMY STOP: manual follow-up required")
     sub.add_parser("ensure")
     sub.add_parser("status")
     sub.add_parser("health")
@@ -72,6 +79,23 @@ def main(argv: list[str] | None = None) -> int:
     open_ide = sub.add_parser("open-ide")
     open_ide.add_argument("--ide", choices=["vscode", "cursor", "pycharm"], default="vscode")
     open_ide.add_argument("--workspace", default="orxaq-dual-agent.code-workspace")
+
+    providers_check = sub.add_parser("providers-check")
+    providers_check.add_argument("--config", default="config/providers.example.yaml")
+    providers_check.add_argument("--output", default="artifacts/providers_check.json")
+    providers_check.add_argument("--timeout-sec", type=int, default=5)
+    providers_check.add_argument("--strict", action="store_true")
+    providers_check.add_argument(
+        "--profile",
+        default="",
+        help="Optional profile file for required/optional provider overrides.",
+    )
+
+    task_queue_validate = sub.add_parser("task-queue-validate")
+    task_queue_validate.add_argument("--tasks-file", default="config/tasks.json")
+
+    profile_cmd = sub.add_parser("profile-apply")
+    profile_cmd.add_argument("name", choices=["local", "lan", "travel"])
 
     pr_open = sub.add_parser("pr-open")
     pr_open.add_argument("--repo", default="", help="GitHub repo slug owner/name")
@@ -148,6 +172,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "stop":
         stop_background(cfg)
+        if args.report or args.file_issue:
+            report_path = build_stop_report(
+                root=cfg.root_dir,
+                health_path=(cfg.root_dir / "artifacts" / "health.json"),
+                heartbeat_path=cfg.heartbeat_file,
+                state_path=cfg.state_file,
+                output_path=(cfg.root_dir / "artifacts" / "AUTONOMY_STOP_REPORT.md"),
+            )
+            print(f"wrote stop report: {report_path}")
+            if args.file_issue:
+                issue = file_issue(root=cfg.root_dir, title=args.issue_title, body_path=report_path)
+                print(json.dumps(issue, indent=2, sort_keys=True))
+                if not issue.get("ok", False):
+                    return 1
         return 0
     if args.command == "ensure":
         ensure_background(cfg)
@@ -201,6 +239,33 @@ def main(argv: list[str] | None = None) -> int:
         if not ws.exists() and args.ide in {"vscode", "cursor"}:
             generate_workspace(cfg.root_dir, cfg.impl_repo, cfg.test_repo, ws)
         print(open_in_ide(ide=args.ide, root=cfg.root_dir, workspace_file=ws))
+        return 0
+    if args.command == "providers-check":
+        payload = run_providers_check(
+            root=str(cfg.root_dir),
+            config_path=args.config,
+            output_path=args.output,
+            timeout_sec=max(1, int(args.timeout_sec)),
+            profile_path=args.profile.strip() or None,
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.strict and not bool(payload.get("summary", {}).get("all_required_up", False)):
+            return 1
+        return 0
+    if args.command == "task-queue-validate":
+        task_file = (cfg.root_dir / args.tasks_file).resolve()
+        errors = validate_task_queue_file(task_file)
+        print(
+            json.dumps(
+                {"ok": not errors, "errors": errors, "tasks_file": str(task_file)},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0 if not errors else 1
+    if args.command == "profile-apply":
+        destination = profile_apply(root=cfg.root_dir, name=args.name)
+        print(f"applied profile: {args.name} -> {destination}")
         return 0
     if args.command == "pr-open":
         try:

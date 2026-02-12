@@ -1,0 +1,8 @@
+{
+  "name": "local",
+  "required_lanes": ["L0"],
+  "overrides": {
+    "required": ["lmstudio-local"],
+    "optional": ["openai-primary", "gemini-primary", "claude-primary"]
+  }
+}
