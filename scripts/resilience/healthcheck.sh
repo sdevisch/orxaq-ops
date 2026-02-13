@@ -2,7 +2,10 @@
 # healthcheck.sh — Periodic health verification (every 5 minutes via launchd)
 # Checks repo integrity, backup freshness, secret availability, process health,
 # disk space, and LM Studio availability.
-set -euo pipefail
+#
+# NOTE: We intentionally do NOT use `set -e` here. Individual section failures
+# must never prevent the status file from being written (see issue #56).
+set -uo pipefail
 
 TELEMETRY_SCRIPT="healthcheck"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,6 +34,27 @@ mkdir -p "${LOG_DIR}"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ISSUES=()
 
+# Emergency trap: always write a status file even if the script crashes
+_write_emergency_status() {
+    local exit_code=$?
+    if [[ ${exit_code} -ne 0 ]] && [[ ! -f "${STATUS_FILE}" || "$(cat "${STATUS_FILE}" 2>/dev/null)" != *"${TIMESTAMP}"* ]]; then
+        cat > "${STATUS_FILE}" << EEOF
+{
+    "timestamp": "${TIMESTAMP}",
+    "status": "error",
+    "issues": ["HEALTHCHECK_CRASHED:exit_code=${exit_code}"],
+    "repos_checked": 0,
+    "repos_healthy": 0,
+    "vault_present": false,
+    "disk_available_gb": 0,
+    "thresholds": {}
+}
+EEOF
+        emit_event "healthcheck_crash_recovery" "error" exit_code="${exit_code}" 2>/dev/null || true
+    fi
+}
+trap '_write_emergency_status' EXIT
+
 # --- Repo checks ---
 start_timer "repo_checks"
 REPOS_HEALTHY=0
@@ -40,11 +64,11 @@ for repo in orxaq orxaq-ops orxaq-pay swarm-orchestrator odyssey; do
     repo_dir="${DEV_DIR}/${repo}"
     if [[ ! -d "${repo_dir}/.git" ]]; then
         ISSUES+=("MISSING_REPO:${repo}")
-        ((REPOS_UNHEALTHY++))
+        ((REPOS_UNHEALTHY++)) || true
         emit_event "repo_missing" "error" repo="${repo}"
         continue
     fi
-    ((REPOS_HEALTHY++))
+    ((REPOS_HEALTHY++)) || true
 
     # Check for unpushed commits
     unpushed=$(git -C "${repo_dir}" log --oneline '@{u}..HEAD' 2>/dev/null | wc -l | tr -d '[:space:]' || true)
@@ -70,14 +94,20 @@ if [[ ! -d "${VAULT_DIR}" ]]; then
 else
     last_encrypted="${VAULT_DIR}/last_encrypted.txt"
     if [[ -f "${last_encrypted}" ]]; then
-        last_ts=$(cat "${last_encrypted}")
-        last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${last_ts}" +%s 2>/dev/null || echo 0)
-        now_epoch=$(date +%s)
-        age_hours=$(( (now_epoch - last_epoch) / 3600 ))
-        emit_metric "vault_age_hours" "${age_hours}" "hours"
-        if [[ ${age_hours} -gt ${VAULT_STALE_HOURS} ]]; then
-            ISSUES+=("VAULT_STALE:${age_hours}h_old")
-            emit_event "vault_stale" "warn" age_hours="${age_hours}"
+        # Guard against permission denied on iCloud vault (issue #56)
+        last_ts=$(cat "${last_encrypted}" 2>/dev/null || true)
+        if [[ -n "${last_ts}" ]]; then
+            last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${last_ts}" +%s 2>/dev/null || echo 0)
+            now_epoch=$(date +%s)
+            age_hours=$(( (now_epoch - last_epoch) / 3600 ))
+            emit_metric "vault_age_hours" "${age_hours}" "hours"
+            if [[ ${age_hours} -gt ${VAULT_STALE_HOURS} ]]; then
+                ISSUES+=("VAULT_STALE:${age_hours}h_old")
+                emit_event "vault_stale" "warn" age_hours="${age_hours}"
+            fi
+        else
+            ISSUES+=("VAULT_READ_ERROR:permission_denied_or_empty")
+            emit_event "vault_read_error" "warn"
         fi
     else
         ISSUES+=("VAULT_NEVER_ENCRYPTED")
@@ -90,14 +120,16 @@ end_timer "vault_check" "ok"
 start_timer "backup_check"
 last_backup="${LOG_DIR}/last_backup.txt"
 if [[ -f "${last_backup}" ]]; then
-    last_ts=$(cat "${last_backup}")
-    last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${last_ts}" +%s 2>/dev/null || echo 0)
-    now_epoch=$(date +%s)
-    age_hours=$(( (now_epoch - last_epoch) / 3600 ))
-    emit_metric "backup_age_hours" "${age_hours}" "hours"
-    if [[ ${age_hours} -gt ${BACKUP_STALE_HOURS} ]]; then
-        ISSUES+=("BACKUP_STALE:${age_hours}h_old")
-        emit_event "backup_stale" "warn" age_hours="${age_hours}"
+    last_ts=$(cat "${last_backup}" 2>/dev/null || true)
+    if [[ -n "${last_ts}" ]]; then
+        last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${last_ts}" +%s 2>/dev/null || echo 0)
+        now_epoch=$(date +%s)
+        age_hours=$(( (now_epoch - last_epoch) / 3600 ))
+        emit_metric "backup_age_hours" "${age_hours}" "hours"
+        if [[ ${age_hours} -gt ${BACKUP_STALE_HOURS} ]]; then
+            ISSUES+=("BACKUP_STALE:${age_hours}h_old")
+            emit_event "backup_stale" "warn" age_hours="${age_hours}"
+        fi
     fi
 else
     ISSUES+=("BACKUP_NEVER_RUN")
