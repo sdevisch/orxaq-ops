@@ -77,8 +77,8 @@ class NetworkSnapshot:
         return self.status != NetworkStatus.ONLINE
 
 
-def _check_endpoint(name: str, url: str, timeout_sec: int = 3) -> EndpointCheck:
-    """Probe a single endpoint with a lightweight GET request."""
+def _check_endpoint_once(name: str, url: str, timeout_sec: int = 3) -> EndpointCheck:
+    """Probe a single endpoint with a lightweight GET request (single attempt)."""
     req = urllib_request.Request(
         url,
         method="GET",
@@ -112,6 +112,32 @@ def _check_endpoint(name: str, url: str, timeout_sec: int = 3) -> EndpointCheck:
         )
 
 
+def _check_endpoint(
+    name: str,
+    url: str,
+    timeout_sec: int = 3,
+    retries: int = 1,
+    retry_delay_sec: float = 0.5,
+) -> EndpointCheck:
+    """Probe a single endpoint with retry on transient failure.
+
+    Makes up to ``1 + retries`` attempts, sleeping ``retry_delay_sec`` between
+    them.  Returns the first successful result or the last failure.
+    """
+    last_result: EndpointCheck | None = None
+    for attempt in range(1 + max(0, retries)):
+        result = _check_endpoint_once(name, url, timeout_sec)
+        if result.reachable:
+            return result
+        last_result = result
+        if attempt < retries:
+            time.sleep(retry_delay_sec)
+    # All attempts failed — return the last failure result
+    return last_result or EndpointCheck(
+        name=name, url=url, reachable=False, latency_ms=None, error="all retries exhausted",
+    )
+
+
 class NetworkProbe:
     """Cached network status detector.
 
@@ -125,11 +151,15 @@ class NetworkProbe:
         cloud_endpoints: list[dict[str, str]] | None = None,
         timeout_sec: int = 3,
         cache_ttl_sec: int = 60,
+        retries: int = 1,
+        retry_delay_sec: float = 0.5,
     ):
         self._lmstudio_url = lmstudio_url.rstrip("/")
         self._cloud_endpoints = cloud_endpoints or CLOUD_ENDPOINTS
         self._timeout = timeout_sec
         self._cache_ttl = cache_ttl_sec
+        self._retries = retries
+        self._retry_delay = retry_delay_sec
         self._cached_snapshot: NetworkSnapshot | None = None
         self._cached_at: float = 0.0
 
@@ -146,13 +176,20 @@ class NetworkProbe:
             LMSTUDIO_ENDPOINT["name"],
             f"{self._lmstudio_url}/v1/models",
             timeout_sec=min(2, self._timeout),
+            retries=self._retries,
+            retry_delay_sec=self._retry_delay,
         )
         checks.append(lm_check)
 
         # Check cloud endpoints
         cloud_up = 0
         for ep in self._cloud_endpoints:
-            result = _check_endpoint(ep["name"], ep["url"], timeout_sec=self._timeout)
+            result = _check_endpoint(
+                ep["name"], ep["url"],
+                timeout_sec=self._timeout,
+                retries=self._retries,
+                retry_delay_sec=self._retry_delay,
+            )
             checks.append(result)
             if result.reachable:
                 cloud_up += 1

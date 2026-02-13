@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # healthcheck.sh — Periodic health verification (every 5 minutes via launchd)
-# Checks repo integrity, backup freshness, secret availability
+# Checks repo integrity, backup freshness, secret availability, process health,
+# disk space, and LM Studio availability.
 set -euo pipefail
 
 TELEMETRY_SCRIPT="healthcheck"
@@ -11,6 +12,19 @@ DEV_DIR="${HOME}/dev"
 LOG_DIR="${DEV_DIR}/.claude/resilience/logs"
 VAULT_DIR="${HOME}/Library/Mobile Documents/com~apple~CloudDocs/orxaq-vault"
 STATUS_FILE="${LOG_DIR}/health-status.json"
+
+# --- Configurable Thresholds ---
+# Override via environment variables or .healthcheck.env
+HEALTHCHECK_ENV="${DEV_DIR}/.claude/resilience/.healthcheck.env"
+if [[ -f "${HEALTHCHECK_ENV}" ]]; then
+    source "${HEALTHCHECK_ENV}"
+fi
+
+VAULT_STALE_HOURS="${ORXAQ_VAULT_STALE_HOURS:-24}"
+BACKUP_STALE_HOURS="${ORXAQ_BACKUP_STALE_HOURS:-24}"
+UNPUSHED_WARN_THRESHOLD="${ORXAQ_UNPUSHED_WARN_THRESHOLD:-5}"
+DISK_LOW_GB="${ORXAQ_DISK_LOW_GB:-10}"
+TELEMETRY_MAX_LINES="${ORXAQ_TELEMETRY_MAX_LINES:-50000}"
 
 mkdir -p "${LOG_DIR}"
 
@@ -35,7 +49,7 @@ for repo in orxaq orxaq-ops orxaq-pay swarm-orchestrator odyssey; do
     # Check for unpushed commits
     unpushed=$(git -C "${repo_dir}" log --oneline '@{u}..HEAD' 2>/dev/null | wc -l | tr -d '[:space:]' || true)
     unpushed="${unpushed:-0}"
-    if [[ "${unpushed}" -gt 5 ]]; then
+    if [[ "${unpushed}" -gt "${UNPUSHED_WARN_THRESHOLD}" ]]; then
         ISSUES+=("UNPUSHED:${repo}:${unpushed}_commits")
         emit_event "unpushed_commits" "warn" repo="${repo}" count="${unpushed}"
     fi
@@ -61,7 +75,7 @@ else
         now_epoch=$(date +%s)
         age_hours=$(( (now_epoch - last_epoch) / 3600 ))
         emit_metric "vault_age_hours" "${age_hours}" "hours"
-        if [[ ${age_hours} -gt 24 ]]; then
+        if [[ ${age_hours} -gt ${VAULT_STALE_HOURS} ]]; then
             ISSUES+=("VAULT_STALE:${age_hours}h_old")
             emit_event "vault_stale" "warn" age_hours="${age_hours}"
         fi
@@ -81,7 +95,7 @@ if [[ -f "${last_backup}" ]]; then
     now_epoch=$(date +%s)
     age_hours=$(( (now_epoch - last_epoch) / 3600 ))
     emit_metric "backup_age_hours" "${age_hours}" "hours"
-    if [[ ${age_hours} -gt 24 ]]; then
+    if [[ ${age_hours} -gt ${BACKUP_STALE_HOURS} ]]; then
         ISSUES+=("BACKUP_STALE:${age_hours}h_old")
         emit_event "backup_stale" "warn" age_hours="${age_hours}"
     fi
@@ -98,6 +112,83 @@ if [[ ! -f "${CLAUDE_MEM}" ]]; then
     emit_event "claude_memory_missing" "error"
 fi
 
+# --- Process health checks ---
+start_timer "process_checks"
+
+# Check if autonomy runner is alive (via PID file)
+ARTIFACTS_DIR="${DEV_DIR}/orxaq-ops/artifacts/autonomy"
+RUNNER_PID_FILE="${ARTIFACTS_DIR}/runner.pid"
+if [[ -f "${RUNNER_PID_FILE}" ]]; then
+    runner_pid=$(cat "${RUNNER_PID_FILE}" 2>/dev/null || true)
+    if [[ -n "${runner_pid}" ]] && ! kill -0 "${runner_pid}" 2>/dev/null; then
+        ISSUES+=("RUNNER_PROCESS_DEAD:pid=${runner_pid}")
+        emit_event "runner_dead" "error" pid="${runner_pid}"
+    fi
+fi
+
+# Check supervisor PID
+SUPERVISOR_PID_FILE="${ARTIFACTS_DIR}/supervisor.pid"
+if [[ -f "${SUPERVISOR_PID_FILE}" ]]; then
+    sup_pid=$(cat "${SUPERVISOR_PID_FILE}" 2>/dev/null || true)
+    if [[ -n "${sup_pid}" ]] && ! kill -0 "${sup_pid}" 2>/dev/null; then
+        ISSUES+=("SUPERVISOR_PROCESS_DEAD:pid=${sup_pid}")
+        emit_event "supervisor_dead" "error" pid="${sup_pid}"
+    fi
+fi
+
+# Check heartbeat freshness
+HEARTBEAT_FILE="${ARTIFACTS_DIR}/heartbeat.json"
+if [[ -f "${HEARTBEAT_FILE}" ]]; then
+    # Extract timestamp from heartbeat JSON using python (stdlib only)
+    hb_age=$(python3 -c "
+import json, sys
+from datetime import datetime, timezone
+try:
+    d = json.load(open('${HEARTBEAT_FILE}'))
+    ts = d.get('timestamp', '')
+    if ts:
+        hb = datetime.fromisoformat(ts)
+        if hb.tzinfo is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - hb).total_seconds()
+        print(int(age))
+    else:
+        print(-1)
+except Exception:
+    print(-1)
+" 2>/dev/null || echo "-1")
+    emit_metric "heartbeat_age_sec" "${hb_age}" "seconds"
+    if [[ "${hb_age}" -gt 600 ]]; then
+        ISSUES+=("HEARTBEAT_STALE:${hb_age}s")
+        emit_event "heartbeat_stale" "warn" age_sec="${hb_age}"
+    fi
+fi
+
+end_timer "process_checks" "ok"
+
+# --- Disk space check ---
+start_timer "disk_check"
+# Get available disk space in GB (macOS df output)
+avail_kb=$(df -k "${HOME}" 2>/dev/null | tail -1 | awk '{print $4}')
+avail_gb=$(( ${avail_kb:-0} / 1048576 ))
+emit_metric "disk_available_gb" "${avail_gb}" "GB"
+if [[ ${avail_gb} -lt ${DISK_LOW_GB} ]]; then
+    ISSUES+=("DISK_LOW:${avail_gb}GB_available")
+    emit_event "disk_low" "warn" available_gb="${avail_gb}" threshold_gb="${DISK_LOW_GB}"
+fi
+end_timer "disk_check" "ok"
+
+# --- LM Studio availability check ---
+start_timer "lmstudio_check"
+LMSTUDIO_URL="${ORXAQ_LMSTUDIO_URL:-http://localhost:1234}"
+if curl -s --connect-timeout 2 --max-time 3 "${LMSTUDIO_URL}/v1/models" >/dev/null 2>&1; then
+    emit_event "lmstudio_up" "ok" url="${LMSTUDIO_URL}"
+else
+    emit_event "lmstudio_down" "info" url="${LMSTUDIO_URL}"
+    # Not an issue per se (user may be traveling), but worth noting
+fi
+end_timer "lmstudio_check" "ok"
+
 # --- Telemetry log size check ---
 TELEMETRY_LOG="${LOG_DIR}/telemetry.jsonl"
 if [[ -f "${TELEMETRY_LOG}" ]]; then
@@ -105,6 +196,13 @@ if [[ -f "${TELEMETRY_LOG}" ]]; then
     log_size_kb=$(du -k "${TELEMETRY_LOG}" | cut -f1)
     emit_metric "telemetry_log_lines" "${log_lines}"
     emit_metric "telemetry_log_size_kb" "${log_size_kb}" "KB"
+    # Auto-rotate if telemetry log exceeds threshold
+    if [[ "${log_lines}" -gt "${TELEMETRY_MAX_LINES}" ]]; then
+        tail -n $(( TELEMETRY_MAX_LINES / 2 )) "${TELEMETRY_LOG}" > "${TELEMETRY_LOG}.tmp"
+        mv "${TELEMETRY_LOG}.tmp" "${TELEMETRY_LOG}"
+        emit_event "telemetry_rotated" "info" \
+            before_lines="${log_lines}" after_lines="$(( TELEMETRY_MAX_LINES / 2 ))"
+    fi
 fi
 
 # --- Write status ---
@@ -116,13 +214,38 @@ fi
 
 emit_event "health_result" "${STATUS}" issue_count="${#ISSUES[@]}"
 
+# Build issues JSON array safely (handles empty array without printf crash)
+ISSUES_JSON="[]"
+if [[ ${#ISSUES[@]} -gt 0 ]]; then
+    ISSUES_JSON="["
+    first=true
+    for issue in "${ISSUES[@]}"; do
+        if [[ "${first}" == "true" ]]; then
+            first=false
+        else
+            ISSUES_JSON+=","
+        fi
+        # Escape quotes in issue string
+        escaped="${issue//\"/\\\"}"
+        ISSUES_JSON+="\"${escaped}\""
+    done
+    ISSUES_JSON+="]"
+fi
+
 cat > "${STATUS_FILE}" << EOF
 {
     "timestamp": "${TIMESTAMP}",
     "status": "${STATUS}",
-    "issues": [$(printf '"%s",' "${ISSUES[@]}" 2>/dev/null | sed 's/,$//')],
+    "issues": ${ISSUES_JSON},
     "repos_checked": 5,
     "repos_healthy": ${REPOS_HEALTHY},
-    "vault_present": $(test -d "${VAULT_DIR}" && echo true || echo false)
+    "vault_present": $(test -d "${VAULT_DIR}" && echo true || echo false),
+    "disk_available_gb": ${avail_gb},
+    "thresholds": {
+        "vault_stale_hours": ${VAULT_STALE_HOURS},
+        "backup_stale_hours": ${BACKUP_STALE_HOURS},
+        "unpushed_warn_threshold": ${UNPUSHED_WARN_THRESHOLD},
+        "disk_low_gb": ${DISK_LOW_GB}
+    }
 }
 EOF

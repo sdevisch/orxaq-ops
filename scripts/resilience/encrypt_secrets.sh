@@ -70,12 +70,13 @@ SECRET_KEY=$(get_or_create_key)
 PUBLIC_KEY=$(echo "${SECRET_KEY}" | age-keygen -y 2>/dev/null || cat "${VAULT_DIR}/age-public-key.txt")
 
 # Encrypt .env files from all repos
+DEV_DIR="${HOME}/dev"
 REPOS=(
-    "/Users/sdevisch/dev/orxaq"
-    "/Users/sdevisch/dev/orxaq-ops"
-    "/Users/sdevisch/dev/orxaq-pay"
-    "/Users/sdevisch/dev/swarm-orchestrator"
-    "/Users/sdevisch/dev/odyssey"
+    "${DEV_DIR}/orxaq"
+    "${DEV_DIR}/orxaq-ops"
+    "${DEV_DIR}/orxaq-pay"
+    "${DEV_DIR}/swarm-orchestrator"
+    "${DEV_DIR}/odyssey"
 )
 
 for repo in "${REPOS[@]}"; do
@@ -106,16 +107,16 @@ fi
 emit_metric "memory_files_synced" "${MEMORY_FILES_SYNCED}"
 
 # Copy CLAUDE.md
-if [[ -f "/Users/sdevisch/dev/.claude/CLAUDE.md" ]]; then
-    cp "/Users/sdevisch/dev/.claude/CLAUDE.md" "${VAULT_DIR}/CLAUDE.md"
+if [[ -f "${DEV_DIR}/.claude/CLAUDE.md" ]]; then
+    cp "${DEV_DIR}/.claude/CLAUDE.md" "${VAULT_DIR}/CLAUDE.md"
     emit_event "claude_md_synced" "ok"
 fi
 
 # Copy agent definitions
 mkdir -p "${VAULT_DIR}/agents"
 AGENTS_SYNCED=0
-if [[ -d "/Users/sdevisch/dev/.claude/agents" ]]; then
-    for f in /Users/sdevisch/dev/.claude/agents/*.md; do
+if [[ -d "${DEV_DIR}/.claude/agents" ]]; then
+    for f in "${DEV_DIR}/.claude/agents"/*.md; do
         if [[ -f "$f" ]]; then
             cp "$f" "${VAULT_DIR}/agents/"
             ((AGENTS_SYNCED++))

@@ -145,22 +145,85 @@ run_backup() {
     fi
 }
 
+# --- Local backup fallback ---
+LOCAL_BACKUP_DIR="${ORXAQ_LOCAL_BACKUP_DIR:-${DEV_DIR}/.claude/resilience/local-backups}"
+
+run_local_backup() {
+    local log="${LOG_DIR}/backup-local-$(date +%Y%m%d).log"
+
+    start_timer "backup_local"
+    mkdir -p "${LOCAL_BACKUP_DIR}"
+
+    local snapshot_name="orxaq-backup-$(date +%Y%m%dT%H%M%S)"
+    local snapshot_dir="${LOCAL_BACKUP_DIR}/${snapshot_name}"
+    mkdir -p "${snapshot_dir}"
+
+    local paths=()
+    for p in "${INCLUDE_PATHS[@]}"; do
+        if [[ -e "$p" ]]; then
+            paths+=("$p")
+        fi
+    done
+
+    # Build rsync exclude arguments
+    local exclude_args=()
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        # Convert --exclude=X to --exclude X for rsync
+        local val="${pattern#--exclude=}"
+        exclude_args+=("--exclude" "${val}")
+    done
+
+    if rsync -a --delete "${exclude_args[@]}" "${paths[@]}" "${snapshot_dir}/" >> "${log}" 2>&1; then
+        emit_event "local_backup_success" "ok" path="${snapshot_dir}"
+
+        # Keep only the last 3 local snapshots
+        ls -dt "${LOCAL_BACKUP_DIR}"/orxaq-backup-* 2>/dev/null | tail -n +4 | while read old; do
+            rm -rf "${old}"
+            emit_event "local_snapshot_pruned" "info" path="${old}"
+        done
+
+        end_timer "backup_local" "ok"
+        return 0
+    else
+        emit_event "local_backup_failed" "error" log="${log}"
+        end_timer "backup_local" "error"
+        return 1
+    fi
+}
+
 # --- Main ---
 start_timer "backup_total"
 
 SUCCESS_COUNT=0
 FAIL_COUNT=0
+CLOUD_CONFIGURED=0
 
-if run_backup "${S3_REPO}" "aws-s3"; then
-    ((SUCCESS_COUNT++))
-else
-    ((FAIL_COUNT++))
+if [[ -n "${S3_REPO}" ]]; then
+    ((CLOUD_CONFIGURED++))
+    if run_backup "${S3_REPO}" "aws-s3"; then
+        ((SUCCESS_COUNT++))
+    else
+        ((FAIL_COUNT++))
+    fi
 fi
 
-if run_backup "${GCS_REPO}" "gcs"; then
-    ((SUCCESS_COUNT++))
-else
-    ((FAIL_COUNT++))
+if [[ -n "${GCS_REPO}" ]]; then
+    ((CLOUD_CONFIGURED++))
+    if run_backup "${GCS_REPO}" "gcs"; then
+        ((SUCCESS_COUNT++))
+    else
+        ((FAIL_COUNT++))
+    fi
+fi
+
+# If no cloud backup targets configured, use local backup as fallback
+if [[ ${CLOUD_CONFIGURED} -eq 0 ]]; then
+    emit_event "no_cloud_targets" "warn" reason="falling_back_to_local"
+    if run_local_backup; then
+        ((SUCCESS_COUNT++))
+    else
+        ((FAIL_COUNT++))
+    fi
 fi
 
 # Also encrypt secrets to iCloud vault
@@ -175,15 +238,16 @@ date -u +"%Y-%m-%dT%H:%M:%SZ" > "${LOG_DIR}/last_backup.txt"
 
 emit_metric "backup_targets_success" "${SUCCESS_COUNT}"
 emit_metric "backup_targets_failed" "${FAIL_COUNT}"
+emit_metric "backup_cloud_configured" "${CLOUD_CONFIGURED}"
 
 # Emit disk usage for all repos
 for repo in orxaq orxaq-ops orxaq-pay swarm-orchestrator odyssey; do
     emit_disk_usage "${DEV_DIR}/${repo}" "${repo}"
 done
 
-end_timer "backup_total" "$([ ${FAIL_COUNT} -lt 2 ] && echo ok || echo error)" \
-    success="${SUCCESS_COUNT}" failed="${FAIL_COUNT}"
+end_timer "backup_total" "$([ ${SUCCESS_COUNT} -gt 0 ] && echo ok || echo error)" \
+    success="${SUCCESS_COUNT}" failed="${FAIL_COUNT}" cloud_configured="${CLOUD_CONFIGURED}"
 
-if [[ ${FAIL_COUNT} -eq 2 ]]; then
+if [[ ${SUCCESS_COUNT} -eq 0 ]]; then
     exit 1
 fi

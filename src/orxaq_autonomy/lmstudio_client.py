@@ -107,9 +107,17 @@ def _classify_size(model_id: str) -> str:
 class LMStudioClient:
     """Client for LM Studio's OpenAI-compatible API."""
 
-    def __init__(self, base_url: str = "http://localhost:1234", timeout_sec: int = 10):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:1234",
+        timeout_sec: int = 10,
+        retries: int = 2,
+        retry_delay_sec: float = 1.0,
+    ):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_sec
+        self._retries = retries
+        self._retry_delay = retry_delay_sec
 
     @property
     def base_url(self) -> str:
