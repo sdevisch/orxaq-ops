@@ -283,6 +283,112 @@ class ManagerTests(unittest.TestCase):
             self.assertNotIn("sk-test-1234567890", issue["body"])
             self.assertIn("[REDACTED_OPENAI_KEY]", issue["body"])
 
+    def test_health_snapshot_total_equals_covered_plus_uncovered(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "task-a": {"status": "done"},
+                        "task-b": {"status": "done"},
+                        "task-c": {"status": "blocked"},
+                        "task-d": {"status": "pending"},
+                        "task-e": {"status": "in_progress"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg.heartbeat_file.write_text(
+                json.dumps({"timestamp": "2000-01-01T00:00:00+00:00"}), encoding="utf-8"
+            )
+            snapshot = manager.health_snapshot(cfg)
+            counts = snapshot["state_counts"]
+            self.assertEqual(counts["total"], 5)
+            self.assertEqual(counts["covered"], 2)
+            self.assertEqual(counts["uncovered"], 3)
+            self.assertEqual(counts["total"], counts["covered"] + counts["uncovered"])
+
+    def test_health_snapshot_total_consistent_with_empty_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.heartbeat_file.write_text(
+                json.dumps({"timestamp": "2000-01-01T00:00:00+00:00"}), encoding="utf-8"
+            )
+            snapshot = manager.health_snapshot(cfg)
+            counts = snapshot["state_counts"]
+            self.assertEqual(counts["total"], 0)
+            self.assertEqual(counts["covered"], 0)
+            self.assertEqual(counts["uncovered"], 0)
+
+    def test_health_snapshot_handles_malformed_state_entries(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.state_file.write_text(
+                json.dumps(
+                    {
+                        "ok-task": {"status": "done"},
+                        "bad-task": "not-a-dict",
+                        "null-status": {"status": None},
+                        "numeric-status": {"status": 42},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg.heartbeat_file.write_text(
+                json.dumps({"timestamp": "2000-01-01T00:00:00+00:00"}), encoding="utf-8"
+            )
+            snapshot = manager.health_snapshot(cfg)
+            counts = snapshot["state_counts"]
+            self.assertEqual(counts["total"], counts["covered"] + counts["uncovered"])
+            self.assertGreater(counts["total"], 0)
+            # "not-a-dict" falls into unknown; None and 42 become "none" and "42" -> unknown
+            self.assertGreaterEqual(counts["unknown"], 2)
+
+    def test_tail_logs_bounded_memory_for_large_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            # Write a log file larger than the 64 KiB small-file threshold
+            line = "x" * 200 + "\n"
+            count = 500  # 500 * 201 ~ 100 KiB
+            cfg.log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cfg.log_file, "w", encoding="utf-8") as f:
+                for i in range(count):
+                    f.write(f"[line-{i:04d}] {line}")
+            result = manager.tail_logs(cfg, lines=10)
+            result_lines = result.strip().splitlines()
+            self.assertEqual(len(result_lines), 10)
+            self.assertIn("[line-0499]", result_lines[-1])
+
+    def test_tail_logs_small_file_returns_all_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.log_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.log_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+            result = manager.tail_logs(cfg, lines=10)
+            result_lines = result.strip().splitlines()
+            self.assertEqual(len(result_lines), 3)
+
+    def test_tail_logs_empty_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            cfg.log_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.log_file.write_text("", encoding="utf-8")
+            result = manager.tail_logs(cfg, lines=10)
+            self.assertEqual(result, "")
+
+    def test_tail_logs_missing_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._build_root(pathlib.Path(td))
+            cfg = manager.ManagerConfig.from_root(root)
+            result = manager.tail_logs(cfg, lines=10)
+            self.assertEqual(result, "")
+
     def test_autonomy_stop_files_issue_with_sanitized_payload(self):
         with tempfile.TemporaryDirectory() as td:
             root = self._build_root(pathlib.Path(td))

@@ -38,23 +38,70 @@ def _rel_paths(paths: list[Path], root: Path) -> list[str]:
     return sorted(out)
 
 
+def _safe_glob(root: Path, pattern: str) -> list[Path]:
+    """Glob with fallback to empty list on permission or filesystem errors."""
+    try:
+        return list(root.glob(pattern))
+    except (OSError, ValueError):
+        return []
+
+
+def _detect_stale_health(root: Path, stale_threshold_sec: int = 600) -> dict[str, Any]:
+    """Return stale-data annotation for the most recent health.json artifact.
+
+    If no health.json exists or it was last modified more than *stale_threshold_sec*
+    ago, the ``stale`` flag is set to ``True`` with explanatory detail.
+    """
+    candidates = _safe_glob(root, "**/health.json")
+    if not candidates:
+        return {"stale": True, "reason": "no_health_artifact", "age_sec": -1}
+    # Pick most recently modified
+    newest = max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+    if newest is None:
+        return {"stale": True, "reason": "no_health_artifact", "age_sec": -1}
+    try:
+        age_sec = int(datetime.now(timezone.utc).timestamp() - newest.stat().st_mtime)
+    except OSError:
+        return {"stale": True, "reason": "stat_failed", "age_sec": -1}
+    return {
+        "stale": age_sec > stale_threshold_sec,
+        "reason": "age_exceeded" if age_sec > stale_threshold_sec else "ok",
+        "age_sec": age_sec,
+    }
+
+
 def collect_dashboard_index(artifacts_root: Path) -> dict[str, Any]:
     root = artifacts_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
 
-    health_json = _rel_paths([*root.glob("**/health.json")], root)
-    health_md = _rel_paths([*root.glob("**/health.md")], root)
-    run_reports = _rel_paths([*root.glob("**/W*_run.json")], root)
-    run_summaries = _rel_paths([*root.glob("**/W*_summary.md")], root)
-    pr_review_snapshots = _rel_paths([*root.glob("**/pr_review_snapshot.json")], root)
+    errors: list[str] = []
 
-    evidence_dirs = _rel_paths([path for path in root.glob("rpa_evidence/*/*") if path.is_dir()], root)
-    evidence_files = _rel_paths(
-        [path for path in root.glob("rpa_evidence/**/*") if path.is_file()][:200],
-        root,
-    )
+    health_json = _rel_paths(_safe_glob(root, "**/health.json"), root)
+    health_md = _rel_paths(_safe_glob(root, "**/health.md"), root)
+    run_reports = _rel_paths(_safe_glob(root, "**/W*_run.json"), root)
+    run_summaries = _rel_paths(_safe_glob(root, "**/W*_summary.md"), root)
+    pr_review_snapshots = _rel_paths(_safe_glob(root, "**/pr_review_snapshot.json"), root)
 
-    return {
+    try:
+        evidence_dirs = _rel_paths(
+            [path for path in root.glob("rpa_evidence/*/*") if path.is_dir()], root
+        )
+    except (OSError, ValueError) as exc:
+        evidence_dirs = []
+        errors.append(f"evidence_dirs: {exc}")
+
+    try:
+        evidence_files = _rel_paths(
+            [path for path in root.glob("rpa_evidence/**/*") if path.is_file()][:200],
+            root,
+        )
+    except (OSError, ValueError) as exc:
+        evidence_files = []
+        errors.append(f"evidence_files: {exc}")
+
+    staleness = _detect_stale_health(root)
+
+    payload: dict[str, Any] = {
         "generated_at_utc": _utc_now_iso(),
         "artifacts_root": str(root),
         "health_json": health_json,
@@ -64,7 +111,11 @@ def collect_dashboard_index(artifacts_root: Path) -> dict[str, Any]:
         "pr_review_snapshots": pr_review_snapshots,
         "evidence_dirs": evidence_dirs,
         "evidence_files": evidence_files,
+        "staleness": staleness,
     }
+    if errors:
+        payload["errors"] = errors
+    return payload
 
 
 def resolve_artifact_path(artifacts_root: Path, raw_relative_path: str) -> Path | None:
@@ -91,6 +142,33 @@ def _render_file_links(title: str, rows: list[str]) -> str:
     return f"<section><h2>{html.escape(title)}</h2><ul>{''.join(items)}</ul></section>"
 
 
+def _render_stale_banner(staleness: dict[str, Any]) -> str:
+    """Render an accessible stale-data warning banner if health data is stale."""
+    if not staleness.get("stale", False):
+        return ""
+    reason = html.escape(str(staleness.get("reason", "unknown")))
+    age = staleness.get("age_sec", -1)
+    age_text = f"{age}s ago" if age >= 0 else "unknown age"
+    return (
+        "<div role='alert' aria-live='polite' class='stale-banner'>"
+        f"<strong>Stale data</strong>: health artifact is outdated ({reason}, {html.escape(age_text)}). "
+        "Results below may not reflect current state."
+        "</div>"
+    )
+
+
+def _render_error_banner(errors: list[str]) -> str:
+    """Render a visible error banner for partial data failures."""
+    if not errors:
+        return ""
+    items = "".join(f"<li>{html.escape(e)}</li>" for e in errors)
+    return (
+        "<div role='alert' aria-live='assertive' class='error-banner'>"
+        "<strong>Partial data</strong>: some artifact scans failed."
+        f"<ul>{items}</ul></div>"
+    )
+
+
 def render_dashboard_html(index_payload: dict[str, Any]) -> str:
     sections = [
         _render_file_links("Health JSON", list(index_payload.get("health_json", []))),
@@ -103,6 +181,15 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
     ]
     generated = html.escape(str(index_payload.get("generated_at_utc", "")))
     artifacts_root = html.escape(str(index_payload.get("artifacts_root", "")))
+
+    staleness = index_payload.get("staleness", {})
+    staleness_dict = staleness if isinstance(staleness, dict) else {}
+    stale_banner = _render_stale_banner(staleness_dict)
+
+    errors = index_payload.get("errors", [])
+    errors_list = errors if isinstance(errors, list) else []
+    error_banner = _render_error_banner(errors_list)
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -117,6 +204,10 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
       --muted: #5c6a72;
       --accent: #bf4f24;
       --line: #ddd6c8;
+      --warn-bg: #fff3cd;
+      --warn-border: #e0a800;
+      --error-bg: #f8d7da;
+      --error-border: #c62828;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -151,6 +242,21 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
     a {{ color: #0e4a72; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .empty {{ color: var(--muted); margin: 0; }}
+    .stale-banner {{
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      border-left: 6px solid var(--warn-border);
+      padding: 12px 16px;
+      line-height: 1.5;
+    }}
+    .error-banner {{
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
+      border-left: 6px solid var(--error-border);
+      padding: 12px 16px;
+      line-height: 1.5;
+    }}
+    .error-banner ul {{ margin-top: 6px; }}
     @media (max-width: 700px) {{
       main {{ padding: 14px; }}
     }}
@@ -160,10 +266,12 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
   <main>
     <header>
       <h1>Orxaq Autonomy Dashboard</h1>
-      <p>Generated: {generated}</p>
+      <p>Generated: <time datetime="{generated}">{generated}</time></p>
       <p>Artifacts root: <code>{artifacts_root}</code></p>
       <p>API index: <a href="/api/index">/api/index</a></p>
     </header>
+    {stale_banner}
+    {error_banner}
     {''.join(sections)}
   </main>
 </body>

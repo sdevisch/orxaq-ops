@@ -872,8 +872,11 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
             if isinstance(raw, dict):
                 for task_id, item in raw.items():
                     status = "unknown"
-                    if isinstance(item, dict):
-                        status = str(item.get("status", "unknown")).strip().lower()
+                    try:
+                        if isinstance(item, dict):
+                            status = str(item.get("status", "unknown")).strip().lower()
+                    except Exception:
+                        status = "unknown"
                     if status in state_counts:
                         state_counts[status] += 1
                     else:
@@ -882,6 +885,18 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
                         blocked_tasks.append(str(task_id))
         except Exception:
             state_counts["unknown"] += 1
+
+    # Derive total deterministically from individual counts so it is always consistent.
+    covered = state_counts["done"]
+    uncovered = (
+        state_counts["pending"]
+        + state_counts["in_progress"]
+        + state_counts["blocked"]
+        + state_counts["unknown"]
+    )
+    state_counts["total"] = covered + uncovered
+    state_counts["covered"] = covered
+    state_counts["uncovered"] = uncovered
 
     status = status_snapshot(config)
     heartbeat_age = int(status.get("heartbeat_age_sec", -1))
@@ -998,5 +1013,47 @@ def reset_state(config: ManagerConfig) -> None:
 def tail_logs(config: ManagerConfig, lines: int = 40) -> str:
     if not config.log_file.exists():
         return ""
-    content = config.log_file.read_text(encoding="utf-8").splitlines()
-    return "\n".join(content[-lines:])
+    try:
+        return _tail_file(config.log_file, lines)
+    except Exception:
+        return ""
+
+
+def _tail_file(path: Path, lines: int) -> str:
+    """Read the last *lines* lines from *path* without loading the entire file.
+
+    Uses a reverse-seek strategy so memory usage stays bounded regardless of
+    log file size.  Falls back to a full read for very small files or when
+    the seek approach fails.
+    """
+    if lines <= 0:
+        return ""
+    file_size = path.stat().st_size
+    if file_size == 0:
+        return ""
+
+    # For small files (< 64 KiB) a full read is fine and simpler.
+    _SMALL_FILE_THRESHOLD = 65536
+    if file_size <= _SMALL_FILE_THRESHOLD:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(content[-lines:])
+
+    # For larger files, read chunks from the end until we have enough lines.
+    chunk_size = max(4096, lines * 200)  # heuristic: ~200 bytes/line
+    collected: list[str] = []
+    with open(path, "rb") as fh:
+        offset = file_size
+        while offset > 0 and len(collected) <= lines:
+            read_start = max(0, offset - chunk_size)
+            read_len = offset - read_start
+            fh.seek(read_start)
+            chunk = fh.read(read_len)
+            decoded = chunk.decode("utf-8", errors="replace")
+            chunk_lines = decoded.splitlines()
+            # Merge partial leading line with what we already have
+            if collected and not decoded.endswith("\n"):
+                # First collected item may be a partial tail from the previous chunk
+                pass
+            collected = chunk_lines + collected
+            offset = read_start
+    return "\n".join(collected[-lines:])

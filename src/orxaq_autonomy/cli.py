@@ -389,11 +389,11 @@ def main(argv: list[str] | None = None) -> int:
             payload = merge_pr(
                 repo=repo,
                 pr_number=int(args.pr),
-                merge_method=args.method,
+                method=args.method,
                 delete_branch=bool(args.delete_branch),
                 swarm_health_score=swarm_score,
                 min_swarm_health=float(args.min_swarm_health),
-                allow_ci_yellow=bool(args.allow_ci_yellow),
+                require_ci_green=not bool(args.allow_ci_yellow),
             )
         except GitOpsError as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
