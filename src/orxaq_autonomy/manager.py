@@ -39,6 +39,26 @@ SECRET_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}\b"),
         "[REDACTED_OPENAI_KEY]",
     ),
+    # Issue #67: Redact age secret keys
+    (
+        re.compile(r"\bAGE-SECRET-KEY-[A-Za-z0-9]+\b"),
+        "[REDACTED_AGE_SECRET_KEY]",
+    ),
+    # Issue #67: Redact age public keys (age1...)
+    (
+        re.compile(r"\bage1[a-z0-9]{56,}\b"),
+        "[REDACTED_AGE_PUBLIC_KEY]",
+    ),
+    # Issue #67: Redact Anthropic API keys
+    (
+        re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{12,}\b"),
+        "[REDACTED_ANTHROPIC_KEY]",
+    ),
+    # Issue #67: Redact generic bearer tokens
+    (
+        re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
+        "Bearer [REDACTED]",
+    ),
 )
 
 

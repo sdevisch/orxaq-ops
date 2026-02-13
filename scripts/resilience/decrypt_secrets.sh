@@ -11,12 +11,34 @@ KEYCHAIN_SERVICE="com.orxaq.age-key"
 KEYCHAIN_ACCOUNT="orxaq-secrets"
 DEV_DIR="${HOME}/dev"
 
+# Issue #54: Graceful iCloud error handling
 if [[ ! -d "${VAULT_DIR}" ]]; then
-    emit_event "vault_missing" "error" path="${VAULT_DIR}"
-    exit 1
+    emit_event "vault_missing" "warn" path="${VAULT_DIR}" note="iCloud_vault_not_found"
+    # Try local fallback vault
+    LOCAL_VAULT_FALLBACK="${HOME}/dev/.claude/resilience/local-vault"
+    if [[ -d "${LOCAL_VAULT_FALLBACK}" ]]; then
+        emit_event "vault_fallback" "info" path="${LOCAL_VAULT_FALLBACK}"
+        VAULT_DIR="${LOCAL_VAULT_FALLBACK}"
+    else
+        emit_event "vault_missing_no_fallback" "error" path="${VAULT_DIR}"
+        exit 1
+    fi
 fi
 
-# Retrieve age key from Keychain
+# Check if vault is actually accessible (iCloud permission check)
+if ! ls "${VAULT_DIR}" >/dev/null 2>&1; then
+    emit_event "vault_permission_denied" "warn" path="${VAULT_DIR}" note="iCloud_permission_error"
+    LOCAL_VAULT_FALLBACK="${HOME}/dev/.claude/resilience/local-vault"
+    if [[ -d "${LOCAL_VAULT_FALLBACK}" ]] && ls "${LOCAL_VAULT_FALLBACK}" >/dev/null 2>&1; then
+        emit_event "vault_fallback" "info" path="${LOCAL_VAULT_FALLBACK}"
+        VAULT_DIR="${LOCAL_VAULT_FALLBACK}"
+    else
+        emit_event "vault_inaccessible" "error" path="${VAULT_DIR}" note="no_accessible_fallback"
+        exit 1
+    fi
+fi
+
+# Retrieve age key from Keychain (Issue #67: never expose key material in logs/output)
 start_timer "keychain_lookup"
 SECRET_KEY=$(security find-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w 2>/dev/null || true)
 if [[ -z "${SECRET_KEY}" ]]; then
@@ -24,6 +46,7 @@ if [[ -z "${SECRET_KEY}" ]]; then
     end_timer "keychain_lookup" "error"
     exit 1
 fi
+emit_event "keychain_retrieved" "ok" key_prefix="****"
 end_timer "keychain_lookup" "ok"
 
 # Decrypt .env files into repos
@@ -44,7 +67,8 @@ for repo_dir in "${VAULT_DIR}/secrets"/*/; do
     for encrypted in "${repo_dir}"*.age; do
         if [[ -f "${encrypted}" ]]; then
             dest_name=$(basename "${encrypted}" .age)
-            echo "${SECRET_KEY}" | age -d -i - "${encrypted}" > "${target}/${dest_name}"
+            # Issue #67: Use printf to avoid secret key appearing in process list
+            printf '%s' "${SECRET_KEY}" | age -d -i - "${encrypted}" > "${target}/${dest_name}" 2>/dev/null
             chmod 600 "${target}/${dest_name}"
             ((DECRYPTED_COUNT++))
             emit_event "file_decrypted" "ok" repo="${repo_name}" file="${dest_name}"

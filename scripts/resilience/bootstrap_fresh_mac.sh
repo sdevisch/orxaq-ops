@@ -126,40 +126,56 @@ done
 emit_metric "venvs_created" "${VENVS_CREATED}"
 end_timer "python_envs" "ok"
 
-# --- Phase 4: Restore Secrets ---
+# --- Phase 4: Restore Secrets (Issue #54: graceful iCloud handling) ---
 start_timer "restore_secrets"
-if [[ -d "${VAULT_DIR}" && -x "${SCRIPT_DIR}/decrypt_secrets.sh" ]]; then
-    bash "${SCRIPT_DIR}/decrypt_secrets.sh"
-    emit_event "secrets_restored" "ok"
+if [[ -d "${VAULT_DIR}" ]] && ls "${VAULT_DIR}" >/dev/null 2>&1 && [[ -x "${SCRIPT_DIR}/decrypt_secrets.sh" ]]; then
+    if bash "${SCRIPT_DIR}/decrypt_secrets.sh" 2>/dev/null; then
+        emit_event "secrets_restored" "ok"
+    else
+        emit_event "secrets_restore_failed" "warn" reason="decrypt_failed_iCloud_may_be_unavailable"
+    fi
+elif [[ -d "${VAULT_DIR}" ]] && ! ls "${VAULT_DIR}" >/dev/null 2>&1; then
+    emit_event "secrets_deferred" "warn" reason="iCloud_vault_permission_denied"
 else
     emit_event "secrets_deferred" "info" reason="vault_not_synced"
 fi
 end_timer "restore_secrets" "ok"
 
-# --- Phase 5: Claude Config ---
+# --- Phase 5: Claude Config (Issue #54: graceful iCloud handling) ---
 start_timer "claude_config"
 CLAUDE_MEM="${HOME}/.claude/projects/-Users-sdevisch-dev/memory"
 mkdir -p "${CLAUDE_MEM}"
 MEMORY_RESTORED=0
 
-if [[ -d "${VAULT_DIR}/claude-memory" ]]; then
+# Only attempt iCloud reads if the vault is accessible
+_vault_readable=false
+if [[ -d "${VAULT_DIR}" ]] && ls "${VAULT_DIR}" >/dev/null 2>&1; then
+    _vault_readable=true
+fi
+
+if [[ "${_vault_readable}" == "true" && -d "${VAULT_DIR}/claude-memory" ]]; then
     for f in "${VAULT_DIR}/claude-memory"/*.md; do
         dest="${CLAUDE_MEM}/$(basename "$f")"
         if [[ ! -f "${dest}" && -f "$f" ]]; then
-            cp "$f" "${dest}"
-            ((MEMORY_RESTORED++))
+            if cp "$f" "${dest}" 2>/dev/null; then
+                ((MEMORY_RESTORED++))
+            else
+                emit_event "memory_restore_failed" "warn" file="$(basename "$f")" reason="permission_denied"
+            fi
         fi
     done
 fi
 
-if [[ ! -f "${DEV_DIR}/.claude/CLAUDE.md" && -f "${VAULT_DIR}/CLAUDE.md" ]]; then
+if [[ "${_vault_readable}" == "true" && ! -f "${DEV_DIR}/.claude/CLAUDE.md" && -f "${VAULT_DIR}/CLAUDE.md" ]]; then
     mkdir -p "${DEV_DIR}/.claude"
-    cp "${VAULT_DIR}/CLAUDE.md" "${DEV_DIR}/.claude/CLAUDE.md"
+    cp "${VAULT_DIR}/CLAUDE.md" "${DEV_DIR}/.claude/CLAUDE.md" 2>/dev/null || \
+        emit_event "claude_md_restore_failed" "warn" reason="permission_denied"
 fi
 
-if [[ -d "${VAULT_DIR}/agents" && ! -d "${DEV_DIR}/.claude/agents" ]]; then
+if [[ "${_vault_readable}" == "true" && -d "${VAULT_DIR}/agents" && ! -d "${DEV_DIR}/.claude/agents" ]]; then
     mkdir -p "${DEV_DIR}/.claude/agents"
-    cp "${VAULT_DIR}/agents"/*.md "${DEV_DIR}/.claude/agents/" 2>/dev/null || true
+    cp "${VAULT_DIR}/agents"/*.md "${DEV_DIR}/.claude/agents/" 2>/dev/null || \
+        emit_event "agents_restore_failed" "warn" reason="permission_denied"
 fi
 
 emit_metric "memory_files_restored" "${MEMORY_RESTORED}"

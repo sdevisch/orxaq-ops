@@ -226,10 +226,12 @@ if [[ ${CLOUD_CONFIGURED} -eq 0 ]]; then
     fi
 fi
 
-# Also encrypt secrets to iCloud vault
+# Also encrypt secrets to iCloud vault (Issue #54: graceful iCloud failure)
 start_timer "vault_sync"
 if [[ -x "${SCRIPT_DIR}/encrypt_secrets.sh" ]]; then
-    bash "${SCRIPT_DIR}/encrypt_secrets.sh"
+    if ! bash "${SCRIPT_DIR}/encrypt_secrets.sh" 2>/dev/null; then
+        emit_event "vault_sync_failed" "warn" note="encrypt_secrets_failed_iCloud_may_be_unavailable"
+    fi
 fi
 end_timer "vault_sync" "ok"
 

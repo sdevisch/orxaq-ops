@@ -44,8 +44,11 @@ emit_event() {
 
     echo "${json}" >> "${TELEMETRY_LOG}" 2>/dev/null || true
 
-    # Mirror to iCloud vault if available (non-blocking)
-    if [[ -d "$(dirname "${TELEMETRY_VAULT}")" ]]; then
+    # Mirror to iCloud vault if available and accessible (non-blocking)
+    # Issue #54: Only attempt iCloud write if the directory is accessible
+    local vault_parent
+    vault_parent="$(dirname "${TELEMETRY_VAULT}")"
+    if [[ -d "${vault_parent}" ]] && ls "${vault_parent}" >/dev/null 2>&1; then
         echo "${json}" >> "${TELEMETRY_VAULT}" 2>/dev/null || true
     fi
 }

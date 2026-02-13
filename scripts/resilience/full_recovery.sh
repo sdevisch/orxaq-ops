@@ -13,7 +13,8 @@ log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "${LOG_DIR}/recovery
 
 log "=== ORXAQ FULL RECOVERY STARTED ==="
 
-# Step 1: Wait for iCloud sync
+# Step 1: Wait for iCloud sync (Issue #54: graceful iCloud handling)
+ICLOUD_AVAILABLE=false
 if [[ ! -d "${VAULT_DIR}" ]]; then
     log "Waiting for iCloud vault to sync..."
     for i in $(seq 1 60); do
@@ -22,9 +23,18 @@ if [[ ! -d "${VAULT_DIR}" ]]; then
         fi
         sleep 5
     done
-    if [[ ! -d "${VAULT_DIR}" ]]; then
-        log "TIMEOUT: iCloud vault not found after 5 minutes."
+fi
+
+if [[ -d "${VAULT_DIR}" ]]; then
+    # Check if actually accessible (not just present)
+    if ls "${VAULT_DIR}" >/dev/null 2>&1; then
+        ICLOUD_AVAILABLE=true
+        log "iCloud vault accessible at ${VAULT_DIR}"
+    else
+        log "WARNING: iCloud vault exists but is not accessible (permission denied). Continuing without vault."
     fi
+else
+    log "WARNING: iCloud vault not found after 5 minutes. Continuing without vault."
 fi
 
 # Step 2: Ensure Homebrew + git
@@ -41,14 +51,19 @@ fi
 # Step 3: Set up resilience scripts from vault
 mkdir -p "${DEV_DIR}/.claude/resilience"
 
-if [[ -d "${VAULT_DIR}" ]]; then
+if [[ "${ICLOUD_AVAILABLE}" == "true" ]]; then
     for script in bootstrap_fresh_mac.sh decrypt_secrets.sh encrypt_secrets.sh backup.sh restore.sh telemetry.sh healthcheck.sh; do
         if [[ -f "${VAULT_DIR}/${script}" ]]; then
-            cp "${VAULT_DIR}/${script}" "${DEV_DIR}/.claude/resilience/${script}"
-            log "Copied: ${script}"
+            if cp "${VAULT_DIR}/${script}" "${DEV_DIR}/.claude/resilience/${script}" 2>/dev/null; then
+                log "Copied: ${script}"
+            else
+                log "WARNING: Failed to copy ${script} from iCloud vault (permission denied)"
+            fi
         fi
     done
     chmod +x "${DEV_DIR}/.claude/resilience"/*.sh 2>/dev/null || true
+else
+    log "Skipping vault script copy: iCloud vault not available"
 fi
 
 # Now source telemetry if available

@@ -21,6 +21,23 @@ DEFAULT_HISTORY_PATH = Path.home() / ".claude" / "watchdogs" / "process-watchdog
 PROBLEM_STATUSES = {"restart_failed", "down_cooldown", "down_no_restart"}
 MAX_CAPTURE_CHARS = 2000
 
+# Issue #67: Patterns for sensitive data that must never appear in process output or logs
+_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bAGE-SECRET-KEY-[A-Za-z0-9]+\b"), "[REDACTED_AGE_SECRET_KEY]"),
+    (re.compile(r"\bage1[a-z0-9]{56,}\b"), "[REDACTED_AGE_PUBLIC_KEY]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}\b"), "[REDACTED_API_KEY]"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{12,}\b"), "[REDACTED_ANTHROPIC_KEY]"),
+    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*\S+"), r"\1=****"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"), "Bearer ****"),
+]
+
+
+def _redact_secrets(text: str) -> str:
+    """Redact sensitive key material from text before logging or output."""
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -28,6 +45,8 @@ def _now_iso() -> str:
 
 def _tail(text: str, limit: int = MAX_CAPTURE_CHARS) -> str:
     value = (text or "").strip()
+    # Issue #67: Always redact secrets from captured process output
+    value = _redact_secrets(value)
     if len(value) <= limit:
         return value
     return value[-limit:]

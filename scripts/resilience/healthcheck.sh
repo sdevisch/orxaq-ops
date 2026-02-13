@@ -15,6 +15,8 @@ DEV_DIR="${HOME}/dev"
 LOG_DIR="${DEV_DIR}/.claude/resilience/logs"
 VAULT_DIR="${HOME}/Library/Mobile Documents/com~apple~CloudDocs/orxaq-vault"
 STATUS_FILE="${LOG_DIR}/health-status.json"
+ICLOUD_ERROR_CACHE="${LOG_DIR}/.icloud-error-cache"
+ICLOUD_ERROR_INTERVAL=3600  # Only log iCloud errors once per hour
 
 # --- Configurable Thresholds ---
 # Override via environment variables or .healthcheck.env
@@ -30,6 +32,49 @@ DISK_LOW_GB="${ORXAQ_DISK_LOW_GB:-10}"
 TELEMETRY_MAX_LINES="${ORXAQ_TELEMETRY_MAX_LINES:-50000}"
 
 mkdir -p "${LOG_DIR}"
+
+# --- iCloud error deduplication helpers (Issue #66) ---
+# Only log iCloud-related errors once per ICLOUD_ERROR_INTERVAL seconds.
+_icloud_error_should_log() {
+    local error_key="$1"
+    if [[ ! -f "${ICLOUD_ERROR_CACHE}" ]]; then
+        return 0  # No cache file, should log
+    fi
+    local last_ts
+    last_ts=$(grep "^${error_key}=" "${ICLOUD_ERROR_CACHE}" 2>/dev/null | tail -1 | cut -d= -f2 || echo 0)
+    last_ts="${last_ts:-0}"
+    local now_epoch
+    now_epoch=$(date +%s)
+    local elapsed=$(( now_epoch - last_ts ))
+    if [[ ${elapsed} -ge ${ICLOUD_ERROR_INTERVAL} ]]; then
+        return 0  # Enough time has passed, should log
+    fi
+    return 1  # Still within suppression window
+}
+
+_icloud_error_record() {
+    local error_key="$1"
+    local now_epoch
+    now_epoch=$(date +%s)
+    # Update or append the error timestamp in the cache file
+    if [[ -f "${ICLOUD_ERROR_CACHE}" ]] && grep -q "^${error_key}=" "${ICLOUD_ERROR_CACHE}" 2>/dev/null; then
+        # Replace existing entry (portable sed)
+        local tmp="${ICLOUD_ERROR_CACHE}.tmp"
+        grep -v "^${error_key}=" "${ICLOUD_ERROR_CACHE}" > "${tmp}" 2>/dev/null || true
+        echo "${error_key}=${now_epoch}" >> "${tmp}"
+        mv "${tmp}" "${ICLOUD_ERROR_CACHE}"
+    else
+        echo "${error_key}=${now_epoch}" >> "${ICLOUD_ERROR_CACHE}"
+    fi
+}
+
+# Helper: test if an iCloud path is accessible (not just present)
+_icloud_path_accessible() {
+    local path="$1"
+    # Try to list the path to check for permission errors
+    ls "${path}" >/dev/null 2>&1
+    return $?
+}
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ISSUES=()
@@ -86,12 +131,26 @@ emit_metric "repos_healthy" "${REPOS_HEALTHY}"
 emit_metric "repos_unhealthy" "${REPOS_UNHEALTHY}"
 end_timer "repo_checks" "ok"
 
-# --- iCloud vault check ---
+# --- iCloud vault check (Issue #54: graceful iCloud error handling) ---
 start_timer "vault_check"
+VAULT_ACCESSIBLE=false
 if [[ ! -d "${VAULT_DIR}" ]]; then
-    ISSUES+=("ICLOUD_VAULT_MISSING")
-    emit_event "vault_missing" "error"
+    if _icloud_error_should_log "vault_missing"; then
+        ISSUES+=("ICLOUD_VAULT_MISSING")
+        emit_event "vault_missing" "warn" note="iCloud_vault_directory_not_found"
+        _icloud_error_record "vault_missing"
+    fi
+elif ! _icloud_path_accessible "${VAULT_DIR}"; then
+    # iCloud path exists but is not accessible (permission denied)
+    if _icloud_error_should_log "vault_permission_denied"; then
+        ISSUES+=("ICLOUD_VAULT_PERMISSION_DENIED")
+        emit_event "vault_permission_denied" "warn" \
+            note="iCloud_vault_exists_but_not_accessible" \
+            path="${VAULT_DIR}"
+        _icloud_error_record "vault_permission_denied"
+    fi
 else
+    VAULT_ACCESSIBLE=true
     last_encrypted="${VAULT_DIR}/last_encrypted.txt"
     if [[ -f "${last_encrypted}" ]]; then
         # Guard against permission denied on iCloud vault (issue #56)
@@ -106,8 +165,11 @@ else
                 emit_event "vault_stale" "warn" age_hours="${age_hours}"
             fi
         else
-            ISSUES+=("VAULT_READ_ERROR:permission_denied_or_empty")
-            emit_event "vault_read_error" "warn"
+            if _icloud_error_should_log "vault_read_error"; then
+                ISSUES+=("VAULT_READ_ERROR:permission_denied_or_empty")
+                emit_event "vault_read_error" "warn"
+                _icloud_error_record "vault_read_error"
+            fi
         fi
     else
         ISSUES+=("VAULT_NEVER_ENCRYPTED")
@@ -271,7 +333,7 @@ cat > "${STATUS_FILE}" << EOF
     "issues": ${ISSUES_JSON},
     "repos_checked": 5,
     "repos_healthy": ${REPOS_HEALTHY},
-    "vault_present": $(test -d "${VAULT_DIR}" && echo true || echo false),
+    "vault_present": ${VAULT_ACCESSIBLE},
     "disk_available_gb": ${avail_gb},
     "thresholds": {
         "vault_stale_hours": ${VAULT_STALE_HOURS},
