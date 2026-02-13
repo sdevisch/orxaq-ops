@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from .autopilot_cleanup import cleanup_on_startup, detect_orphans
 from .context import write_default_skill_protocol
 from .dashboard import run_dashboard_server
 from .gitops import (
@@ -43,6 +44,7 @@ from .providers import run_providers_check
 from .router import apply_router_profile, run_lanes_status, run_router_check
 from .rpa_scheduler import run_rpa_schedule_from_config
 from .task_queue import validate_task_queue_file
+from .watchdog_log_doctor import diagnose_watchdog_logs, doctor_report, fix_watchdog_logs
 
 
 def _config_from_args(args: argparse.Namespace) -> ManagerConfig:
@@ -87,6 +89,31 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("uninstall-keepalive")
     sub.add_parser("keepalive-status")
     sub.add_parser("resilience-audit")
+
+    autopilot_cleanup = sub.add_parser("autopilot-cleanup")
+    autopilot_cleanup.add_argument(
+        "--db-path",
+        default="",
+        help="Path to autopilot SQLite database (default: ~/.claude/autopilot/autopilot.db)",
+    )
+    autopilot_cleanup.add_argument(
+        "--threshold-sec",
+        type=int,
+        default=1800,
+        help="Seconds after which a running task is considered orphaned (default: 1800)",
+    )
+    autopilot_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only detect orphans without cleaning them up",
+    )
+
+    watchdog_doctor = sub.add_parser("watchdog-doctor")
+    watchdog_doctor.add_argument(
+        "--fix",
+        action="store_true",
+        help="Attempt to fix detected issues (restart services, init logs)",
+    )
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -273,6 +300,26 @@ def main(argv: list[str] | None = None) -> int:
         report = resilience_audit(cfg)
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report.get("ok", False) else 1
+    if args.command == "autopilot-cleanup":
+        from .autopilot_cleanup import DEFAULT_DB_PATH
+
+        db = Path(args.db_path).expanduser().resolve() if args.db_path else DEFAULT_DB_PATH
+        threshold = max(60, int(args.threshold_sec))
+        if args.dry_run:
+            orphans = detect_orphans(db_path=db, threshold_sec=threshold)
+            print(json.dumps({"orphans": orphans, "count": len(orphans), "dry_run": True}, indent=2))
+        else:
+            cleaned = cleanup_on_startup(db_path=db, threshold_sec=threshold)
+            print(json.dumps({"cleaned": cleaned, "count": len(cleaned), "dry_run": False}, indent=2))
+        return 0
+    if args.command == "watchdog-doctor":
+        if args.fix:
+            actions = fix_watchdog_logs()
+            print(json.dumps({"actions": actions, "count": len(actions)}, indent=2))
+        else:
+            report = doctor_report()
+            print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
     if args.command == "init-skill-protocol":
         out = (cfg.root_dir / args.output).resolve()
         write_default_skill_protocol(out)
