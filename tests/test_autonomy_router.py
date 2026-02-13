@@ -155,5 +155,89 @@ class RouterTests(unittest.TestCase):
             self.assertFalse(report["summary"]["overall_ok"])
 
 
+    def test_run_lanes_status_all_up(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            config = self._write_config(root)
+            output = root / "artifacts" / "lanes_status.json"
+            with mock.patch(
+                "orxaq_autonomy.router.urllib_request.urlopen",
+                return_value=_FakeResponse({"data": [{"id": "m1"}]}),
+            ):
+                report = router.run_lanes_status(
+                    root=str(root),
+                    config_path=str(config),
+                    output_path=str(output),
+                    timeout_sec=5,
+                )
+            self.assertTrue(output.exists())
+            self.assertEqual(report["summary"]["total_lanes"], 2)
+            self.assertEqual(report["summary"]["healthy_lanes"], 2)
+            self.assertTrue(report["summary"]["all_healthy"])
+            self.assertTrue(report["lanes"]["L0"]["healthy"])
+            self.assertTrue(report["lanes"]["L1"]["healthy"])
+
+    def test_run_lanes_status_one_lane_degraded(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            config = self._write_config(root)
+            output = root / "artifacts" / "lanes_status.json"
+
+            def selective_urlopen(req, **kwargs):
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                if "127.0.0.1" in url:
+                    raise OSError("connection refused")
+                return _FakeResponse({"data": [{"id": "m1"}]})
+
+            with mock.patch(
+                "orxaq_autonomy.router.urllib_request.urlopen",
+                side_effect=selective_urlopen,
+            ):
+                report = router.run_lanes_status(
+                    root=str(root),
+                    config_path=str(config),
+                    output_path=str(output),
+                    timeout_sec=5,
+                )
+            self.assertEqual(report["summary"]["healthy_lanes"], 1)
+            self.assertEqual(report["summary"]["degraded_lanes"], 1)
+            self.assertFalse(report["summary"]["all_healthy"])
+            self.assertFalse(report["lanes"]["L0"]["healthy"])
+            self.assertTrue(report["lanes"]["L1"]["healthy"])
+
+    def test_run_lanes_status_missing_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            report = router.run_lanes_status(
+                root=str(root),
+                config_path="./nonexistent.yaml",
+                output_path=str(root / "out.json"),
+            )
+            self.assertFalse(report["ok"])
+            self.assertIn("not found", report["error"])
+
+    def test_run_lanes_status_no_lanes_defined(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({
+                "providers": [
+                    {"name": "local", "kind": "openai_compat", "base_url": "http://127.0.0.1:1234/v1"},
+                ],
+            }), encoding="utf-8")
+            output = root / "out.json"
+            with mock.patch(
+                "orxaq_autonomy.router.urllib_request.urlopen",
+                return_value=_FakeResponse({"data": []}),
+            ):
+                report = router.run_lanes_status(
+                    root=str(root),
+                    config_path=str(config_path),
+                    output_path=str(output),
+                )
+            self.assertEqual(report["summary"]["total_lanes"], 0)
+            self.assertFalse(report["summary"]["all_healthy"])
+
+
 if __name__ == "__main__":
     unittest.main()

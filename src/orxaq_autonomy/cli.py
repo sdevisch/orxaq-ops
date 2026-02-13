@@ -36,9 +36,10 @@ from .manager import (
     tail_logs,
     uninstall_keepalive,
 )
+from .health_monitor import CollaborationHealthMonitor, dashboard_health_status
 from .profile import profile_apply
 from .providers import run_providers_check
-from .router import apply_router_profile, run_router_check
+from .router import apply_router_profile, run_lanes_status, run_router_check
 from .rpa_scheduler import run_rpa_schedule_from_config
 from .task_queue import validate_task_queue_file
 
@@ -122,6 +123,12 @@ def main(argv: list[str] | None = None) -> int:
     router.add_argument("--timeout-sec", type=int, default=5)
     router.add_argument("--strict", action="store_true")
 
+    lanes_status = sub.add_parser("lanes-status")
+    lanes_status.add_argument("--config", default="./config/router.active.yaml")
+    lanes_status.add_argument("--output", default="./artifacts/lanes_status.json")
+    lanes_status.add_argument("--timeout-sec", type=int, default=5)
+    lanes_status.add_argument("--strict", action="store_true")
+
     router_profile = sub.add_parser("router-profile-apply")
     router_profile.add_argument("name")
     router_profile.add_argument("--config", default="./config/router.example.yaml")
@@ -137,6 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument("--artifacts-dir", default="./artifacts")
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8787)
+
+    dashboard_status = sub.add_parser("dashboard-status")
+    dashboard_status.add_argument("--output", default="", help="Optional output file path for health JSON")
 
     pr_open = sub.add_parser("pr-open")
     pr_open.add_argument("--repo", default="", help="GitHub repo slug owner/name")
@@ -315,6 +325,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.strict and not bool(report.get("summary", {}).get("overall_ok", False)):
             return 1
         return 0
+    if args.command == "lanes-status":
+        report = run_lanes_status(
+            root=str(cfg.root_dir),
+            config_path=args.config,
+            output_path=args.output,
+            timeout_sec=max(1, int(args.timeout_sec)),
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if args.strict and not bool(report.get("summary", {}).get("all_healthy", False)):
+            return 1
+        return 0
     if args.command == "router-profile-apply":
         try:
             payload = apply_router_profile(
@@ -345,6 +366,20 @@ def main(argv: list[str] | None = None) -> int:
             host=str(args.host),
             port=int(args.port),
         )
+        return 0
+    if args.command == "dashboard-status":
+        from .manager import _heartbeat_age_sec
+
+        payload = dashboard_health_status(
+            state_file=cfg.state_file,
+            heartbeat_age_sec=_heartbeat_age_sec(cfg),
+        )
+        result = json.dumps(payload, indent=2, sort_keys=True)
+        print(result)
+        if args.output:
+            out = Path(args.output).resolve()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(result + "\n", encoding="utf-8")
         return 0
     if args.command == "pr-open":
         try:

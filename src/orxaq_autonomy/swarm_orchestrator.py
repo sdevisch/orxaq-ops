@@ -80,6 +80,71 @@ class CostTracker:
 
 
 @dataclass
+class LaneOccupancy:
+    """Track per-lane routing counts and active slots for fairness rebalancing.
+
+    Prevents higher-tier lane starvation of lower-tier lanes by applying a
+    soft cap: when a tier exceeds its fair-share ratio, lower-tier candidates
+    are promoted in the candidate chain.
+    """
+
+    routed_counts: dict[str, int] = field(default_factory=dict)
+    active_counts: dict[str, int] = field(default_factory=dict)
+
+    # Soft cap: when a tier's share of total routing exceeds this fraction, the
+    # rebalancer will attempt to divert to a less-used tier.
+    tier_saturation_threshold: float = 0.60
+
+    def record_routed(self, tier: str) -> None:
+        self.routed_counts[tier] = self.routed_counts.get(tier, 0) + 1
+
+    def acquire(self, tier: str) -> None:
+        self.active_counts[tier] = self.active_counts.get(tier, 0) + 1
+
+    def release(self, tier: str) -> None:
+        self.active_counts[tier] = max(0, self.active_counts.get(tier, 0) - 1)
+
+    def total_routed(self) -> int:
+        return max(1, sum(self.routed_counts.values()))
+
+    def tier_share(self, tier: str) -> float:
+        return self.routed_counts.get(tier, 0) / self.total_routed()
+
+    def is_saturated(self, tier: str) -> bool:
+        return self.tier_share(tier) > self.tier_saturation_threshold
+
+    def rebalance_candidates(self, candidates: list[str]) -> list[str]:
+        """Reorder candidate tiers to promote under-used lower tiers.
+
+        If the first candidate (preferred tier) is saturated, rotate
+        non-saturated candidates to the front while preserving relative order
+        among equally-unsaturated tiers.
+        """
+        if len(candidates) <= 1:
+            return list(candidates)
+        first = candidates[0]
+        if not self.is_saturated(first):
+            return list(candidates)
+        unsaturated = [t for t in candidates if not self.is_saturated(t)]
+        saturated = [t for t in candidates if self.is_saturated(t)]
+        if not unsaturated:
+            return list(candidates)
+        return unsaturated + saturated
+
+    def to_dict(self) -> dict[str, Any]:
+        total = self.total_routed()
+        return {
+            "routed_counts": dict(sorted(self.routed_counts.items())),
+            "active_counts": dict(sorted(self.active_counts.items())),
+            "tier_shares": {
+                tier: round(count / total, 4)
+                for tier, count in sorted(self.routed_counts.items())
+            },
+            "saturation_threshold": self.tier_saturation_threshold,
+        }
+
+
+@dataclass
 class DeferredTask:
     """A task deferred for later execution when network improves."""
     task_id: str
@@ -185,6 +250,7 @@ class SwarmOrchestrator:
         artifacts_dir: Path | None = None,
         budget_limit_usd: float = 15.0,
         network_cache_ttl_sec: int = 60,
+        lane_saturation_threshold: float = 0.60,
     ):
         self._lm_client = lmstudio_client.LMStudioClient(base_url=lmstudio_url)
         self._network = network_status.NetworkProbe(
@@ -194,12 +260,19 @@ class SwarmOrchestrator:
         self._artifacts = artifacts_dir
         self._budget_limit = budget_limit_usd
         self._costs = CostTracker()
+        self._lane_occupancy = LaneOccupancy(
+            tier_saturation_threshold=lane_saturation_threshold,
+        )
         self._deferred: list[DeferredTask] = []
         self._decision_count = 0
 
     @property
     def costs(self) -> CostTracker:
         return self._costs
+
+    @property
+    def lane_occupancy(self) -> LaneOccupancy:
+        return self._lane_occupancy
 
     @property
     def deferred_tasks(self) -> list[DeferredTask]:
@@ -253,17 +326,20 @@ class SwarmOrchestrator:
 
         # Build candidate chain: preferred + fallbacks
         candidate_chain = [preferred_tier] + fallbacks
-        all_tiers_str = [str(t) for t in candidate_chain]
+        # Apply lane occupancy rebalancing to avoid higher-tier saturation
+        candidate_chain = self._lane_occupancy.rebalance_candidates(
+            [str(t) for t in candidate_chain]
+        )
+        all_tiers_str = list(candidate_chain)
 
         selected_tier = None
         selected_provider = ""
         selected_model = ""
         reason = ""
 
-        for tier in candidate_chain:
-            tier_str = str(tier)
+        for tier_str in candidate_chain:
             # Local tiers
-            if tier in (RoutingTier.L0_LOCAL_SMALL, RoutingTier.L1_LOCAL_STRONG):
+            if tier_str in (RoutingTier.L0_LOCAL_SMALL, RoutingTier.L1_LOCAL_STRONG):
                 if lm_status.reachable:
                     model = self._resolve_local_model(tier_str, description)
                     if model:
@@ -273,7 +349,7 @@ class SwarmOrchestrator:
                         reason = f"Local model available ({net.status})"
                         break
             # Cloud tiers
-            elif tier in (RoutingTier.L2_CLOUD_STANDARD, RoutingTier.L3_CLOUD_PREMIUM):
+            elif tier_str in (RoutingTier.L2_CLOUD_STANDARD, RoutingTier.L3_CLOUD_PREMIUM):
                 if net.status != network_status.NetworkStatus.OFFLINE:
                     # Check budget
                     if self._costs.total_usd() < self._budget_limit:
@@ -336,6 +412,10 @@ class SwarmOrchestrator:
             cost_estimate_usd=round(cost_estimate, 6),
         )
 
+        # Record lane occupancy for fairness rebalancing
+        if selected_tier and not deferred:
+            self._lane_occupancy.record_routed(selected_tier)
+
         # Log decision to audit trail
         self._log_decision(decision)
 
@@ -383,6 +463,7 @@ class SwarmOrchestrator:
             "network": net.to_dict(),
             "lmstudio": lm.to_dict(),
             "costs": self._costs.to_dict(),
+            "lane_occupancy": self._lane_occupancy.to_dict(),
             "deferred_count": len(self._deferred),
             "deferred_tasks": [t.to_dict() for t in self._deferred],
             "decisions_made": self._decision_count,

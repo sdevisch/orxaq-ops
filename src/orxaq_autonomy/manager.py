@@ -862,6 +862,21 @@ def status_snapshot(config: ManagerConfig) -> dict[str, Any]:
     }
 
 
+def _safe_status_str(item: Any) -> str:
+    """Extract a normalized status string from a task entry.
+
+    Handles dict subclasses and coercion edge cases (None, int, etc.)
+    so that health_snapshot never miscounts.
+    """
+    if not isinstance(item, dict):
+        return "unknown"
+    raw = item.get("status", "unknown")
+    if raw is None:
+        return "unknown"
+    text = str(raw).strip().lower()
+    return text if text else "unknown"
+
+
 def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
     state_counts = {"pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "unknown": 0}
     blocked_tasks: list[str] = []
@@ -871,12 +886,7 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
             raw = json.loads(config.state_file.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 for task_id, item in raw.items():
-                    status = "unknown"
-                    try:
-                        if isinstance(item, dict):
-                            status = str(item.get("status", "unknown")).strip().lower()
-                    except Exception:
-                        status = "unknown"
+                    status = _safe_status_str(item)
                     if status in state_counts:
                         state_counts[status] += 1
                     else:
@@ -894,9 +904,12 @@ def health_snapshot(config: ManagerConfig) -> dict[str, Any]:
         + state_counts["blocked"]
         + state_counts["unknown"]
     )
-    state_counts["total"] = covered + uncovered
+    total = covered + uncovered
+    state_counts["total"] = total
     state_counts["covered"] = covered
     state_counts["uncovered"] = uncovered
+    # Invariant: total must always equal covered + uncovered
+    assert state_counts["total"] == state_counts["covered"] + state_counts["uncovered"]
 
     status = status_snapshot(config)
     heartbeat_age = int(status.get("heartbeat_age_sec", -1))

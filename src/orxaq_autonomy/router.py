@@ -290,6 +290,97 @@ def _check_provider(provider: RouterProvider, timeout_sec: int) -> RouterProvide
         )
 
 
+def run_lanes_status(
+    *,
+    root: str = ".",
+    config_path: str = "./config/router.active.yaml",
+    output_path: str = "./artifacts/lanes_status.json",
+    timeout_sec: int = 5,
+) -> dict[str, Any]:
+    """Return per-lane health status with provider reachability."""
+    root_path = Path(root).expanduser().resolve()
+    config_file = Path(config_path).expanduser()
+    if not config_file.is_absolute():
+        config_file = (root_path / config_file).resolve()
+    output_file = Path(output_path).expanduser()
+    if not output_file.is_absolute():
+        output_file = (root_path / output_file).resolve()
+
+    if not config_file.exists():
+        fallback = root_path / "config" / "router.example.yaml"
+        if fallback.exists():
+            config_file = fallback
+        else:
+            return {
+                "ok": False,
+                "error": f"router config not found: {config_file}",
+                "lanes": {},
+            }
+
+    payload = _read_router_config(str(config_file))
+    providers = _extract_providers(payload)
+    provider_map = {p.name: p for p in providers}
+    lanes_raw = payload.get("lanes", {})
+    if not isinstance(lanes_raw, dict):
+        lanes_raw = {}
+
+    statuses_cache: dict[str, RouterProviderStatus] = {}
+    for p in providers:
+        statuses_cache[p.name] = _check_provider(p, timeout_sec=max(1, int(timeout_sec)))
+
+    lanes_report: dict[str, Any] = {}
+    for lane_name, lane_providers in lanes_raw.items():
+        if not isinstance(lane_providers, list):
+            continue
+        lane_name = str(lane_name).strip()
+        if not lane_name:
+            continue
+        provider_statuses = []
+        up_count = 0
+        for pname in lane_providers:
+            pname = str(pname).strip()
+            if not pname:
+                continue
+            if pname in statuses_cache:
+                st = statuses_cache[pname]
+                provider_statuses.append(st.to_dict())
+                if st.status == "up":
+                    up_count += 1
+            else:
+                provider_statuses.append({
+                    "name": pname,
+                    "status": "unknown",
+                    "error": "provider not defined in config",
+                    "ok": False,
+                })
+        total = len(provider_statuses)
+        lanes_report[lane_name] = {
+            "providers": provider_statuses,
+            "total": total,
+            "up": up_count,
+            "down": total - up_count,
+            "healthy": up_count > 0,
+        }
+
+    all_healthy = all(lane.get("healthy", False) for lane in lanes_report.values()) if lanes_report else False
+    report = {
+        "schema_version": "lanes-status.v1",
+        "timestamp": _utc_now_iso(),
+        "root": str(root_path),
+        "config_path": str(config_file),
+        "lanes": lanes_report,
+        "summary": {
+            "total_lanes": len(lanes_report),
+            "healthy_lanes": sum(1 for l in lanes_report.values() if l.get("healthy")),
+            "degraded_lanes": sum(1 for l in lanes_report.values() if not l.get("healthy")),
+            "all_healthy": all_healthy,
+        },
+    }
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
 def run_router_check(
     *,
     root: str = ".",
