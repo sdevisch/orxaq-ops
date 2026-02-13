@@ -6,13 +6,12 @@ class SwarmPromptContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = pathlib.Path(__file__).resolve().parents[1]
         self.shared = self.root / "config" / "prompts" / "swarm_shared_git_contract.md"
-        self.codex = self.root / "config" / "prompts" / "swarm_codex_session_prompt.md"
         self.gemini = self.root / "config" / "prompts" / "swarm_gemini_session_prompt.md"
         self.claude = self.root / "config" / "prompts" / "swarm_claude_session_prompt.md"
         self.objective = self.root / "config" / "objective.md"
 
     def test_prompt_files_exist(self):
-        for path in (self.shared, self.codex, self.gemini, self.claude, self.objective):
+        for path in (self.shared, self.gemini, self.claude, self.objective):
             self.assertTrue(path.exists(), f"missing prompt file: {path}")
 
     def test_shared_contract_contains_required_git_cycle_rules(self):
@@ -34,7 +33,7 @@ class SwarmPromptContractTests(unittest.TestCase):
 
     def test_role_prompts_reference_shared_contract(self):
         rel = "config/prompts/swarm_shared_git_contract.md"
-        for path in (self.codex, self.gemini, self.claude):
+        for path in (self.gemini, self.claude):
             text = path.read_text(encoding="utf-8")
             self.assertIn(rel, text, f"{path} must reference shared contract")
 
