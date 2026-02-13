@@ -37,3 +37,36 @@ Controls:
 - Optional OS keepalive installs a user-space scheduler entry:
   - Windows Task Scheduler task (`schtasks`) under current user.
   - macOS LaunchAgent (`~/Library/LaunchAgents`).
+
+## 6) Laptop Offline / Closed -- No Cloud Failover
+
+Current limitation (issue #62): When the laptop loses power, network, or
+the lid is closed during travel, all local autonomous work stops. There is no
+deployed cloud worker to pick up queued tasks.
+
+Design note: The infrastructure for cloud failover already exists at two
+levels:
+
+1. Autopilot cloud worker (`~/.claude/autopilot/cloud/cloud_worker.py`) --
+   a Flask + Anthropic API service designed for Google Cloud Run. It monitors
+   a heartbeat from the local autopilot; when the local machine goes silent
+   for > 10 minutes, the cloud worker begins processing queued prompts. This
+   is not yet deployed.
+
+2. Swarm orchestrator async executor (`src/orxaq_autonomy/swarm_orchestrator.py`) --
+   routes tasks across L0-L3 tiers. Cloud tiers (L2/L3) already handle task
+   execution via Anthropic, OpenRouter, and other providers when the network
+   is online. This covers the routing/execution layer but not the supervisory
+   heartbeat-based takeover.
+
+TODO -- to enable full cloud failover:
+
+- Deploy the cloud worker to Google Cloud Run (`~/.claude/autopilot/cloud/`).
+- Set `cloud_url` in autopilot config: `python3 autopilot.py set-cloud-url <url>`.
+- Verify heartbeat sync: `python3 autopilot.py cloud-sync`.
+- Consider adding a GitHub Actions workflow as a tertiary fallback that
+  checks the heartbeat via Firestore and triggers task processing.
+
+This is tracked as an enhancement rather than a bug because the swarm
+orchestrator cloud providers already handle cloud execution when the
+laptop is online. The gap is only for the fully-offline/asleep scenario.

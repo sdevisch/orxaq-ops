@@ -232,6 +232,11 @@ def _pid_is_running(pid: int) -> bool:
 
 def build_subprocess_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     env = os.environ.copy()
+    # Remove env vars that signal we are inside a Claude Code session so that
+    # subprocess invocations of Claude CLI do not refuse to start (nested-
+    # session guard).  Fixes: https://github.com/Orxaq/orxaq-ops/issues/68
+    for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION"):
+        env.pop(key, None)
     env.update(NON_INTERACTIVE_ENV_OVERRIDES)
     if extra_env:
         env.update(extra_env)
@@ -606,6 +611,7 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
+            start_new_session=True,  # Isolate subprocess from parent process group
         )
     except FileNotFoundError as err:
         return subprocess.CompletedProcess(cmd, returncode=127, stdout="", stderr=str(err))
@@ -1097,7 +1103,14 @@ def run_gemini_task(
 def ensure_cli_exists(binary: str, role: str) -> None:
     if shutil.which(binary):
         return
-    raise FileNotFoundError(f"{role} CLI binary not found in PATH: {binary}")
+    # Also check ~/.local/bin which may not be on PATH in launchd/cron contexts
+    home_local = Path.home() / ".local" / "bin" / binary
+    if home_local.exists():
+        return
+    raise FileNotFoundError(
+        f"{role} CLI binary not found in PATH or ~/.local/bin: {binary}. "
+        f"Ensure the CLI is installed and the PATH includes its location."
+    )
 
 
 def summarize_run(

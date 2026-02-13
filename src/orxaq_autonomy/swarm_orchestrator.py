@@ -295,7 +295,7 @@ class SwarmOrchestrator:
     def _resolve_cloud_provider(self, tier: str) -> tuple[str, str]:
         """Resolve cloud provider and model for a tier. Returns (provider, model)."""
         if tier == RoutingTier.L2_CLOUD_STANDARD:
-            return ("anthropic", "claude-sonnet-4-5-20250929")
+            return ("anthropic", "claude-sonnet-4-5-20250514")
         elif tier == RoutingTier.L3_CLOUD_PREMIUM:
             return ("anthropic", "claude-opus-4-6")
         return ("unknown", "unknown")

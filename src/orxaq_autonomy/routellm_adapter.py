@@ -25,7 +25,7 @@ class RouteLLMConfig:
 
     enabled: bool = False
     router_model: str = "mf"  # matrix factorization router
-    strong_model: str = "claude-sonnet-4-5-20250929"
+    strong_model: str = "claude-sonnet-4-5-20250514"
     weak_model: str = "gpt-4o-mini"
     threshold: float = 0.5
     timeout_sec: int = 5
@@ -38,7 +38,7 @@ class RouteLLMConfig:
         return cls(
             enabled=os.environ.get("ORXAQ_ROUTELLM_ENABLED", "").lower() in ("1", "true", "yes"),
             router_model=os.environ.get("ORXAQ_ROUTELLM_ROUTER_MODEL", "mf"),
-            strong_model=os.environ.get("ORXAQ_ROUTELLM_STRONG_MODEL", "claude-sonnet-4-5-20250929"),
+            strong_model=os.environ.get("ORXAQ_ROUTELLM_STRONG_MODEL", "claude-sonnet-4-5-20250514"),
             weak_model=os.environ.get("ORXAQ_ROUTELLM_WEAK_MODEL", "gpt-4o-mini"),
             threshold=float(os.environ.get("ORXAQ_ROUTELLM_THRESHOLD", "0.5")),
             timeout_sec=int(os.environ.get("ORXAQ_ROUTELLM_TIMEOUT_SEC", "5")),
@@ -51,7 +51,7 @@ class RouteLLMConfig:
         return cls(
             enabled=bool(payload.get("enabled", False)),
             router_model=str(payload.get("router_model", "mf")),
-            strong_model=str(payload.get("strong_model", "claude-sonnet-4-5-20250929")),
+            strong_model=str(payload.get("strong_model", "claude-sonnet-4-5-20250514")),
             weak_model=str(payload.get("weak_model", "gpt-4o-mini")),
             threshold=float(payload.get("threshold", 0.5)),
             timeout_sec=int(payload.get("timeout_sec", 5)),
@@ -79,8 +79,8 @@ class RoutingResult:
 
 # Deterministic fallback lane mapping: complexity keyword → model
 _DETERMINISTIC_LANE_MAP: dict[str, str] = {
-    "critical": "claude-sonnet-4-5-20250929",
-    "high": "claude-sonnet-4-5-20250929",
+    "critical": "claude-sonnet-4-5-20250514",
+    "high": "claude-sonnet-4-5-20250514",
     "medium": "gpt-4o-mini",
     "low": "gpt-4o-mini",
 }
