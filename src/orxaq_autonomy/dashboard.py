@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import mimetypes
+import os
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,54 @@ TEXT_SUFFIXES = {
     ".html",
     ".csv",
 }
+
+
+
+
+def tail_log_file(path: Path, max_bytes: int = 65536) -> list[str]:
+    """Read the tail of a log file efficiently, bounded by *max_bytes*.
+
+    Uses an os.SEEK_END approach to avoid reading the entire file when it
+    is large.  Returns a list of decoded text lines (most-recent last).
+
+    Edge cases:
+    - Missing file -> empty list
+    - Empty file -> empty list
+    - File smaller than *max_bytes* -> full content returned
+    - File larger than *max_bytes* -> last *max_bytes* bytes read, first
+      (possibly partial) line discarded for correctness
+    """
+    resolved = Path(path)
+    if not resolved.exists() or not resolved.is_file():
+        return []
+
+    try:
+        file_size = resolved.stat().st_size
+    except OSError:
+        return []
+
+    if file_size == 0:
+        return []
+
+    try:
+        with open(resolved, "rb") as fh:
+            if file_size <= max_bytes:
+                raw = fh.read()
+            else:
+                fh.seek(-max_bytes, os.SEEK_END)
+                raw = fh.read(max_bytes)
+    except OSError:
+        return []
+
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+
+    # When we seeked into the middle of the file the first "line" is likely
+    # a partial fragment -- drop it for correctness.
+    if file_size > max_bytes and lines:
+        lines = lines[1:]
+
+    return lines
 
 
 def _utc_now_iso() -> str:
@@ -180,16 +229,29 @@ def _render_error_banner(errors: list[str]) -> str:
 
 def aggregate_distributed_todos(
     state_payloads: list[dict[str, Any]],
+    *,
+    stale_threshold_sec: int = 3600,
 ) -> dict[str, Any]:
     """Aggregate todo/task state across multiple distributed sources.
 
     Each *state_payloads* entry is a task-state dict (task_id -> task_data).
-    Returns a summary with consistent covered/uncovered/total metrics.
+    Returns a summary with consistent covered/uncovered/total metrics,
+    staleness annotations, and fallback indicators.
+
+    Parameters
+    ----------
+    state_payloads:
+        List of dicts mapping task_id -> task_data.
+    stale_threshold_sec:
+        If the newest ``last_update`` across all tasks is older than this
+        many seconds from now, the result is marked stale.  Defaults to 3600.
     """
+    # Detect fallback: no valid sources at all
+    valid_sources = [p for p in state_payloads if isinstance(p, dict)]
+    fallback = len(valid_sources) == 0
+
     merged: dict[str, dict[str, Any]] = {}
-    for payload in state_payloads:
-        if not isinstance(payload, dict):
-            continue
+    for payload in valid_sources:
         for task_id, task_data in payload.items():
             if not isinstance(task_data, dict):
                 # Non-dict entries are skipped for aggregation
@@ -204,6 +266,10 @@ def aggregate_distributed_todos(
                 if new_update > old_update:
                     merged[str(task_id)] = dict(task_data)
 
+    # Also treat empty merged results as fallback
+    if not merged:
+        fallback = True
+
     status_counts: dict[str, int] = {}
     for task_data in merged.values():
         status = str(task_data.get("status", "unknown")).strip().lower()
@@ -213,12 +279,46 @@ def aggregate_distributed_todos(
     uncovered = sum(v for k, v in status_counts.items() if k != "done")
     total = covered + uncovered
 
+    # Compute staleness from the newest last_update across all tasks
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    newest_update: str | None = None
+    for task_data in merged.values():
+        ts = str(task_data.get("last_update", "")).strip()
+        if ts and (newest_update is None or ts > newest_update):
+            newest_update = ts
+
+    stale = False
+    stale_reason = "ok"
+    if not merged:
+        stale = True
+        stale_reason = "no_tasks"
+    elif newest_update:
+        try:
+            newest_dt = datetime.fromisoformat(newest_update)
+            if newest_dt.tzinfo is None:
+                newest_dt = newest_dt.replace(tzinfo=timezone.utc)
+            age_sec = (datetime.now(timezone.utc) - newest_dt).total_seconds()
+            if age_sec > stale_threshold_sec:
+                stale = True
+                stale_reason = "age_exceeded"
+        except (ValueError, TypeError):
+            stale = True
+            stale_reason = "unparseable_timestamp"
+    else:
+        stale = True
+        stale_reason = "no_timestamps"
+
     return {
         "tasks": merged,
         "status_counts": status_counts,
         "covered": covered,
         "uncovered": uncovered,
         "total": total,
+        "stale": stale,
+        "stale_reason": stale_reason,
+        "newest_update": newest_update,
+        "fetched_at": fetched_at,
+        "fallback": fallback,
     }
 
 
@@ -311,6 +411,113 @@ def render_todo_activity_widget(
     )
 
 
+def render_lane_status_section(lane_data: list[dict[str, Any]]) -> str:
+    """Render lane-level status with owner identity in HTML.
+
+    Each entry in *lane_data* should have at minimum ``lane`` and ``status`` keys.
+    Optional keys: ``owner``, ``updated_at``, ``detail``.
+    Returns a self-contained HTML ``<section>`` element.
+    """
+    if not lane_data:
+        return (
+            "<section aria-label='Lane Status'>"
+            "<h2>Lane Status</h2>"
+            "<p class='empty'>No lane data available.</p></section>"
+        )
+
+    rows: list[str] = []
+    for entry in lane_data:
+        if not isinstance(entry, dict):
+            continue
+        lane = html.escape(str(entry.get("lane", "unknown")))
+        status = html.escape(str(entry.get("status", "unknown")))
+        owner = html.escape(str(entry.get("owner", "unassigned")))
+        updated = html.escape(str(entry.get("updated_at", "")))
+        detail = html.escape(str(entry.get("detail", ""))[:120])
+        rows.append(
+            f"<tr>"
+            f"<td><code>{lane}</code></td>"
+            f"<td><span class='status-badge' role='status' "
+            f"aria-label='Status: {status}'>{status}</span></td>"
+            f"<td>{owner}</td>"
+            f"<td><time datetime='{updated}'>{updated or 'n/a'}</time></td>"
+            f"<td>{detail}</td>"
+            f"</tr>"
+        )
+
+    count = len(rows)
+    return (
+        "<section aria-label='Lane Status'>"
+        f"<h2>Lane Status <span class='badge' aria-label='{count} lanes'>{count}</span></h2>"
+        "<table class='activity-table' role='table' aria-label='Lane status overview'>"
+        "<thead><tr>"
+        "<th scope='col'>Lane</th>"
+        "<th scope='col'>Status</th>"
+        "<th scope='col'>Owner</th>"
+        "<th scope='col'>Updated</th>"
+        "<th scope='col'>Detail</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></section>"
+    )
+
+
+def render_conversation_events_section(
+    events: list[dict[str, Any]],
+    *,
+    max_events: int = 20,
+) -> str:
+    """Render recent conversation/collaboration events in HTML.
+
+    Each entry in *events* should have ``timestamp`` and ``message`` keys.
+    Optional keys: ``actor``, ``event_type``.
+    Returns a self-contained HTML ``<section>`` element.
+    """
+    if not events:
+        return (
+            "<section aria-label='Conversation Events'>"
+            "<h2>Conversation Events</h2>"
+            "<p class='empty'>No conversation events recorded.</p></section>"
+        )
+
+    # Sort by timestamp descending, limit
+    sorted_events = sorted(
+        [e for e in events if isinstance(e, dict)],
+        key=lambda e: str(e.get("timestamp", "")),
+        reverse=True,
+    )[:max_events]
+
+    rows: list[str] = []
+    for event in sorted_events:
+        ts = html.escape(str(event.get("timestamp", "")))
+        actor = html.escape(str(event.get("actor", "system")))
+        event_type = html.escape(str(event.get("event_type", "info")))
+        message = html.escape(str(event.get("message", ""))[:200])
+        rows.append(
+            f"<tr>"
+            f"<td><time datetime='{ts}'>{ts or 'n/a'}</time></td>"
+            f"<td>{actor}</td>"
+            f"<td><span class='event-type'>{event_type}</span></td>"
+            f"<td>{message}</td>"
+            f"</tr>"
+        )
+
+    count = len(sorted_events)
+    return (
+        "<section aria-label='Conversation Events'>"
+        f"<h2>Conversation Events <span class='badge' aria-label='{count} events'>{count}</span></h2>"
+        "<table class='activity-table' role='table' aria-label='Recent conversation events'>"
+        "<thead><tr>"
+        "<th scope='col'>Time</th>"
+        "<th scope='col'>Actor</th>"
+        "<th scope='col'>Type</th>"
+        "<th scope='col'>Message</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></section>"
+    )
+
+
 def render_dashboard_html(index_payload: dict[str, Any]) -> str:
     sections = [
         _render_file_links("Health JSON", list(index_payload.get("health_json", []))),
@@ -336,6 +543,36 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
     task_state = index_payload.get("task_state", {})
     task_state_dict = task_state if isinstance(task_state, dict) else {}
     todo_activity = render_todo_activity_widget(task_state_dict)
+
+    # Render lane status section if payload contains lane_status
+    lane_status_html = ""
+    if "lane_status" in index_payload:
+        try:
+            lane_data = index_payload["lane_status"]
+            lane_status_html = render_lane_status_section(
+                lane_data if isinstance(lane_data, list) else []
+            )
+        except Exception:
+            lane_status_html = (
+                "<section aria-label='Lane Status'>"
+                "<h2>Lane Status</h2>"
+                "<p class='empty'>Error rendering lane status.</p></section>"
+            )
+
+    # Render conversation events section if payload contains conversation_events
+    conversation_events_html = ""
+    if "conversation_events" in index_payload:
+        try:
+            events = index_payload["conversation_events"]
+            conversation_events_html = render_conversation_events_section(
+                events if isinstance(events, list) else []
+            )
+        except Exception:
+            conversation_events_html = (
+                "<section aria-label='Conversation Events'>"
+                "<h2>Conversation Events</h2>"
+                "<p class='empty'>Error rendering conversation events.</p></section>"
+            )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -478,6 +715,8 @@ def render_dashboard_html(index_payload: dict[str, Any]) -> str:
     {stale_banner}
     {error_banner}
     {todo_activity}
+    {lane_status_html}
+    {conversation_events_html}
     {''.join(sections)}
   </main>
 </body>
@@ -518,6 +757,26 @@ def make_dashboard_handler(artifacts_root: Path) -> type[BaseHTTPRequestHandler]
                 self._send_text(
                     HTTPStatus.OK,
                     json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                    "application/json; charset=utf-8",
+                )
+                return
+
+            if path == "/api/todos":
+                # Parse optional stale_threshold_sec from query string
+                qs = urllib_parse.parse_qs(parsed.query)
+                try:
+                    threshold = int(qs.get("stale_threshold_sec", ["3600"])[0])
+                except (ValueError, IndexError):
+                    threshold = 3600
+                # Collect task state from distributed sources (currently
+                # the dashboard index's task_state; extensible to remote).
+                index_payload = collect_dashboard_index(self._artifacts_root)
+                task_state = index_payload.get("task_state", {})
+                sources: list[dict[str, Any]] = [task_state] if isinstance(task_state, dict) and task_state else []
+                result = aggregate_distributed_todos(sources, stale_threshold_sec=threshold)
+                self._send_text(
+                    HTTPStatus.OK,
+                    json.dumps(result, sort_keys=True, indent=2) + "\n",
                     "application/json; charset=utf-8",
                 )
                 return

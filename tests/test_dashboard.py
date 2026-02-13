@@ -486,5 +486,380 @@ class DashboardAccessibilityTests(unittest.TestCase):
         self.assertNotIn("Partial data", rendered)
 
 
+
+class DistributedTodoStalenessTests(unittest.TestCase):
+    """Tests for stale-data annotations in aggregate_distributed_todos (#13)."""
+
+    def test_fresh_data_not_stale(self):
+        """Tasks with recent last_update should not be marked stale."""
+        from datetime import datetime, timezone
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sources = [{"t1": {"status": "done", "last_update": now_iso}}]
+        result = dashboard.aggregate_distributed_todos(sources)
+        self.assertFalse(result["stale"])
+        self.assertEqual(result["stale_reason"], "ok")
+        self.assertIsNotNone(result["newest_update"])
+        self.assertIsNotNone(result["fetched_at"])
+        self.assertFalse(result["fallback"])
+
+    def test_old_data_is_stale(self):
+        """Tasks with last_update older than threshold should be stale."""
+        sources = [{"t1": {"status": "done", "last_update": "2020-01-01T00:00:00+00:00"}}]
+        result = dashboard.aggregate_distributed_todos(sources, stale_threshold_sec=60)
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["stale_reason"], "age_exceeded")
+        self.assertEqual(result["newest_update"], "2020-01-01T00:00:00+00:00")
+
+    def test_no_timestamps_is_stale(self):
+        """Tasks without any last_update should be marked stale."""
+        sources = [{"t1": {"status": "done"}}]
+        result = dashboard.aggregate_distributed_todos(sources)
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["stale_reason"], "no_timestamps")
+
+    def test_empty_sources_is_stale_and_fallback(self):
+        """Empty source list should trigger both stale and fallback."""
+        result = dashboard.aggregate_distributed_todos([])
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["stale_reason"], "no_tasks")
+        self.assertTrue(result["fallback"])
+
+    def test_all_invalid_sources_is_fallback(self):
+        """When all sources are non-dict, result should be fallback."""
+        result = dashboard.aggregate_distributed_todos(["bad", None, 42])
+        self.assertTrue(result["fallback"])
+        self.assertTrue(result["stale"])
+
+    def test_sources_with_only_non_dict_tasks_is_fallback(self):
+        """Dict sources that contain zero valid dict tasks => fallback."""
+        sources = [{"t1": "not-a-dict", "t2": 123}]
+        result = dashboard.aggregate_distributed_todos(sources)
+        self.assertTrue(result["fallback"])
+        self.assertEqual(result["total"], 0)
+
+    def test_custom_stale_threshold(self):
+        """Custom stale_threshold_sec should be respected."""
+        from datetime import datetime, timedelta, timezone
+
+        # 10 seconds ago
+        recent = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        sources = [{"t1": {"status": "pending", "last_update": recent}}]
+        # With a 5-second threshold, should be stale
+        result = dashboard.aggregate_distributed_todos(sources, stale_threshold_sec=5)
+        self.assertTrue(result["stale"])
+        # With a 60-second threshold, should NOT be stale
+        result = dashboard.aggregate_distributed_todos(sources, stale_threshold_sec=60)
+        self.assertFalse(result["stale"])
+
+    def test_fetched_at_is_populated(self):
+        """fetched_at should always be an ISO timestamp string."""
+        result = dashboard.aggregate_distributed_todos([])
+        self.assertIn("fetched_at", result)
+        self.assertIsInstance(result["fetched_at"], str)
+        self.assertGreater(len(result["fetched_at"]), 10)
+
+    def test_newest_update_picks_latest(self):
+        """newest_update should reflect the most recent task timestamp."""
+        sources = [
+            {
+                "t1": {"status": "done", "last_update": "2026-01-01T00:00:00Z"},
+                "t2": {"status": "pending", "last_update": "2026-06-15T12:00:00Z"},
+            }
+        ]
+        result = dashboard.aggregate_distributed_todos(sources)
+        self.assertEqual(result["newest_update"], "2026-06-15T12:00:00Z")
+
+    def test_unparseable_timestamp_is_stale(self):
+        """Unparseable last_update should mark result as stale."""
+        sources = [{"t1": {"status": "done", "last_update": "not-a-date"}}]
+        result = dashboard.aggregate_distributed_todos(sources)
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["stale_reason"], "unparseable_timestamp")
+
+    def test_return_dict_has_all_new_fields(self):
+        """Verify all required new fields are present in every result."""
+        for sources in [[], [{"t1": {"status": "done", "last_update": "2026-01-01T00:00:00Z"}}]]:
+            result = dashboard.aggregate_distributed_todos(sources)
+            for key in ("stale", "stale_reason", "newest_update", "fetched_at", "fallback"):
+                self.assertIn(key, result, f"Missing key {key!r} for sources={sources!r}")
+
+
+class ApiTodosEndpointTests(unittest.TestCase):
+    """Tests for the /api/todos HTTP endpoint (#13)."""
+
+    def _start_server(self, root):
+        handler = dashboard.make_dashboard_handler(root)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread
+
+    def test_api_todos_returns_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td) / "artifacts"
+            root.mkdir(parents=True, exist_ok=True)
+            server, thread = self._start_server(root)
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                with urllib_request.urlopen(f"{base}/api/todos", timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+                    ct = resp.headers.get("Content-Type", "")
+                    self.assertIn("application/json", ct)
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    self.assertIn("tasks", payload)
+                    self.assertIn("total", payload)
+                    self.assertIn("stale", payload)
+                    self.assertIn("fallback", payload)
+                    self.assertIn("fetched_at", payload)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_api_todos_fallback_when_no_task_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td) / "artifacts"
+            root.mkdir(parents=True, exist_ok=True)
+            server, thread = self._start_server(root)
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                with urllib_request.urlopen(f"{base}/api/todos", timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    self.assertTrue(payload["fallback"])
+                    self.assertEqual(payload["total"], 0)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_api_todos_custom_threshold_via_query(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td) / "artifacts"
+            root.mkdir(parents=True, exist_ok=True)
+            server, thread = self._start_server(root)
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                url = f"{base}/api/todos?stale_threshold_sec=1"
+                with urllib_request.urlopen(url, timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    # With no tasks, should still be fallback/stale
+                    self.assertTrue(payload["stale"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_api_todos_has_newest_update_and_stale_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td) / "artifacts"
+            root.mkdir(parents=True, exist_ok=True)
+            server, thread = self._start_server(root)
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                with urllib_request.urlopen(f"{base}/api/todos", timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    self.assertIn("newest_update", payload)
+                    self.assertIn("stale_reason", payload)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaneStatusSectionTests(unittest.TestCase):
+    """Tests for lane status rendering (Issue #6)."""
+
+    def test_empty_lane_data(self):
+        result = dashboard.render_lane_status_section([])
+        self.assertIn("No lane data available", result)
+        self.assertIn("aria-label='Lane Status'", result)
+
+    def test_renders_lane_rows(self):
+        lanes = [
+            {"lane": "L0", "status": "active", "owner": "codex", "updated_at": "2026-02-13T10:00:00Z", "detail": "Running tests"},
+            {"lane": "L2", "status": "idle", "owner": "claude"},
+        ]
+        result = dashboard.render_lane_status_section(lanes)
+        self.assertIn("L0", result)
+        self.assertIn("active", result)
+        self.assertIn("codex", result)
+        self.assertIn("Running tests", result)
+        self.assertIn("L2", result)
+        self.assertIn("idle", result)
+        self.assertIn("claude", result)
+
+    def test_table_has_accessibility_roles(self):
+        lanes = [{"lane": "L0", "status": "active"}]
+        result = dashboard.render_lane_status_section(lanes)
+        self.assertIn("role='table'", result)
+        self.assertIn("scope='col'", result)
+        self.assertIn("aria-label='Lane status overview'", result)
+
+    def test_count_badge(self):
+        lanes = [{"lane": "L0", "status": "active"}, {"lane": "L1", "status": "idle"}]
+        result = dashboard.render_lane_status_section(lanes)
+        self.assertIn("2 lanes", result)
+        self.assertIn("class='badge'", result)
+
+    def test_skips_non_dict_entries(self):
+        lanes = [{"lane": "L0", "status": "active"}, "not-a-dict", None]
+        result = dashboard.render_lane_status_section(lanes)
+        self.assertIn("L0", result)
+        self.assertIn("1 lanes", result)
+
+    def test_escapes_html(self):
+        lanes = [{"lane": "<script>xss</script>", "status": "active"}]
+        result = dashboard.render_lane_status_section(lanes)
+        self.assertNotIn("<script>", result)
+        self.assertIn("&lt;script&gt;", result)
+
+    def test_missing_fields_use_defaults(self):
+        lanes = [{}]
+        result = dashboard.render_lane_status_section(lanes)
+        self.assertIn("unknown", result)
+        self.assertIn("unassigned", result)
+
+
+class ConversationEventsSectionTests(unittest.TestCase):
+    """Tests for conversation events rendering (Issue #6)."""
+
+    def test_empty_events(self):
+        result = dashboard.render_conversation_events_section([])
+        self.assertIn("No conversation events recorded", result)
+        self.assertIn("aria-label='Conversation Events'", result)
+
+    def test_renders_event_rows(self):
+        events = [
+            {"timestamp": "2026-02-13T10:00:00Z", "actor": "claude", "event_type": "review", "message": "PR approved"},
+            {"timestamp": "2026-02-13T09:00:00Z", "actor": "codex", "event_type": "commit", "message": "Tests pass"},
+        ]
+        result = dashboard.render_conversation_events_section(events)
+        self.assertIn("claude", result)
+        self.assertIn("review", result)
+        self.assertIn("PR approved", result)
+        self.assertIn("codex", result)
+        self.assertIn("Tests pass", result)
+
+    def test_table_has_accessibility_roles(self):
+        events = [{"timestamp": "2026-02-13T10:00:00Z", "message": "Test"}]
+        result = dashboard.render_conversation_events_section(events)
+        self.assertIn("role='table'", result)
+        self.assertIn("scope='col'", result)
+        self.assertIn("aria-label='Recent conversation events'", result)
+
+    def test_sorts_by_timestamp_descending(self):
+        events = [
+            {"timestamp": "2026-02-13T08:00:00Z", "message": "early"},
+            {"timestamp": "2026-02-13T12:00:00Z", "message": "late"},
+            {"timestamp": "2026-02-13T10:00:00Z", "message": "mid"},
+        ]
+        result = dashboard.render_conversation_events_section(events)
+        idx_late = result.index("late")
+        idx_early = result.index("early")
+        self.assertLess(idx_late, idx_early)
+
+    def test_max_events_limits_output(self):
+        events = [{"timestamp": f"2026-02-13T{i:02d}:00:00Z", "message": f"msg{i}"} for i in range(30)]
+        result = dashboard.render_conversation_events_section(events, max_events=5)
+        # 5 data rows + 1 header
+        self.assertLessEqual(result.count("<tr>"), 6)
+
+    def test_count_badge(self):
+        events = [{"timestamp": "2026-02-13T10:00:00Z", "message": "a"}, {"timestamp": "2026-02-13T11:00:00Z", "message": "b"}]
+        result = dashboard.render_conversation_events_section(events)
+        self.assertIn("2 events", result)
+
+    def test_escapes_html_in_messages(self):
+        events = [{"timestamp": "2026-02-13T10:00:00Z", "message": "<img onerror=alert(1)>"}]
+        result = dashboard.render_conversation_events_section(events)
+        self.assertNotIn("<img", result)
+        self.assertIn("&lt;img", result)
+
+    def test_skips_non_dict_events(self):
+        events = [{"timestamp": "2026-02-13T10:00:00Z", "message": "ok"}, "not-a-dict"]
+        result = dashboard.render_conversation_events_section(events)
+        self.assertIn("1 events", result)
+
+
+class DashboardIntegrationLaneAndEventsTests(unittest.TestCase):
+    """Tests for lane_status and conversation_events integration in render_dashboard_html (Issue #6)."""
+
+    def _make_payload(self, **overrides):
+        base = {
+            "generated_at_utc": "2026-02-13T00:00:00+00:00",
+            "artifacts_root": "/tmp",
+            "health_json": [],
+            "health_md": [],
+            "run_reports": [],
+            "run_summaries": [],
+            "pr_review_snapshots": [],
+            "evidence_dirs": [],
+            "evidence_files": [],
+            "staleness": {"stale": False, "reason": "ok", "age_sec": 10},
+        }
+        base.update(overrides)
+        return base
+
+    def test_lane_status_rendered_when_present(self):
+        payload = self._make_payload(lane_status=[
+            {"lane": "L0", "status": "active", "owner": "codex"},
+        ])
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertIn("Lane Status", rendered)
+        self.assertIn("L0", rendered)
+        self.assertIn("codex", rendered)
+
+    def test_lane_status_absent_when_key_missing(self):
+        payload = self._make_payload()
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertNotIn("Lane Status", rendered)
+
+    def test_conversation_events_rendered_when_present(self):
+        payload = self._make_payload(conversation_events=[
+            {"timestamp": "2026-02-13T10:00:00Z", "actor": "claude", "message": "Review done"},
+        ])
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertIn("Conversation Events", rendered)
+        self.assertIn("Review done", rendered)
+
+    def test_conversation_events_absent_when_key_missing(self):
+        payload = self._make_payload()
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertNotIn("Conversation Events", rendered)
+
+    def test_both_sections_render_together(self):
+        payload = self._make_payload(
+            lane_status=[{"lane": "L1", "status": "active"}],
+            conversation_events=[{"timestamp": "2026-02-13T10:00:00Z", "message": "handoff"}],
+        )
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertIn("Lane Status", rendered)
+        self.assertIn("Conversation Events", rendered)
+
+    def test_lane_status_non_list_does_not_crash(self):
+        payload = self._make_payload(lane_status="not-a-list")
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertIn("Orxaq Autonomy Dashboard", rendered)
+
+    def test_conversation_events_non_list_does_not_crash(self):
+        payload = self._make_payload(conversation_events="not-a-list")
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertIn("Orxaq Autonomy Dashboard", rendered)
+
+    def test_resilient_rendering_lane_failure_does_not_break_other_sections(self):
+        """If lane_status rendering somehow fails, conversation_events and other sections still render."""
+        payload = self._make_payload(
+            lane_status=[{"lane": "L0", "status": "ok"}],
+            conversation_events=[{"timestamp": "2026-02-13T10:00:00Z", "message": "still works"}],
+            task_state={"t1": {"status": "done"}},
+        )
+        rendered = dashboard.render_dashboard_html(payload)
+        self.assertIn("Conversation Events", rendered)
+        self.assertIn("Task Activity", rendered)
+        self.assertIn("Health JSON", rendered)

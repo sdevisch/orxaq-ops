@@ -10,5 +10,15 @@
     "continue-after-partial-output",
     "respect-non-admin-boundaries"
   ],
-  "filetype_policy": "Preserve unknown and binary file types; avoid destructive rewrites; use .gitattributes for explicit handling."
+  "filetype_policy": "Preserve unknown and binary file types; avoid destructive rewrites; use .gitattributes for explicit handling.",
+  "team_preferences": {
+    "create_issue_first": true,
+    "branch_against_issue": true,
+    "clean_sync_environment": true,
+    "commit_regularly": true,
+    "push_regularly": true,
+    "request_review": true,
+    "include_review_evidence": true,
+    "resolve_merge_conflicts": true
+  }
 }

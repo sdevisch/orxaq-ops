@@ -1023,6 +1023,63 @@ def reset_state(config: ManagerConfig) -> None:
     config.state_file.unlink(missing_ok=True)
 
 
+
+
+def resilience_audit(config: ManagerConfig) -> dict[str, Any]:
+    """Audit required autonomy and resilience scripts, returning a structured report.
+
+    Each check records whether the expected file exists and is accessible.
+    The overall ok flag is True only when every check passes.
+    """
+    scripts_dir = config.root_dir / "scripts"
+    resilience_dir = scripts_dir / "resilience"
+
+    checks: list[dict[str, Any]] = []
+
+    # --- Core autonomy scripts ---
+    core_scripts = [
+        ("autonomy_manager.sh", scripts_dir / "autonomy_manager.sh"),
+        ("autonomy_runner.py", scripts_dir / "autonomy_runner.py"),
+        ("preflight.sh", scripts_dir / "preflight.sh"),
+    ]
+    for name, path in core_scripts:
+        exists = path.is_file()
+        checks.append({
+            "name": name,
+            "category": "core",
+            "path": str(path),
+            "exists": exists,
+            "passed": exists,
+        })
+
+    # --- Resilience scripts ---
+    resilience_scripts = [
+        ("backup.sh", resilience_dir / "backup.sh"),
+        ("restore.sh", resilience_dir / "restore.sh"),
+        ("healthcheck.sh", resilience_dir / "healthcheck.sh"),
+    ]
+    for name, path in resilience_scripts:
+        exists = path.is_file()
+        checks.append({
+            "name": name,
+            "category": "resilience",
+            "path": str(path),
+            "exists": exists,
+            "passed": exists,
+        })
+
+    all_passed = all(c["passed"] for c in checks)
+
+    return {
+        "ok": all_passed,
+        "timestamp": _now_iso(),
+        "root_dir": str(config.root_dir),
+        "checks": checks,
+        "passed": sum(1 for c in checks if c["passed"]),
+        "failed": sum(1 for c in checks if not c["passed"]),
+        "total": len(checks),
+    }
+
 def tail_logs(config: ManagerConfig, lines: int = 40) -> str:
     if not config.log_file.exists():
         return ""

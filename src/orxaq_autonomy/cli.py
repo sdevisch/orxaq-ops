@@ -28,6 +28,7 @@ from .manager import (
     keepalive_status,
     preflight,
     reset_state,
+    resilience_audit,
     run_foreground,
     start_background,
     status_snapshot,
@@ -85,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("install-keepalive")
     sub.add_parser("uninstall-keepalive")
     sub.add_parser("keepalive-status")
+    sub.add_parser("resilience-audit")
 
     init_skill = sub.add_parser("init-skill-protocol")
     init_skill.add_argument("--output", default="config/skill_protocol.json")
@@ -267,6 +269,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "keepalive-status":
         print(json.dumps(keepalive_status(cfg), indent=2, sort_keys=True))
         return 0
+    if args.command == "resilience-audit":
+        report = resilience_audit(cfg)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("ok", False) else 1
     if args.command == "init-skill-protocol":
         out = (cfg.root_dir / args.output).resolve()
         write_default_skill_protocol(out)
